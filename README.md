@@ -32,6 +32,34 @@ start.bat --gpu      # 或 ./start.sh --gpu
 start.bat --dev      # 后端 8788 + Vite 5173
 ```
 
+### 启动脚本的两个硬约束（Windows）
+
+`start.bat` 必须保持 **CRLF 换行 + GBK（cp936）编码**。两条看起来古怪，都是被 cmd.exe 逼的：
+
+- **只给 LF 换行**：cmd 按 CRLF 切分语句，会把相邻两行粘成一条命令执行；
+- **存成 UTF-8**：cmd 在行内按字节偏移解析，中文会把紧随其后的命令吃掉，
+  于是报 `'xxx' 不是内部或外部命令`，同时中文全是乱码。
+
+编辑器的「另存为 UTF-8」是这个脚本的头号杀手。`.gitattributes` 已锁 `*.bat eol=crlf`，编码只能靠自觉。
+
+### 找不到 / 选错 Python
+
+脚本按这个顺序挑解释器：`PYTHON` 环境变量 → `.venv/` → `python` → `py -3.13` → `-3.12` → `-3.11` → `py -3`。
+顺序不是随便定的，**越新越容易装不上**。两个高频坑：
+
+- **`where python` 指向 `...\WindowsApps\python.exe`** —— 那是微软商店的占位程序，执行返回 9009，不是真
+  Python。脚本用 `-c "import sys"` 实跑验证，所以能跳过它。想彻底解决：设置 → 应用 → 高级应用设置 →
+  应用执行别名，关掉 `python.exe` 和 `python3.exe`。
+- **系统 Python 太新** —— `torch 2.6` / `diffusers 0.38` 只发到 cp313 的 wheel，3.14+ 会退化成源码编译，
+  没装 MSVC 就报 `Microsoft Visual C++ 14.0 or greater is required`。用 3.12 最省事。
+
+要强制指定解释器：
+
+```bat
+set PYTHON=C:\Python312\python.exe
+start.bat
+```
+
 ---
 
 ## 三个页面

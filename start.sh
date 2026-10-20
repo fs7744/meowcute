@@ -32,11 +32,29 @@ for a in "$@"; do
 done
 
 PY="${PYTHON:-}"
+# 优先用项目自带的虚拟环境：torch / diffusers 的版本窗口很窄，
+# 用一个随手抓来的系统 Python 大概率装不上。
+if [ -z "$PY" ]; then
+  if [ -x ".venv/bin/python" ]; then PY=.venv/bin/python
+  elif [ -x ".venv/Scripts/python.exe" ]; then PY=.venv/Scripts/python.exe
+  fi
+fi
 if [ -z "$PY" ]; then
   if command -v python >/dev/null 2>&1; then PY=python
   elif command -v python3 >/dev/null 2>&1; then PY=python3
-  else echo "没找到 Python，请先装 3.11+ 并确保在 PATH 里"; exit 1; fi
+  else
+    echo "没找到 Python。装一个 3.11-3.13，或用 PYTHON=/path/to/python ./start.sh 指定"
+    exit 1
+  fi
 fi
+# 版本太新反而装不上：torch 2.6 / diffusers 0.38 只提供到 3.13 的预编译包
+"$PY" - <<'PYCHECK' || true
+import sys
+if sys.version_info[:2] > (3, 13):
+    print(f"[警告] 当前解释器是 Python {sys.version.split()[0]}，偏新。")
+    print("       torch 2.6 / diffusers 0.38 只提供到 3.13 的预编译包，")
+    print("       3.14 以上会走源码编译，没装编译器就会失败。建议换 3.12。")
+PYCHECK
 
 open_url() {
   [ "$NO_OPEN" = "1" ] && return 0

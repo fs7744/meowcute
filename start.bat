@@ -1,78 +1,237 @@
 @echo off
-rem å–µå–µå«çš„å¯çˆ±åŠ©æ‰‹ Â· å¯åŠ¨è„šæœ¬ï¼ˆWindowsï¼‰
+rem ============================================================
+rem  Meowcute launcher (Windows)
 rem
-rem   start.bat            ç”Ÿäº§æ¨¡å¼ï¼šå‰ç«¯æ²¡æ„å»ºå°±å…ˆæ„å»ºï¼Œç„¶åèµ·æœåŠ¡å¹¶æ‰“å¼€æµè§ˆå™¨
-rem   start.bat --dev      å¼€å‘æ¨¡å¼ï¼šåç«¯ 8788 + Vite 5173ï¼ˆçƒ­æ›´æ–°ï¼‰
-rem   start.bat --setup    åªè£…ä¾èµ–
-rem   start.bat --gpu      å®‰è£… GPU æ¨ç†ä¾èµ–ï¼ˆtorch / diffusersï¼‰
-rem   start.bat --no-open  ä¸è‡ªåŠ¨å¼€æµè§ˆå™¨
-
+rem  FOUR HARD CONSTRAINTS - do not "fix" them:
+rem   1) this file must stay CRLF. cmd.exe splits statements on
+rem      CRLF; an LF-only .bat makes it glue lines together.
+rem   2) this file must stay GBK (cp936), NOT UTF-8. With a UTF-8
+rem      .bat cmd eats bytes mid-line and the next line becomes a
+rem      bogus command. Hence chcp 936 below and ASCII-only rem
+rem      lines. If your editor offers "UTF-8", say no.
+rem   3) python is located by RUNNING it, not by "where python".
+rem      On many machines where.exe finds the Microsoft Store stub
+rem      at WindowsApps\python.exe, which exits with 9009 and is
+rem      not a real interpreter at all.
+rem   4) interpreter order matters: newer is NOT better here.
+rem      torch 2.6 / diffusers 0.38 only ship wheels up to cp313;
+rem      on 3.14+ pip falls back to building from source and dies
+rem      without MSVC. So try 3.13 down to 3.11 before bare py -3.
+rem
+rem    start.bat            production: build frontend if needed, serve, open browser
+rem    start.bat --dev      dev mode: backend 8788 + Vite 5173
+rem    start.bat --setup    install deps only
+rem    start.bat --gpu      install GPU inference deps (torch / diffusers)
+rem    start.bat --no-open  do not open the browser
+rem
+rem  Override the interpreter when the auto-detect picks the wrong one:
+rem    set PYTHON=C:\path\to\python.exe
+rem    start.bat
+rem ============================================================
+chcp 936 >nul 2>&1
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
+title ß÷ß÷½ĞµÄ¿É°®ÖúÊÖ
 
-if "%PORT%"=="" set PORT=8788
-set DEV=0
-set NOOPEN=0
+if "%PORT%"=="" set "PORT=8788"
+set "DEV=0"
+set "NOOPEN=0"
+set "PY="
+set "FAILED="
+
+rem ---- pick an interpreter ----
+rem Ë³Ğò£ºÏÔÊ½ PYTHON > ÏîÄ¿ .venv > python > py -3.13 ... > py -3
+if defined PYTHON (
+  set "PY=%PYTHON%"
+  !PY! -c "import sys" >nul 2>&1
+  if errorlevel 1 (
+    echo [x] PYTHON Ö¸ÏòµÄ½âÊÍÆ÷ÅÜ²»ÆğÀ´£º%PYTHON%
+    pause
+    exit /b 1
+  )
+  goto :py_ready
+)
+
+if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
+
+if not defined PY (
+  python -c "import sys" >nul 2>&1 && set "PY=python"
+)
+if not defined PY (
+  py -3.13 -c "import sys" >nul 2>&1 && set "PY=py -3.13"
+)
+if not defined PY (
+  py -3.12 -c "import sys" >nul 2>&1 && set "PY=py -3.12"
+)
+if not defined PY (
+  py -3.11 -c "import sys" >nul 2>&1 && set "PY=py -3.11"
+)
+if not defined PY (
+  py -3 -c "import sys" >nul 2>&1 && set "PY=py -3"
+)
+if not defined PY (
+  python3 -c "import sys" >nul 2>&1 && set "PY=python3"
+)
+if not defined PY (
+  echo [x] Ã»ÕÒµ½¿ÉÓÃµÄ Python¡£
+  echo.
+  echo     ÒªÇó 3.11 ÒÔÉÏ°æ±¾¡£Èç¹ûÒÑ¾­×°ÁËÈ´ÈÔÈ»±¨Õâ¸ö´í£¬
+  echo     ¶à°ëÊÇ where python ÃüÖĞÁËÎ¢ÈíÉÌµêµÄÕ¼Î»³ÌĞò£º
+  echo       %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe
+  echo     ½â¾ö°ì·¨£ºÉèÖÃ - Ó¦ÓÃ - ¸ß¼¶Ó¦ÓÃÉèÖÃ - Ó¦ÓÃÖ´ĞĞ±ğÃû£¬
+  echo     °Ñ python.exe / python3.exe Á½Ïî¹Øµô£¬È»ºóÖØ¿ªÕâ¸ö´°¿Ú¡£
+  echo.
+  echo     Ò²¿ÉÒÔÖ±½ÓÖ¸¶¨½âÊÍÆ÷£º
+  echo       set PYTHON=C:\Python312\python.exe
+  echo       start.bat
+  pause
+  exit /b 1
+)
+
+:py_ready
+rem ---- ¼ÇÂ¼°æ±¾£¬Ì«ĞÂµÄ°æ±¾ÒªÌáÇ°¾¯¸æ ----
+set "PYVER=?"
+set "PYMIN=0"
+for /f "tokens=1,2" %%a in ('!PY! -c "import sys;print(sys.version_info[0],sys.version_info[1])" 2^>nul') do (
+  set "PYMAJ=%%a"
+  set "PYMIN=%%b"
+  set "PYVER=%%a.%%b"
+)
+if !PYMIN! GTR 13 (
+  echo [¾¯¸æ] µ±Ç°½âÊÍÆ÷ÊÇ Python !PYVER!£¬Æ«ĞÂ¡£
+  echo     torch 2.6 / diffusers 0.38 Ä¿Ç°Ö»Ìá¹©µ½ 3.13 µÄÔ¤±àÒë°ü£¬
+  echo     3.14 ÒÔÉÏ»á³¢ÊÔÔ´Âë±àÒë£¬Ã»×° MSVC ¾Í»áÊ§°Ü¡£
+  echo     ½¨Òé×°Ò»¸ö 3.12 ÔÙÅÜ£¬»òÏÈ set PYTHON=... Ö¸¶¨½âÊÍÆ÷¡£
+  echo.
+)
+
+rem ---- pip ÕæµÄÄÜÓÃÂğ£¨Ç¶ÈëÊ½·¢ĞĞ°æ³£³£Ã»ÓĞ pip£© ----
+!PY! -m pip --version >nul 2>&1
+if errorlevel 1 (
+  echo [x] Õâ¸ö Python Ã»ÓĞ¿ÉÓÃµÄ pip£º!PY!
+  echo     ÊÖ¶¯×°Ò»ÏÂÔÙÖØÅÜ£º
+  echo     !PY! -m ensurepip --upgrade
+  pause
+  exit /b 1
+)
 
 :parse
 if "%~1"=="" goto start
-if /i "%~1"=="--dev" ( set DEV=1 & shift & goto parse )
-if /i "%~1"=="--no-open" ( set NOOPEN=1 & shift & goto parse )
+if /i "%~1"=="--dev" ( set "DEV=1" & shift & goto parse )
+if /i "%~1"=="--no-open" ( set "NOOPEN=1" & shift & goto parse )
 if /i "%~1"=="--setup" goto setup
 if /i "%~1"=="--gpu" goto gpu
 if /i "%~1"=="--help" goto help
-echo æœªçŸ¥å‚æ•°ï¼š%~1ï¼ˆç”¨ --help çœ‹ç”¨æ³•ï¼‰
+echo Î´Öª²ÎÊı£º%~1
+echo ÓÃ start.bat --help ¿´ÓÃ·¨
 exit /b 1
 
 :help
-echo start.bat            ç”Ÿäº§æ¨¡å¼
-echo start.bat --dev      å¼€å‘æ¨¡å¼ï¼ˆVite çƒ­æ›´æ–°ï¼‰
-echo start.bat --setup    åªè£…ä¾èµ–
-echo start.bat --gpu      å®‰è£… GPU æ¨ç†ä¾èµ–
+echo   start.bat            Éú²úÄ£Ê½£º¹¹½¨Ç°¶Ë¡¢Æğ·şÎñ¡¢¿ªä¯ÀÀÆ÷
+echo   start.bat --dev      ¿ª·¢Ä£Ê½£ººó¶Ë 8788 ¼Ó Vite 5173 ÈÈ¸üĞÂ
+echo   start.bat --setup    Ö»×°ÒÀÀµ
+echo   start.bat --gpu      °²×° GPU ÍÆÀíÒÀÀµ
+echo   start.bat --no-open  ²»×Ô¶¯¿ªä¯ÀÀÆ÷
+echo.
+echo   ½âÊÍÆ÷£º!PY!
+echo   °æ±¾  £º!PYVER!
 exit /b 0
 
 :setup
 call :deps
-echo ä¾èµ–è£…å¥½äº†ã€‚GPU æ¨ç†ä¾èµ–å¦è·‘ï¼šstart.bat --gpu
+if errorlevel 1 exit /b 1
+echo.
+echo ÒÀÀµ×°ºÃÁË¡£GPU ÍÆÀíÒÀÀµÁíÍâÅÜ start.bat --gpu
 exit /b 0
 
 :gpu
-echo == å®‰è£… GPU æ¨ç†ä¾èµ– ==
-python -m pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
-python -m pip install diffusers==0.38.0 transformers==4.57.6 torchao==0.16.0 accelerate sentencepiece protobuf
+echo == °²×° GPU ÍÆÀíÒÀÀµ£¬Ô¼ 5GB£¬»á±È½ÏÂı ==
+!PY! -m pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+if errorlevel 1 goto gpu_fail
+!PY! -m pip install diffusers==0.38.0 transformers==4.57.6 torchao==0.16.0 accelerate sentencepiece protobuf
+if errorlevel 1 goto gpu_fail
+echo ×°ºÃÁË¡£½Ó×ÅÅÜ start.bat --setup ¼ì²éºËĞÄÒÀÀµ¡£
 exit /b 0
+
+:gpu_fail
+echo [x] GPU ÒÀÀµ°²×°Ê§°Ü¡£ÏÈÈ·ÈÏÏÔ¿¨Çı¶¯ºÍ CUDA °æ±¾£¬ÔÙÖØÅÜ start.bat --gpu
+pause
+exit /b 1
 
 :start
 call :deps
+if errorlevel 1 exit /b 1
 
-if "%DEV%"=="1" (
-  echo == å¼€å‘æ¨¡å¼ï¼šåç«¯ http://127.0.0.1:%PORT%  å‰ç«¯ http://127.0.0.1:5173 ==
-  start "meowcute-backend" cmd /c python -m uvicorn backend.app.main:app --host 127.0.0.1 --port %PORT% --reload
-  cd frontend
+if "!DEV!"=="1" (
+  echo == ¿ª·¢Ä£Ê½ ==
+  echo    ºó¶Ë http://127.0.0.1:!PORT!
+  echo    Ç°¶Ë http://127.0.0.1:5173
+  start "meowcute-backend" cmd /c "!PY! -m uvicorn backend.app.main:app --host 127.0.0.1 --port !PORT! --reload"
+  pushd frontend
   call npm run dev
+  popd
   exit /b 0
 )
 
 if not exist "frontend\dist" (
-  echo == æ„å»ºå‰ç«¯ ==
+  echo == ¹¹½¨Ç°¶Ë ==
   pushd frontend
   call npm run build
+  if errorlevel 1 set "FAILED=1"
   popd
 )
+rem ×¢Òâ£ºerrorlevel ±ØĞë½ô¸ú±»¼ì²éµÄÃüÁî£¬pushd/popd »á°ÑËü¸²¸Çµô
+if defined FAILED (
+  echo [x] Ç°¶Ë¹¹½¨Ê§°Ü¡£ÊÖ¶¯ÅÜÒ»´Î¿´ÍêÕû±¨´í£º
+  echo     cd frontend
+  echo     npm install
+  echo     npm run build
+  pause
+  exit /b 1
+)
 
-echo == å¯åŠ¨æœåŠ¡ï¼šhttp://127.0.0.1:%PORT% ==
-if "%NOOPEN%"=="0" start "" "http://127.0.0.1:%PORT%"
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port %PORT%
+echo == ·şÎñµØÖ· http://127.0.0.1:!PORT! ==
+echo    °´ Ctrl+C Í£Ö¹¡£
+if "!NOOPEN!"=="0" start "" "http://127.0.0.1:!PORT!"
+!PY! -m uvicorn backend.app.main:app --host 127.0.0.1 --port !PORT!
+if errorlevel 1 pause
 exit /b 0
 
+rem ---- install core deps ----
 :deps
-echo == æ£€æŸ¥åç«¯ä¾èµ– ==
-python -m pip install -q --upgrade pip
-python -m pip install -q -r backend\requirements.txt
+echo == ¼ì²éºó¶ËÒÀÀµ£º!PY! ^(Python !PYVER!^) ==
+!PY! -m pip install -q --upgrade pip >nul 2>&1
+!PY! -m pip install -q -r backend\requirements.txt
+if errorlevel 1 (
+  echo [x] ºó¶ËºËĞÄÒÀÀµ°²×°Ê§°Ü¡£³£¼ûÔ­Òò£º
+  echo     1. Python °æ±¾Ì«ĞÂ£¬Ã»ÓĞÔ¤±àÒë°ü£¨½¨Òé 3.11 µ½ 3.13£©
+  echo     2. ÍøÂç²»Í¨£¬»»¹úÄÚ¾µÏñÊÔÊÔ£º
+  echo        !PY! -m pip install -r backend\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+  echo     3. Ïë»»½âÊÍÆ÷£ºset PYTHON=C:\path\to\python.exe ÔÙÖØÅÜ
+  echo.
+  echo     Ô­Ê¼ÃüÁî£¨È¥µô -q ¿É¿´ÍêÕû±¨´í£©£º
+  echo        !PY! -m pip install -r backend\requirements.txt
+  pause
+  exit /b 1
+)
+
+where npm >nul 2>&1
+if errorlevel 1 (
+  echo [x] Ã»ÕÒµ½ npm¡£ÏÈ×° Node.js 18 ÒÔÉÏ°æ±¾£¬×°ÍêÖØĞÂ´ò¿ª´°¿Ú¡£
+  pause
+  exit /b 1
+)
+
 if not exist "frontend\node_modules" (
-  echo == å®‰è£…å‰ç«¯ä¾èµ– ==
+  echo == °²×°Ç°¶ËÒÀÀµ ==
   pushd frontend
   call npm install --no-audit --no-fund
+  if errorlevel 1 set "FAILED=1"
   popd
+)
+if defined FAILED (
+  echo [x] Ç°¶ËÒÀÀµ°²×°Ê§°Ü¡£ÊÖ¶¯ÅÜ£ºcd frontend È»ºó npm install
+  pause
+  exit /b 1
 )
 exit /b 0
