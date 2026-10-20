@@ -1,7 +1,7 @@
 import type {
-  BackgroundOption, DoctorReport, GenerateResult, GenParams, PixelOptions, Project,
-  ProjectFilesInfo, ProjectSummary, PromptExample, PromptPreview, ResultImage, Style,
-  TaskProgress, Template, RefAsset,
+  BackgroundOption, DoctorReport, GenerateResult, GenParams, MatteOptions, PixelOptions,
+  Project, ProjectFilesInfo, ProjectSummary, PromptExample, PromptPreview, ResultImage,
+  Style, TaskProgress, Template, RefAsset,
 } from './types'
 
 async function j<T>(r: Response): Promise<T> {
@@ -140,6 +140,20 @@ export const api = {
       image: ResultImage
       palette: string
     }>),
+
+  /** 扣背景：走 u2net → GrabCut → 颜色键，返回透明 PNG 资产。 */
+  matte: (payload: {
+    projectId: string; origAssetId?: string
+    sourceKind?: 'images' | 'refs'; sourceFile?: string
+    matte: MatteOptions
+  }) =>
+    fetch('/api/matte', jsonInit(payload)).then(j<{ ok: boolean; image: ResultImage }>),
+
+  /** 抠图引擎体检：现在会走哪条路径（u2net 权重缺失时给出提示）。 */
+  matteStatus: () => fetch('/api/matte/status').then(j<{
+    available: boolean; primary: string; note: string
+    u2net: boolean; cv2: boolean; u2netError: string | null
+  }>),
 }
 
 /** 订阅任务 SSE：progress 回调每次进度，done 回调最终结果。返回取消订阅函数。 */

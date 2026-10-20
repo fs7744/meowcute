@@ -9,6 +9,7 @@
 - /api/generate                                  生成（任务 + SSE 进度）
 - /api/tasks/{id}/stream|/cancel                 进度与取消
 - /api/pixel/refine                              对已有原图重新精修
+- /api/matte                                     扣除背景（u2net → GrabCut → 颜色键）
 
 生成是「任务制」：POST /api/generate 立即返回 taskId，前端订阅 SSE 看进度，
 完成事件里带结果（同时留档 10 分钟供 /api/tasks/{id} 兜底查询）。
@@ -38,6 +39,7 @@ from . import prompt_examples as examples_mod
 from . import storage
 from . import custom_templates as ctpl
 from .config import DATA_DIR, ROOT, load_settings, save_settings, scan_models
+from .pipelines import matte as matte_mod
 from .pipelines import refine as refine_mod
 from .providers.diffusers_local import DiffusersProvider
 from .styles import (
@@ -732,6 +734,67 @@ async def refine_existing(payload: RefinePayload) -> Dict[str, Any]:
         "width": out["image"].width, "height": out["image"].height,
         "refine": out["meta"],
     }, "palette": rb.get("paletteName")}
+
+
+# --------------------------------------------------------------------------- #
+# 扣除背景
+# --------------------------------------------------------------------------- #
+
+
+class MatteOptions(BaseModel):
+    """扣背景参数。enabled=False 时节点直接透传上游图片（开关在画布节点上）。"""
+    enabled: bool = True
+    # auto：u2net 语义分割 → GrabCut → 颜色键，逐级退化
+    method: str = "auto"
+    tolerance: int = 80
+    # 硬边 alpha（像素素材） vs 羽化（照片 / 半透明素材）
+    hard: bool = True
+    feather: int = 0
+    despill: bool = True
+    # 抠完按 alpha 包围盒裁到主体，便于直接当素材用
+    trim: bool = False
+
+
+class MattePayload(BaseModel):
+    projectId: str
+    origAssetId: str = ""
+    # 源图位置：images/ 下的产出（生成、精修、上一次抠图），或 refs/ 下的输入图
+    sourceKind: str = "images"
+    sourceFile: Optional[str] = None
+    matte: MatteOptions = Field(default_factory=MatteOptions)
+
+
+@app.get("/api/matte/status")
+async def matte_status() -> Dict[str, Any]:
+    """抠图引擎体检：哪条路径能用、现在会走哪条（u2net 权重缺失时提示）。"""
+    return await asyncio.to_thread(matte_mod.engine_status)
+
+
+@app.post("/api/matte")
+async def matte_existing(payload: MattePayload) -> Dict[str, Any]:
+    if payload.sourceKind == "refs" and payload.sourceFile:
+        img = storage.load_image(payload.projectId, "refs", payload.sourceFile)
+    else:
+        img = storage.load_image(payload.projectId, "images", f"{payload.origAssetId}.png")
+    if img is None:
+        raise HTTPException(404, "原图不存在")
+
+    m = payload.matte
+    out, meta = await asyncio.to_thread(
+        matte_mod.remove_background, img,
+        tolerance=int(m.tolerance), feather=int(m.feather),
+        hard=bool(m.hard), despill=bool(m.despill),
+        method=m.method if m.method in ("auto", "u2net", "grabcut", "key") else "auto")
+    if m.trim:
+        out, trim_info = matte_mod.trim_to_subject(out)
+        meta["trim"] = trim_info
+    info = storage.save_image(payload.projectId, out.convert("RGBA"),
+                              kind="images", prefix="bg")
+    return {"ok": True, "image": {
+        "assetId": info["id"], "url": info["url"],
+        "width": out.width, "height": out.height,
+        "matte": meta,
+    }}
 
 
 # --------------------------------------------------------------------------- #

@@ -58,6 +58,38 @@ export type PixelOptions = {
   transparentBg?: boolean
 }
 
+/** 扣背景参数（对应后端 MatteOptions）。 */
+export type MatteOptions = {
+  /** 使用开关：关掉时节点原样透传上游图片，节点仍保留在图上 */
+  enabled: boolean
+  /** auto=u2net→GrabCut→颜色键逐级退化 */
+  method: 'auto' | 'u2net' | 'grabcut' | 'key'
+  tolerance: number
+  /** true=硬边 alpha（像素素材）；false=羽化（照片） */
+  hard: boolean
+  feather: number
+  despill: boolean
+  /** 抠完裁到主体包围盒 */
+  trim: boolean
+}
+
+/** 抠图指标：走的是哪条路径、抠掉了多少、有没有可疑 */
+export type MatteMeta = {
+  method: string
+  background: string
+  tolerance?: number
+  hard?: boolean
+  despilledPixels?: number
+  holesFilled?: number
+  removedRatio?: number
+  keptRatio?: number
+  residualKeyPixels?: number
+  warning?: string
+  fallbackReason?: string
+  trim?: { box: [number, number, number, number] }
+}
+
+
 export type GenParams = {
   width: number
   height: number
@@ -125,6 +157,17 @@ export type RefineNode = {
   createdAt?: number
 }
 
+/** 扣除背景节点：接收上游图片，抠掉底后向下游输出透明 PNG。 */
+export type MatteNode = {
+  id: string
+  type: 'matte'
+  x: number
+  y: number
+  matte: MatteOptions
+  result?: ResultImage | null
+  createdAt?: number
+}
+
 export type ResultImage = {
   assetId: string
   url: string
@@ -143,6 +186,8 @@ export type ResultImage = {
     alphaBinary: number
     size: [number, number]
   }
+  /** 这张图是否经过扣背景节点 */
+  matte?: MatteMeta
 }
 
 export type ResultMeta = {
@@ -157,6 +202,8 @@ export type ResultMeta = {
   refCount?: number
   pixelEnabled?: boolean
   palette?: string
+  /** 结果图走过的抠图路径（u2net / grabcut / key） */
+  matteMethod?: string
 }
 
 export type ResultNode = {
@@ -172,7 +219,7 @@ export type ResultNode = {
   createdAt?: number
 }
 
-export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode
+export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode | MatteNode
 export type Edge = { from: string; to: string }
 
 export type Project = {

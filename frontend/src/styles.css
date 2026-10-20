@@ -384,6 +384,11 @@ button { cursor: pointer; }
 }
 .node.gen { border-color: rgba(0, 255, 136, 0.55); }
 .node.result { border-color: rgba(255, 51, 102, 0.5); }
+.node.refine { border-color: rgba(255, 213, 0, 0.5); }
+.node.input { border-color: rgba(0, 208, 255, 0.5); }
+.node.matte { border-color: rgba(91, 87, 235, 0.6); }
+/* 扣背景节点被关掉时变成虚线灰框：一眼能看出它现在不参与流程 */
+.node.matte.off { border-style: dashed; opacity: 0.72; }
 .node.selected { box-shadow: 0 0 0 2px var(--white), 8px 8px 0 rgba(0, 0, 0, 0.55); }
 .node-head {
   display: flex; align-items: center; gap: 8px; padding: 8px 10px;
@@ -393,6 +398,9 @@ button { cursor: pointer; }
 .node-kind { font-family: var(--chip); font-size: 9px; letter-spacing: 0.5px; padding: 3px 6px; border: 1px solid currentColor; }
 .node.gen .node-kind { color: var(--green); }
 .node.result .node-kind { color: var(--pink); }
+.node.refine .node-kind { color: var(--yellow); }
+.node.input .node-kind { color: var(--cyan); }
+.node.matte .node-kind { color: var(--purple); }
 .node-title { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-idx { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .node-x { background: transparent; border: 0; color: var(--muted); font-size: 14px; padding: 0 4px; }
@@ -602,7 +610,81 @@ button { cursor: pointer; }
 .ctx-dot.d-input { background: var(--cyan); }
 .ctx-dot.d-gen { background: var(--green); }
 .ctx-dot.d-refine { background: var(--yellow); }
+.ctx-dot.d-matte { background: var(--purple); }
 .ctx-dot.d-result { background: var(--pink); }
+
+/* --- 分类次级菜单：一级只列分类，悬停展开具体节点 ---
+   节点类型会越来越多，一次性平铺会变成一个长到用不了的列表。 */
+.ctx-group { position: relative; }
+.ctx-group > .ctx-cat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  background: none;
+  border: 0;
+  color: var(--white);
+  font-size: 12.5px;
+  font-family: var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.ctx-group > .ctx-cat .ctx-caret { margin-left: auto; color: var(--muted); font-size: 10px; }
+.ctx-group:hover > .ctx-cat,
+.ctx-group.open > .ctx-cat { background: rgba(0, 255, 136, .1); color: var(--green); }
+
+.ctx-sub {
+  display: none;
+  position: absolute;
+  left: calc(100% - 2px);
+  top: -6px;
+  min-width: 210px;
+  padding: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-hard);
+}
+.ctx-group:hover > .ctx-sub,
+.ctx-group.open > .ctx-sub { display: block; }
+/* 右侧放不下时向左展开：靠右边缘弹出的菜单不该飞出屏幕 */
+.ctx-menu.flip .ctx-sub { left: auto; right: calc(100% - 2px); }
+.ctx-sub button { white-space: nowrap; }
+.ctx-sub .ctx-subhint {
+  font-size: 10.5px;
+  color: var(--muted-2);
+  padding: 3px 9px 5px;
+  line-height: 1.5;
+}
+/* 二级菜单项：主标题 + 一句说明，避免「扣除背景」这种名字被误解成生成类节点 */
+.ctx-item { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ctx-item b { font-weight: 600; font-size: 12.5px; }
+.ctx-item em {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--muted-2);
+  white-space: normal;
+  line-height: 1.4;
+}
+.ctx-menu .ctx-item em { color: var(--muted); }
+.ctx-menu button:hover .ctx-item em { color: rgba(0, 255, 136, .75); }
+
+/* 透明图片的棋盘格底：看不出透明区域就无法判断抠图对不对 */
+.matte-thumb {
+  width: 96px;
+  height: 96px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  cursor: zoom-in;
+  background-color: #232329;
+  background-image:
+    linear-gradient(45deg, #3a3a44 25%, transparent 25%, transparent 75%, #3a3a44 75%),
+    linear-gradient(45deg, #3a3a44 25%, transparent 25%, transparent 75%, #3a3a44 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
+}
+.matte-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.matte-thumb:hover { border-color: var(--purple); }
 
 /* 连线中：可接收的输入端口高亮，源头端口点亮 */
 .canvas-root.linking .port.inl {

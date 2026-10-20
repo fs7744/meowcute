@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, subscribeTask } from '../api'
 import GenNode from '../components/GenNode'
 import InputNode from '../components/InputNode'
+import MatteNode from '../components/MatteNode'
 import PreviewOverlay from '../components/PreviewOverlay'
 import ProjectFiles from '../components/ProjectFiles'
 import PromptModal from '../components/PromptModal'
@@ -9,9 +10,9 @@ import RefineNode from '../components/RefineNode'
 import ResultNode from '../components/ResultNode'
 import type {
   BackgroundOption, CanvasNode, GenNode as GenNodeType, GenerateResult,
-  InputNode as InputNodeType, Project, PromptExample, PromptPreview,
-  RefineNode as RefineNodeType, ResultImage, ResultMeta, ResultNode as ResultNodeType,
-  Style, TaskProgress, Template,
+  InputNode as InputNodeType, MatteNode as MatteNodeType, Project, PromptExample,
+  PromptPreview, RefineNode as RefineNodeType, ResultImage, ResultMeta,
+  ResultNode as ResultNodeType, Style, TaskProgress, Template,
 } from '../types'
 
 type Props = {
@@ -27,21 +28,91 @@ const GEN_W = 404
 const RES_W = 420
 const INPUT_W = 340
 const REFINE_W = 360
+const MATTE_W = 340
 const NODE_W: Record<string, number> = {
-  generate: GEN_W, result: RES_W, input: INPUT_W, refine: REFINE_W,
+  generate: GEN_W, result: RES_W, input: INPUT_W, refine: REFINE_W, matte: MATTE_W,
 }
 
-/** 哪些节点可以连到哪些节点（决定自定义工作流是否合法）。 */
+/** 哪些类型的节点可以作为某个节点的上游（决定自定义工作流是否合法）。 */
+const UPSTREAM_RULES: Record<string, string[]> = {
+  generate: ['input'],
+  refine: ['input', 'generate', 'refine', 'matte', 'result'],
+  matte: ['input', 'generate', 'refine', 'matte', 'result'],
+  result: ['generate', 'refine', 'matte'],
+}
+
+const UPSTREAM_HINT: Record<string, string> = {
+  generate: '选择图片',
+  refine: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
+  matte: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
+  result: '生成图 / 像素精修 / 扣除背景',
+}
+
 function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): boolean {
   if (!from || !to || from.id === to.id) return false
-  if (to.type === 'generate') return from.type === 'input'
-  if (to.type === 'refine') return from.type === 'input' || from.type === 'generate'
-  if (to.type === 'result') return from.type === 'generate' || from.type === 'refine'
-  return false
+  const allowed = UPSTREAM_RULES[to.type]
+  return !!allowed && allowed.includes(from.type)
 }
+
+/** 只能接收单条入边的类型：新连线替换旧入边，避免多源歧义。 */
+const SINGLE_INPUT = new Set(['refine', 'matte', 'result'])
+
+/** 右键「添加节点」的目录：分类 → 具体节点。
+ *  节点类型只会越来越多，平铺成一条长列表很快就用不了了。 */
+const NODE_CATALOG: {
+  id: string
+  label: string
+  hint: string
+  items: { type: CanvasNode['type']; label: string; hint: string; dot: string }[]
+}[] = [
+  {
+    id: 'input', label: '输入', hint: '素材入口：已有的图、参考图',
+    items: [
+      { type: 'input', label: '选择图片', dot: 'd-input',
+        hint: '上传图片，可当下游参考图或直接交给后处理' },
+    ],
+  },
+  {
+    id: 'generate', label: '生成', hint: '跑本地模型，把文字变成图',
+    items: [
+      { type: 'generate', label: '生成图', dot: 'd-gen',
+        hint: '文字描述 → AI 出图，可挂参考图走编辑底座' },
+    ],
+  },
+  {
+    id: 'post', label: '后处理', hint: '不跑模型，纯确定性图像处理',
+    items: [
+      { type: 'refine', label: '像素精修', dot: 'd-refine',
+        hint: '网格对齐 + 调色板量化，输出原生像素尺寸' },
+      { type: 'matte', label: '扣除背景', dot: 'd-matte',
+        hint: 'u2net / GrabCut 抠图，输出透明底 PNG' },
+    ],
+  },
+  {
+    id: 'output', label: '输出', hint: '看结果、导出素材',
+    items: [
+      { type: 'result', label: '图片结果', dot: 'd-result',
+        hint: '展示最终产出，可放大预览 / 右键另存' },
+    ],
+  },
+]
+
+const NODE_LABEL: Record<string, string> = {
+  input: '选择图片', generate: '生成图', refine: '像素精修',
+  matte: '扣除背景', result: '图片结果',
+}
+const nodeLabel = (t: string) => NODE_LABEL[t] || t
 
 function newId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/** 把一张已产出的图转成「上游源」描述，统一喂给精修 / 抠图接口。 */
+function imageSource(im: ResultImage) {
+  return {
+    kind: 'images' as const, assetId: im.assetId, file: '',
+    url: im.url, w: im.width, h: im.height,
+  }
 }
 
 export default function Canvas({ projectId, onBack }: Props) {
@@ -62,10 +133,13 @@ export default function Canvas({ projectId, onBack }: Props) {
   // 连线模式：点了输出端口后记住源节点，再点目标节点的输入端口完成连线
   const [linkFrom, setLinkFrom] = useState<string | null>(null)
   const [refining, setRefining] = useState<Record<string, boolean>>({})
+  const [matting, setMatting] = useState<Record<string, boolean>>({})
   // 右键菜单：屏幕坐标定位，世界坐标用于在该处创建节点
   const [ctxMenu, setCtxMenu] = useState<{
     sx: number; sy: number; wx: number; wy: number
   } | null>(null)
+  // 右键菜单里展开的二级分类（键盘/点击可用；悬停由 CSS 负责）
+  const [ctxOpen, setCtxOpen] = useState<string | null>(null)
   // 选中的连线（点击线选中，Delete 删除，双击直接删）
   const [selectedEdge, setSelectedEdge] = useState<{ from: string; to: string } | null>(null)
   // 拖拽连线：按住输出端口拖动时，实时画一条临时曲线到光标
@@ -366,6 +440,32 @@ export default function Canvas({ projectId, onBack }: Props) {
     setSelected(node.id)
   }
 
+  const addMatteNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(MATTE_W, 380)
+    const node: MatteNodeType = {
+      id: newId('mt'), type: 'matte', x: spot.x, y: spot.y,
+      matte: {
+        enabled: true, method: 'auto', tolerance: 80,
+        hard: true, feather: 0, despill: true, trim: false,
+      },
+      result: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  /** 右键菜单的统一入口：按类型分发到对应的添加函数。 */
+  const addNodeAt = (type: CanvasNode['type'], at: { x: number; y: number }) => {
+    if (type === 'input') addInputNode(at)
+    else if (type === 'generate') addGenNode(at)
+    else if (type === 'refine') addRefineNode(at)
+    else if (type === 'matte') addMatteNode(at)
+    else addEmptyResultNode(at)
+  }
+
   const addEmptyResultNode = (at?: { x: number; y: number }) => {
     if (!project) return
     const spot = at
@@ -399,13 +499,13 @@ export default function Canvas({ projectId, onBack }: Props) {
     const fromNode = project.nodes.find((n) => n.id === fromId)
     const toNode = project.nodes.find((n) => n.id === toId)
     if (!canConnect(fromNode, toNode)) {
-      alert('这两类节点不能这样连。可用：选择图片 → 生成图/精修；生成图 → 精修/结果；精修 → 结果')
+      alert(`这两类节点不能这样连。${toNode ? `「${nodeLabel(toNode.type)}」的输入可以是：${UPSTREAM_HINT[toNode.type] || '无'}` : ''}`)
       return
     }
     setProject((p) => {
       if (!p) return p
-      // 精修/结果只保留一条入边：新连线替换旧入边，避免多源歧义
-      const kept = p.edges.filter((e) => !(e.to === toId && (toNode?.type === 'refine' || toNode?.type === 'result')))
+      // 精修 / 抠图 / 结果只保留一条入边：新连线替换旧入边，避免多源歧义
+      const kept = p.edges.filter((e) => !(e.to === toId && !!toNode && SINGLE_INPUT.has(toNode.type)))
       if (kept.some((e) => e.from === fromId && e.to === toId)) return { ...p, edges: kept }
       return { ...p, edges: [...kept, { from: fromId, to: toId }] }
     })
@@ -416,29 +516,33 @@ export default function Canvas({ projectId, onBack }: Props) {
     if (linkFrom) finishLinkId(linkFrom, toId)
   }
 
-  /** 解析精修节点的输入源：优先用工作流本次刚产出的图，其次读画布状态。 */
-  const resolveRefineSource = (node: RefineNodeType, override?: ResultImage[] | null) => {
-    if (override?.length) {
-      const im = override[0]
-      return { kind: 'images' as const, assetId: im.assetId, file: '',
-               url: im.url, w: im.width, h: im.height }
-    }
+  /** 解析任意节点的输入源：沿入边找到上游，取它当前最新的产出图。
+   *  精修与扣背景共用这一套（上游可能是输入图、生成图、结果卡、上一次的后处理产出）。 */
+  const resolveUpstreamSource = (node: CanvasNode) => {
     const inEdge = project?.edges.find((e) => e.to === node.id)
     const src = inEdge ? project?.nodes.find((n) => n.id === inEdge.from) : null
     if (src?.type === 'generate') {
       const im = src.lastImages?.[0]
-      if (im) return { kind: 'images' as const, assetId: im.assetId, file: '',
-                       url: im.url, w: im.width, h: im.height }
+      if (im) return imageSource(im)
     } else if (src?.type === 'result') {
       const im = src.images?.[0]
-      if (im) return { kind: 'images' as const, assetId: im.assetId, file: '',
-                       url: im.url, w: im.width, h: im.height }
+      if (im) return imageSource(im)
     } else if (src?.type === 'input') {
       const r0 = src.refs?.[0]
       if (r0) return { kind: 'refs' as const, assetId: r0.id, file: r0.file,
                        url: r0.url, w: r0.width, h: r0.height }
+    } else if (src?.type === 'refine' || src?.type === 'matte') {
+      const im = src.result
+      if (im) return imageSource(im)
     }
-    throw new Error('精修节点没有可用输入：请把「选择图片」或「生成图」的输出连到它的左侧端口。')
+    throw new Error(`「${nodeLabel(node.type)}」没有可用输入：请把上游节点的输出连到它的左侧端口，`
+      + '并确认上游已经跑出结果。')
+  }
+
+  /** 解析精修节点的输入源：优先用工作流本次刚产出的图，其次读画布状态。 */
+  const resolveRefineSource = (node: RefineNodeType, override?: ResultImage[] | null) => {
+    if (override?.length) return imageSource(override[0])
+    return resolveUpstreamSource(node)
   }
 
   const executeRefine = async (
@@ -490,6 +594,120 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
   }
 
+  // ---------- 扣除背景 ----------
+  /** 执行一次抠图。override 给定时用它当源图（工作流里传上游刚产出的图）。 */
+  const executeMatte = async (
+    node: MatteNodeType, override?: ResultImage | null,
+  ): Promise<ResultImage> => {
+    if (!project) throw new Error('项目未加载')
+    const src = override ? imageSource(override) : resolveUpstreamSource(node)
+    const r = await api.matte({
+      projectId: project.id, origAssetId: src.assetId,
+      sourceKind: src.kind, sourceFile: src.file || undefined,
+      matte: node.matte,
+    })
+    const im: any = r.image
+    return {
+      assetId: im.assetId, url: im.url, width: im.width, height: im.height,
+      origAssetId: src.assetId, origUrl: src.url, origSize: [src.w, src.h],
+      // 上游是精修产物时把精修指标带下去，结果卡才不会退化成「未精修」
+      refine: override?.refine,
+      matte: im.matte,
+    }
+  }
+
+  /** 把图片推给某节点的下游结果卡（结果卡复用现有渲染，不另建一套）。
+   *  提示词保持原样：抠图只是换了一张图，上游是生成图时提示词仍然有意义。 */
+  const pushDownstreamResult = (
+    nodeId: string, images: ResultImage[], metaPatch: Partial<ResultMeta>,
+  ) => {
+    setProject((p) => {
+      if (!p) return p
+      const nodes = [...p.nodes]
+      for (const e of p.edges.filter((x) => x.from === nodeId)) {
+        const i = nodes.findIndex((n) => n.id === e.to && n.type === 'result')
+        if (i < 0) continue
+        const t = nodes[i] as ResultNodeType
+        nodes[i] = { ...t, images, meta: { ...(t.meta || {}), ...metaPatch } }
+      }
+      return { ...p, nodes }
+    })
+  }
+
+  const applyMatteResult = (node: MatteNodeType, images: ResultImage[]) => {
+    if (!images.length) return
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => n.id === node.id
+        ? ({ ...n, result: images[0] } as CanvasNode) : n),
+    } : p)
+    pushDownstreamResult(node.id, images, {
+      pixelEnabled: !!images[0].refine,
+      matteMethod: images[0].matte?.method,
+    })
+  }
+
+  const runMatte = async (node: MatteNodeType) => {
+    setMatting((s) => ({ ...s, [node.id]: true }))
+    try {
+      const result = await executeMatte(node)
+      applyMatteResult(node, [result])
+    } catch (e: any) {
+      alert(`扣背景失败：${e.message || e}`)
+    } finally {
+      setMatting((s) => ({ ...s, [node.id]: false }))
+    }
+  }
+
+  /** 收集从 startId 出发、首尾相接的一串扣背景节点（含被关掉的：
+   *  关掉的那个要「透传」而不是把链路断在这里）。 */
+  const matteChain = (startId: string): MatteNodeType[] => {
+    const p = projectRef.current
+    if (!p) return []
+    const out: MatteNodeType[] = []
+    const seen = new Set<string>()
+    let fromId = startId
+    for (;;) {
+      const next = p.nodes.find((n): n is MatteNodeType =>
+        n.type === 'matte' && !seen.has(n.id)
+        && p.edges.some((e) => e.from === fromId && e.to === n.id))
+      if (!next) break
+      seen.add(next.id)
+      out.push(next)
+      fromId = next.id
+    }
+    return out
+  }
+
+  /** 单张生成卡直接点「生成」时，自动把下游的扣背景节点跑掉。
+   *  模板里放了默认开启的抠图节点，用户点一次生成就该直接拿到透明底图，
+   *  而不是必须再点「运行工作流」。关掉的节点按透传处理。 */
+  const autoMatte = async (gen: GenNodeType, images: ResultImage[]) => {
+    const chain = matteChain(gen.id)
+    if (!chain.length) return { images, fromId: gen.id }
+    let cur = images
+    let fromId = gen.id
+    for (const node of chain) {
+      if (!node.matte?.enabled) {
+        // 透传：图片原样交给下游，但下游结果卡仍要拿到图
+        pushDownstreamResult(node.id, cur, {})
+        fromId = node.id
+        continue
+      }
+      setMatting((s) => ({ ...s, [node.id]: true }))
+      try {
+        const out: ResultImage[] = []
+        for (const im of cur) out.push(await executeMatte(node, im))
+        applyMatteResult(node, out)
+        cur = out
+        fromId = node.id
+      } finally {
+        setMatting((s) => ({ ...s, [node.id]: false }))
+      }
+    }
+    return { images: cur, fromId }
+  }
+
   const deleteNode = (id: string) => {
     const node = project?.nodes.find((n) => n.id === id)
     if (!node) return
@@ -519,7 +737,7 @@ export default function Canvas({ projectId, onBack }: Props) {
   // 右键菜单：点任意处 / Esc 关闭
   useEffect(() => {
     if (!ctxMenu) return
-    const close = () => setCtxMenu(null)
+    const close = () => { setCtxMenu(null); setCtxOpen(null) }
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
     window.addEventListener('mousedown', close)
     window.addEventListener('keydown', onKey)
@@ -570,6 +788,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         setLinkFrom(null)
         setSelectedEdge(null)
         setCtxMenu(null)
+        setCtxOpen(null)
         return
       }
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
@@ -639,7 +858,15 @@ export default function Canvas({ projectId, onBack }: Props) {
   const generate = async (node: GenNodeType) => {
     try {
       const result = await executeGenerate(node)
-      addResultNode(node, result.images, result.prompt, result.negative, result.meta)
+      // 模板默认带一个开启的扣背景节点：点一次生成就直接出透明底图
+      const chain = matteChain(node.id)
+      const run = chain.length ? await autoMatte(node, result.images) : null
+      addResultNode(node, run?.images ?? result.images, result.prompt, result.negative,
+                    result.meta, {
+                      fromId: run?.fromId ?? node.id,
+                      lastImages: result.images,
+                      deferCreate: chain.length > 0,
+                    })
     } catch (e: any) {
       setTasks((t) => ({
         ...t,
@@ -654,24 +881,28 @@ export default function Canvas({ projectId, onBack }: Props) {
     if (tid) api.cancelTask(tid).catch(() => undefined)
   }
 
-  /** 一键运行：按连线拓扑顺序跑完所有生成/精修节点，结果自动落到结果卡。 */
+  /** 一键运行：按连线拓扑顺序跑完所有生成/精修/扣背景节点，结果自动落到结果卡。 */
   const runWorkflow = async () => {
     if (!project || wf.running) return
+    type RunnerNode = GenNodeType | RefineNodeType | MatteNodeType
+    // 关掉的扣背景节点也算一步：它只是透传，不参与执行，但要负责把图交给下游结果卡
+    const isRunner = (n: CanvasNode): n is RunnerNode =>
+      n.type === 'generate' || n.type === 'refine' || n.type === 'matte'
     const byId = new Map(project.nodes.map((n) => [n.id, n]))
-    const executable = project.nodes.filter((n) => n.type === 'generate' || n.type === 'refine')
+    const executable = project.nodes.filter(isRunner)
     if (!executable.length) {
-      alert('画布上没有可执行的节点：先添加「生成图」或「像素精修」并连好线。')
+      alert('画布上没有可执行的节点：先添加「生成图」「像素精修」或「扣除背景」并连好线。')
       return
     }
     // 拓扑序：先跑上游，再跑下游（有环也不会死循环，seen 兜底）
-    const order: CanvasNode[] = []
+    const order: RunnerNode[] = []
     const seen = new Set<string>()
     const visit = (id: string) => {
       if (seen.has(id)) return
       seen.add(id)
       for (const e of project.edges.filter((x) => x.to === id)) visit(e.from)
       const n = byId.get(id)
-      if (n && (n.type === 'generate' || n.type === 'refine')) order.push(n)
+      if (n && isRunner(n)) order.push(n)
     }
     executable.forEach((n) => visit(n.id))
 
@@ -682,18 +913,27 @@ export default function Canvas({ projectId, onBack }: Props) {
       for (let i = 0; i < order.length; i++) {
         if (abortRef.current) throw new Error('已停止')
         const n = order[i]
+        const kind = n.type === 'generate' ? '生成' : n.type === 'refine' ? '精修'
+          : n.matte?.enabled ? '扣背景' : '跳过扣背景'
         setWf({
           running: true, done: i, total: order.length, error: null,
-          label: `${n.type === 'generate' ? '生成' : '精修'} ${i + 1}/${order.length}`,
+          label: `${kind} ${i + 1}/${order.length}`,
         })
+        const inEdge = project.edges.find((e) => e.to === n.id)
+        const upstream = inEdge ? runtime.get(inEdge.from) : undefined
         if (n.type === 'generate') {
           if (!n.prompt.trim()) throw new Error(`第 ${i + 1} 步：生成节点的提示词为空`)
           const r = await executeGenerate(n)
-          addResultNode(n, r.images, r.prompt, r.negative, r.meta)
+          const chain = matteChain(n.id)
+          addResultNode(n, r.images, r.prompt, r.negative, r.meta, {
+            lastImages: r.images,
+            // 结果卡挂在这条链的末端（跑了抠图就挂到抠图卡上），
+            // 否则会多建一张空卡；提示词先落到卡上，抠图之后只覆盖图片
+            fromId: chain.length ? chain[chain.length - 1].id : n.id,
+            deferCreate: chain.length > 0,
+          })
           runtime.set(n.id, r.images)
         } else if (n.type === 'refine') {
-          const inEdge = project.edges.find((e) => e.to === n.id)
-          const upstream = inEdge ? runtime.get(inEdge.from) : undefined
           setRefining((s) => ({ ...s, [n.id]: true }))
           try {
             const result = await executeRefine(n, upstream)
@@ -701,6 +941,24 @@ export default function Canvas({ projectId, onBack }: Props) {
             runtime.set(n.id, [result])
           } finally {
             setRefining((s) => ({ ...s, [n.id]: false }))
+          }
+        } else {
+          // 关掉的节点：图片原样透传给下游，不要在链路上留个空洞
+          if (!n.matte?.enabled) {
+            const up = upstream || []
+            runtime.set(n.id, up)
+            if (up.length) pushDownstreamResult(n.id, up, {})
+            continue
+          }
+          setMatting((s) => ({ ...s, [n.id]: true }))
+          try {
+            const out: ResultImage[] = []
+            for (const im of upstream || []) out.push(await executeMatte(n, im))
+            if (!out.length) throw new Error('上游没有产出图，无法扣背景')
+            applyMatteResult(n, out)
+            runtime.set(n.id, out)
+          } finally {
+            setMatting((s) => ({ ...s, [n.id]: false }))
           }
         }
       }
@@ -717,15 +975,24 @@ export default function Canvas({ projectId, onBack }: Props) {
     prompt: string,
     negative: string,
     meta: ResultMeta,
+    opts?: {
+      /** 结果卡挂在哪个节点下游（默认是生成卡；跑了抠图就是抠图卡） */
+      fromId?: string
+      /** 生成卡记住的原始产出（下游精修取的是未抠图的版本） */
+      lastImages?: ResultImage[]
+      /** 下游还有后处理节点时不要在这里新建结果卡，交给它填 */
+      deferCreate?: boolean
+    },
   ) => {
+    const fromId = opts?.fromId || gen.id
     setProject((p) => {
       if (!p) return p
-      // 记住生成卡的最新输出，供下游「像素精修」节点取图
+      // 记住生成卡的最新输出，供下游「像素精修 / 扣除背景」节点取图
       const withLast = p.nodes.map((n) =>
-        n.id === gen.id ? ({ ...n, lastImages: images } as CanvasNode) : n)
+        n.id === gen.id ? ({ ...n, lastImages: opts?.lastImages || images } as CanvasNode) : n)
       // 已经手动连到结果卡：把结果填进去，而不是再新建一张
       const linked = p.nodes.find((n) =>
-        n.type === 'result' && p.edges.some((e) => e.from === gen.id && e.to === n.id))
+        n.type === 'result' && p.edges.some((e) => e.from === fromId && e.to === n.id))
       if (linked) {
         return {
           ...p,
@@ -733,6 +1000,8 @@ export default function Canvas({ projectId, onBack }: Props) {
             ? ({ ...n, images, prompt, negative, meta, genId: gen.id } as CanvasNode) : n),
         }
       }
+      // 下游还有开着的扣背景节点：结果卡由它填，这里只更新生成卡的 lastImages
+      if (opts?.deferCreate) return { ...p, nodes: withLast }
       const siblings = p.nodes.filter((n) => n.type === 'result' && (n as ResultNodeType).genId === gen.id)
       const node: ResultNodeType = {
         id: newId('res'),
@@ -749,7 +1018,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       return {
         ...p,
         nodes: [...withLast, node],
-        edges: [...p.edges, { from: gen.id, to: node.id }],
+        edges: [...p.edges, { from: fromId, to: node.id }],
       }
     })
   }
@@ -811,6 +1080,17 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is RefineNodeType => n.type === 'refine'),
     [project?.nodes],
   )
+  const matteNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is MatteNodeType => n.type === 'matte'),
+    [project?.nodes],
+  )
+
+  /** 某个节点的入边来自哪一类上游（节点卡上显示「输入：xxx」）。 */
+  const upstreamLabel = useCallback((id: string): string | null => {
+    const e = project?.edges.find((x) => x.to === id)
+    const s = e ? project?.nodes.find((x) => x.id === e.from) : null
+    return s ? nodeLabel(s.type) : null
+  }, [project?.edges, project?.nodes])
 
   const edges = useMemo(() => {
     if (!project) return []
@@ -972,20 +1252,33 @@ export default function Canvas({ projectId, onBack }: Props) {
               node={n}
               index={i}
               running={!!refining[n.id]}
-              sourceLabel={(() => {
-                const e = project.edges.find((x) => x.to === n.id)
-                const s = e ? project.nodes.find((x) => x.id === e.from) : null
-                if (!s) return null
-                return s.type === 'generate' ? '生成图'
-                  : s.type === 'input' ? '选择图片'
-                  : s.type === 'refine' ? '精修' : '结果'
-              })()}
+              sourceLabel={upstreamLabel(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
               onDelete={() => deleteNode(n.id)}
               onDragStart={startDragNode(n.id)}
               onRun={() => runRefine(n)}
               onStartLink={startLink}
               onFinishLink={finishLink}
+            />
+          ))}
+
+          {matteNodes.map((n, i) => (
+            <MatteNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={!!matting[n.id]}
+              sourceLabel={upstreamLabel(n.id)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runMatte(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({
+                src: url, title,
+                pixelSize: n.result ? [n.result.width, n.result.height] : undefined,
+              })}
             />
           ))}
 
@@ -1073,28 +1366,42 @@ export default function Canvas({ projectId, onBack }: Props) {
 
       {ctxMenu ? (
         <div
-          className="ctx-menu"
+          className={`ctx-menu ${ctxMenu.sx > window.innerWidth - 460 ? 'flip' : ''}`}
           style={{
-            left: Math.min(ctxMenu.sx, window.innerWidth - 196),
-            top: Math.min(ctxMenu.sy, window.innerHeight - 236),
+            left: Math.min(ctxMenu.sx, window.innerWidth - 200),
+            top: Math.min(ctxMenu.sy, window.innerHeight - 250),
           }}
           onMouseDown={(e) => e.stopPropagation()}
         >
           <div className="ctx-title">添加节点</div>
-          <button onClick={() => { addInputNode({ x: ctxMenu.wx, y: ctxMenu.wy }); setCtxMenu(null) }}>
-            <span className="ctx-dot d-input" /> 选择图片
-          </button>
-          <button onClick={() => { addGenNode({ x: ctxMenu.wx, y: ctxMenu.wy }); setCtxMenu(null) }}>
-            <span className="ctx-dot d-gen" /> 生成图
-          </button>
-          <button onClick={() => { addRefineNode({ x: ctxMenu.wx, y: ctxMenu.wy }); setCtxMenu(null) }}>
-            <span className="ctx-dot d-refine" /> 像素精修
-          </button>
-          <button onClick={() => { addEmptyResultNode({ x: ctxMenu.wx, y: ctxMenu.wy }); setCtxMenu(null) }}>
-            <span className="ctx-dot d-result" /> 图片结果
-          </button>
+          {NODE_CATALOG.map((cat) => (
+            <div key={cat.id} className={`ctx-group ${ctxOpen === cat.id ? 'open' : ''}`}>
+              <button className="ctx-cat"
+                onClick={() => setCtxOpen(ctxOpen === cat.id ? null : cat.id)}>
+                {cat.label}
+                <span className="ctx-caret">▸</span>
+              </button>
+              <div className="ctx-sub">
+                <div className="ctx-subhint">{cat.hint}</div>
+                {cat.items.map((it) => (
+                  <button key={it.type}
+                    onClick={() => {
+                      addNodeAt(it.type, { x: ctxMenu.wx, y: ctxMenu.wy })
+                      setCtxMenu(null)
+                      setCtxOpen(null)
+                    }}>
+                    <span className={`ctx-dot ${it.dot}`} />
+                    <span className="ctx-item">
+                      <b>{it.label}</b>
+                      <em>{it.hint}</em>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
           <div className="ctx-sep" />
-          <button onClick={() => setCtxMenu(null)}>取消</button>
+          <button onClick={() => { setCtxMenu(null); setCtxOpen(null) }}>取消</button>
         </div>
       ) : null}
 

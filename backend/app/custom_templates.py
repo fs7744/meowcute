@@ -17,7 +17,7 @@ from .config import DATA_DIR, ensure_dirs
 from .jsonlimits import dumps_bounded, parse_bounded
 
 _PATH = DATA_DIR / "custom_templates.json"
-_ALLOWED = ("generate", "result", "input", "refine")
+_ALLOWED = ("generate", "result", "input", "refine", "matte")
 _ICON_COLORS = ["#FFB020", "#40E0D0", "#FF6B9D", "#8B7BFF", "#5B9DFF"]
 
 
@@ -68,6 +68,11 @@ def _clean_node(n: Any) -> Optional[Dict[str, Any]]:
     elif n["type"] == "refine":
         item.update({
             "pixel": n.get("pixel") if isinstance(n.get("pixel"), dict) else {},
+            "result": None,
+        })
+    elif n["type"] == "matte":
+        item.update({
+            "matte": n.get("matte") if isinstance(n.get("matte"), dict) else {},
             "result": None,
         })
     else:
@@ -122,7 +127,8 @@ def _public(t: Dict[str, Any]) -> Dict[str, Any]:
     graph = t.get("graph") or {"nodes": [], "edges": []}
     nodes = graph.get("nodes") or []
     steps = []
-    labels = {"input": "选择图片", "generate": "生成图", "refine": "像素精修", "result": "图片结果"}
+    labels = {"input": "选择图片", "generate": "生成图", "refine": "像素精修",
+              "matte": "扣除背景", "result": "图片结果"}
     for i, n in enumerate(nodes):
         steps.append({"n": i + 1, "title": labels.get(n.get("type"), n.get("type")),
                       "detail": "画布节点，占位坐标见 graph"})

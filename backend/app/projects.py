@@ -6,7 +6,10 @@
       viewport: {x, y, z},
       nodes: [
         {id, type: "generate", x, y, prompt, styleId, refs[], params{}, pixel{}},
-        {id, type: "result", x, y, genId, images[], prompt, negative, meta{}}
+        {id, type: "input",    x, y, label, refs[]},
+        {id, type: "refine",   x, y, pixel{}, result},
+        {id, type: "matte",    x, y, matte{}, result},
+        {id, type: "result",   x, y, genId, images[], prompt, negative, meta{}}
       ],
       edges: [{from, to}]
     }
@@ -40,7 +43,20 @@ def _lock(pid: str) -> threading.Lock:
         return _LOCKS[pid]
 
 
-ALLOWED_TYPES = ("generate", "result", "input", "refine")
+ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte")
+
+# 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
+# 默认关掉等于把开关藏起来。
+DEFAULT_MATTE = {
+    "enabled": True,
+    "method": "auto",
+    "tolerance": 80,
+    "hard": True,
+    "feather": 0,
+    "despill": True,
+    "trim": False,
+}
+
 
 
 def _now() -> float:
@@ -109,6 +125,10 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                 n["result"] = None
                 n["pixel"] = {**base_gen["pixel"],
                               **(n.get("pixel") if isinstance(n.get("pixel"), dict) else {})}
+            elif n["type"] == "matte":
+                n["result"] = None
+                n["matte"] = {**DEFAULT_MATTE,
+                              **(n.get("matte") if isinstance(n.get("matte"), dict) else {})}
             else:
                 n.update({"images": [], "prompt": "", "negative": "", "meta": {}, "genId": None})
             n["createdAt"] = _now()
@@ -214,6 +234,12 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "result": n.get("result") if isinstance(n.get("result"), dict) else None,
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
+        elif n["type"] == "matte":
+            item.update({
+                "matte": _clean_matte(n.get("matte")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
         else:
             item.update({
                 "genId": str(n.get("genId") or "") or None,
@@ -272,6 +298,30 @@ def _clean_params(p: Any) -> Dict[str, Any]:
         "steps": (_i(p.get("steps"), 0, 4, 50) or None) if p.get("steps") else None,
         "seed": (_i(p.get("seed"), 0, 0, 2**31 - 1)) if p.get("seed") not in (None, "") else None,
         "background": str(p.get("background") or "gray")[:16],
+    }
+
+
+def _clean_matte(m: Any) -> Dict[str, Any]:
+    """扣背景参数：白名单 + 范围夹紧，方法名只认已知的四个。"""
+    m = m if isinstance(m, dict) else {}
+
+    def _i(v, d, lo, hi):
+        try:
+            return max(lo, min(int(v), hi))
+        except Exception:
+            return d
+
+    method = str(m.get("method") or "auto")[:16]
+    if method not in ("auto", "u2net", "grabcut", "key"):
+        method = "auto"
+    return {
+        "enabled": bool(m.get("enabled", True)),
+        "method": method,
+        "tolerance": _i(m.get("tolerance"), 80, 10, 200),
+        "hard": bool(m.get("hard", True)),
+        "feather": _i(m.get("feather"), 0, 0, 24),
+        "despill": bool(m.get("despill", True)),
+        "trim": bool(m.get("trim")),
     }
 
 

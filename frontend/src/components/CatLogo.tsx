@@ -77,6 +77,17 @@ export function PixelIcon({ kind, color = '#00FF88' }: { kind: string; color?: s
       '.X....X.',
       '..XXXX..',
     ],
+    // 抠图 / 透明底：中间的实心主体 + 四周棋盘格透明区
+    cutout: [
+      'XX..XX..',
+      'XX..XX..',
+      '..XXXX..',
+      '..XXXX..',
+      '..XXXX..',
+      '..XXXX..',
+      '..XX..XX',
+      '..XX..XX',
+    ],
   }
   const grid = maps[kind] || maps.sprite
   const size = grid.length
