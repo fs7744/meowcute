@@ -66,6 +66,8 @@ export default function Canvas({ projectId, onBack }: Props) {
   const [ctxMenu, setCtxMenu] = useState<{
     sx: number; sy: number; wx: number; wy: number
   } | null>(null)
+  // 选中的连线（点击线选中，Delete 删除，双击直接删）
+  const [selectedEdge, setSelectedEdge] = useState<{ from: string; to: string } | null>(null)
   // 拖拽连线：按住输出端口拖动时，实时画一条临时曲线到光标
   const [linking, setLinking] = useState<{ from: string; x: number; y: number } | null>(null)
   const linkDragRef = useRef<{
@@ -214,6 +216,7 @@ export default function Canvas({ projectId, onBack }: Props) {
     setPanning(true)
     setSelected(null)
     setLinkFrom(null)
+    setSelectedEdge(null)
   }
 
   useEffect(() => {
@@ -558,18 +561,34 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
   }, [toWorld, project])
 
-  // Delete 键删除选中节点（输入框内不拦截）
+  // Delete 删除选中节点/连线；Esc 取消连线与选中
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        linkDragRef.current = null
+        setLinking(null)
+        setLinkFrom(null)
+        setSelectedEdge(null)
+        setCtxMenu(null)
+        return
+      }
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
       const tag = (document.activeElement?.tagName || '').toLowerCase()
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+      if (selectedEdge) {
+        setProject((p) => p ? {
+          ...p,
+          edges: p.edges.filter((x) => !(x.from === selectedEdge.from && x.to === selectedEdge.to)),
+        } : p)
+        setSelectedEdge(null)
+        return
+      }
       if (!selected) return
       deleteNode(selected)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selected, project])
+  }, [selected, selectedEdge, project])
 
   // ---------- 生成 ----------
   /** 执行一次生成，返回完整结果（供手动按钮和一键工作流共用）。 */
@@ -805,14 +824,37 @@ export default function Canvas({ projectId, onBack }: Props) {
       const x2 = b.x
       const y2 = b.y + 44
       const dx = Math.max(48, Math.abs(x2 - x1) * 0.42)
+      const d = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`
+      const sel = selectedEdge?.from === e.from && selectedEdge?.to === e.to
       return (
-        <path key={`${e.from}-${e.to}-${i}`}
-          d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
-          fill="none" stroke="rgba(0,255,136,0.55)" strokeWidth={2}
-          strokeDasharray="0" markerEnd="url(#edge-arrow)" />
+        <g key={`${e.from}-${e.to}-${i}`}>
+          <path d={d} fill="none"
+            stroke={sel ? 'var(--pink)' : 'rgba(0,255,136,0.55)'}
+            strokeWidth={sel ? 3 : 2}
+            strokeDasharray="0"
+            markerEnd={sel ? 'url(#edge-arrow-sel)' : 'url(#edge-arrow)'} />
+          {/* 透明加粗命中区：点线选中、双击删除 */}
+          <path d={d} fill="none" stroke="transparent" strokeWidth={16}
+            style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+            onMouseDown={(ev) => ev.stopPropagation()}
+            onClick={(ev) => {
+              ev.stopPropagation()
+              setSelectedEdge({ from: e.from, to: e.to })
+              setSelected(null)
+              setLinkFrom(null)
+            }}
+            onDoubleClick={(ev) => {
+              ev.stopPropagation()
+              setProject((p) => p ? {
+                ...p,
+                edges: p.edges.filter((x) => !(x.from === e.from && x.to === e.to)),
+              } : p)
+              setSelectedEdge(null)
+            }} />
+        </g>
       )
     })
-  }, [project])
+  }, [project, selectedEdge])
 
   // 拖拽连线的临时曲线：从源节点输出端口实时跟到光标
   const tempLink = useMemo(() => {
@@ -876,6 +918,10 @@ export default function Canvas({ projectId, onBack }: Props) {
               <marker id="link-arrow" viewBox="0 0 10 10" refX="9" refY="5"
                 markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="#00ff88" />
+              </marker>
+              <marker id="edge-arrow-sel" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#ff3366" />
               </marker>
             </defs>
             {edges}
@@ -1011,7 +1057,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       </div>
 
       <div className="canvas-hint">
-        <b>右键</b> 添加节点 · <b>滚轮</b> 缩放 · <b>拖拽空白</b> 平移 · <b>拖节点标题</b> 移动 · <b>Delete</b> 删除选中
+        <b>右键</b> 添加节点 · <b>拖端口</b> 连线 · <b>点线选中 / 双击删线</b> · <b>Esc</b> 取消
       </div>
 
       {linkFrom ? (
