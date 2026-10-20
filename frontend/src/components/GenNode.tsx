@@ -182,7 +182,8 @@ export default function GenNode({
             ))}
           </div>
           <div className="hint" style={{ marginTop: 4 }}>
-            1024×1024 是模型原生分辨率（细节最好）；512 更快但像素块更粗。
+            512 最快（默认）；768 平衡；1024 细节最好但像素量是 512 的 4 倍，
+            显存不足时会明显变慢。
           </div>
           <div className="param-grid">
             <label className="gen-field">

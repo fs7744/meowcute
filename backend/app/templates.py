@@ -55,8 +55,8 @@ TEMPLATES: List[Dict[str, Any]] = [
         ],
         "defaults": {
             "styleId": "pixel_16bit",
-            "width": 1024,
-            "height": 1024,
+            "width": 512,
+            "height": 512,
             "n": 1,
             "background": "gray",
             "pixel": {"enabled": True, "gridSnap": True, "colors": 16,
