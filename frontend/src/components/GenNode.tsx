@@ -344,6 +344,14 @@ export default function GenNode({
                   </select>
                 </label>
               </div>
+              <div className="switch-row">
+                <span className="t" style={{ fontSize: 12 }}>背景透明（抠掉纯色底）</span>
+                <button className={`switch ${node.pixel.transparentBg ? 'on' : ''}`}
+                  onClick={() => patchPixel({ transparentBg: !node.pixel.transparentBg })}
+                  aria-label="切换背景透明">
+                  <i />
+                </button>
+              </div>
               <details className="pixel-advanced" open={advOpen}
                 onToggle={(e) => setAdvOpen((e.target as HTMLDetailsElement).open)}>
                 <summary>高级：网格 / 输出尺寸 / 采样</summary>

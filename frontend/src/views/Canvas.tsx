@@ -137,7 +137,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       },
       pixel: {
         enabled: true, gridSnap: true, colors: 16, palette: 'auto',
-        gridSize: null, targetSize: null, ...(d.pixel || {}),
+        gridSize: null, targetSize: null, transparentBg: false, ...(d.pixel || {}),
       },
       createdAt: Date.now() / 1000,
     }
@@ -306,7 +306,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       },
       pixel: {
         enabled: true, gridSnap: true, colors: 16, palette: 'auto',
-        gridSize: null, targetSize: null, ...((d as any).pixel || {}),
+        gridSize: null, targetSize: null, transparentBg: false, ...((d as any).pixel || {}),
       },
       createdAt: Date.now() / 1000,
     }
@@ -340,7 +340,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       id: newId('rf'), type: 'refine', x: spot.x, y: spot.y,
       pixel: {
         enabled: true, gridSnap: true, colors: 16, palette: 'auto',
-        gridSize: null, targetSize: null,
+        gridSize: null, targetSize: null, transparentBg: false,
       },
       result: null, createdAt: Date.now() / 1000,
     }

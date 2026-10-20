@@ -13,6 +13,71 @@ from typing import Any, Dict, List, Optional
 
 TEMPLATES: List[Dict[str, Any]] = [
     {
+        "id": "pixel_refine_pipeline",
+        "name": "像素精修 · 图片转像素（默认）",
+        "tagline": "导入图片 → 网格对齐 + 调色板 → 结果卡",
+        "status": "available",
+        "accent": "#40E0D0",
+        "icon": "sprite",
+        "description": (
+            "手上已经有图（插画 / AI 出图 / 截图）时最直接的链路："
+            "「选择图片」→「像素精修」→「图片结果」。精修会自动检测网格、"
+            "每格取中位色、共享调色板量化，输出原生像素尺寸。"
+        ),
+        "highlights": [
+            "三步链路：选图 → 精修 → 结果，开箱即用",
+            "网格自动检测，也可手动指定网格 / 输出尺寸",
+            "背景可一键透明，直接得到可用素材",
+        ],
+        "inputs": [
+            {"key": "image", "label": "图片", "required": True,
+             "hint": "上传 1-4 张待像素化的图片"},
+            {"key": "pixel", "label": "精修参数", "required": False,
+             "hint": "色数 / 固定色板 / 网格 / 输出尺寸 / 背景透明"},
+        ],
+        "steps": [
+            {"n": 1, "title": "选择图片", "detail": "上传要像素化的图片"},
+            {"n": 2, "title": "像素精修", "detail": "网格对齐 + 调色板量化 + 去噪点"},
+            {"n": 3, "title": "图片结果", "detail": "输出原生像素 PNG，可直接用于引擎"},
+        ],
+        "outputs": [
+            {"label": "原生像素 PNG", "detail": "如 64×64，可无损用于引擎"},
+            {"label": "精修指标", "detail": "网格尺寸、色数、色板外颜色数"},
+        ],
+        "defaults": {
+            "styleId": "pixel_16bit",
+            "width": 512,
+            "height": 512,
+            "n": 1,
+            "background": "gray",
+            "maxSeqLen": None,
+            "pixel": {"enabled": True, "gridSnap": True, "colors": 16,
+                      "palette": "auto", "gridSize": None, "targetSize": None,
+                      "transparentBg": False},
+        },
+        "graph": {
+            "nodes": [
+                {"id": "in1", "type": "input", "x": 80, "y": 140, "refs": [],
+                 "label": "待像素化图片"},
+                {"id": "rf1", "type": "refine", "x": 520, "y": 120,
+                 "pixel": {"enabled": True, "gridSnap": True, "colors": 16,
+                           "palette": "auto", "gridSize": None, "targetSize": None,
+                           "transparentBg": False},
+                 "result": None},
+                {"id": "rs1", "type": "result", "x": 980, "y": 120, "images": [],
+                 "prompt": "", "negative": "", "meta": {}},
+            ],
+            "edges": [
+                {"from": "in1", "to": "rf1"},
+                {"from": "rf1", "to": "rs1"},
+            ],
+        },
+        "notes": [
+            "这是默认模板：新建项目直接得到「图片 → 精修 → 结果」链路。",
+            "精修只做确定性后处理，不跑模型，所以速度很快。",
+        ],
+    },
+    {
         "id": "pixel_sprite_txt2img",
         "name": "像素精灵 · 文字生图",
         "tagline": "一句话 → 一张可达标的像素游戏素材",

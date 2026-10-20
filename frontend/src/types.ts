@@ -54,6 +54,8 @@ export type PixelOptions = {
   palette: string
   gridSize: [number, number] | null
   targetSize: [number, number] | null
+  /** 精修后把纯色背景置为透明 */
+  transparentBg?: boolean
 }
 
 export type GenParams = {

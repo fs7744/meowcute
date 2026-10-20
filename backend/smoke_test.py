@@ -85,7 +85,7 @@ def main() -> int:
     ts = r.json().get("templates", [])
     check("模板列表非空", len(ts) >= 1)
     check("第一个模板可用", ts[0]["status"] == "available")
-    check("模板有步骤", len(ts[0].get("steps", [])) == 4)
+    check("模板有步骤", len(ts[0].get("steps", [])) >= 3)
     r = client.get("/api/styles")
     st = r.json().get("styles", [])
     check("画风 15 个", len(st) == 15, str(len(st)))

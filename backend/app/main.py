@@ -257,7 +257,7 @@ async def list_projects() -> Dict[str, Any]:
 @app.post("/api/projects")
 async def create_project(payload: CreateProjectPayload) -> Dict[str, Any]:
     t = get_template(payload.templateId)
-    graph = None
+    graph = t.get("graph") if t else None
     if not t:
         ct = ctpl.get_template(payload.templateId)
         if not ct:
@@ -374,6 +374,8 @@ class PixelOptions(BaseModel):
     palette: str = "auto"
     gridSize: Optional[List[int]] = None
     targetSize: Optional[List[int]] = None
+    # 精修后把纯色背景置为透明（四角估计背景色）
+    transparentBg: bool = False
 
 
 class PreviewPayload(BaseModel):
@@ -561,6 +563,7 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
                 sample_method="median",
                 colors=int(pixel.colors),
                 palette_name=pixel.palette or "auto",
+                transparent_bg=bool(pixel.transparentBg),
             )
             refined_images = [it["image"] for it in rb["items"]]
             refined_meta = [it["meta"] for it in rb["items"]]
@@ -719,7 +722,8 @@ async def refine_existing(payload: RefinePayload) -> Dict[str, Any]:
         refine_mod.refine_batch, [img],
         grid_snap=bool(p.gridSnap), grid_size=p.gridSize,
         target_size=p.targetSize, sample_method="median",
-        colors=int(p.colors), palette_name=p.palette or "auto")
+        colors=int(p.colors), palette_name=p.palette or "auto",
+        transparent_bg=bool(p.transparentBg))
     out = rb["items"][0]
     info = storage.save_image(payload.projectId, out["image"].convert("RGBA"),
                               kind="images", prefix="px")

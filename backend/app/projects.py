@@ -291,6 +291,7 @@ def _clean_pixel(p: Any) -> Dict[str, Any]:
         "palette": str(p.get("palette") or "auto")[:24],
         "gridSize": _size(p.get("gridSize")),
         "targetSize": _size(p.get("targetSize")),
+        "transparentBg": bool(p.get("transparentBg")),
     }
 
 

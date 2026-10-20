@@ -61,6 +61,41 @@ def _box_downsample(rgb: np.ndarray, alpha: Optional[np.ndarray],
     return arr, a_small
 
 
+def _clean_specks(rgb: np.ndarray, max_diff: int = 40) -> np.ndarray:
+    """像素画收尾清理：去掉孤立噪点、填 1 像素孔洞。
+
+    只在「8 邻域没有任何同色像素」且「与邻域多数色的差异不超过 max_diff」
+    时替换。后一个条件很关键：单像素眼睛/高光与周围差异大，必须保留；
+    量化残留的近似色噪点差异小，才清掉。1 像素描边通常有 2 个以上同色
+    邻居，不会被误删。
+    """
+    h, w = rgb.shape[:2]
+    if h < 3 or w < 3:
+        return rgb
+    padded = np.pad(rgb, ((1, 1), (1, 1), (0, 0)), mode="edge")
+    nbrs = []
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dy == 0 and dx == 0:
+                continue
+            nbrs.append(padded[1 + dy:1 + dy + h, 1 + dx:1 + dx + w])
+    stack = np.stack(nbrs, axis=0)                  # (8, h, w, 3)
+    same = (stack == rgb[None]).all(axis=-1)        # (8, h, w)
+    isolated = same.sum(axis=0) == 0
+
+    best_color = rgb.copy()
+    best_count = np.zeros((h, w), dtype=np.int32)
+    for i in range(8):
+        cnt = (stack == stack[i][None]).all(axis=-1).sum(axis=0)
+        better = cnt > best_count
+        best_count = np.where(better, cnt, best_count)
+        best_color = np.where(better[..., None], stack[i], best_color)
+
+    diff = np.abs(rgb.astype(np.int32) - best_color.astype(np.int32)).max(axis=-1)
+    fill = isolated & (best_count >= 6) & (diff <= max_diff)
+    return np.where(fill[..., None], best_color, rgb)
+
+
 def refine_one(
     img: Image.Image,
     *,
@@ -70,6 +105,7 @@ def refine_one(
     sample_method: str = "median",
     palette: Optional[Sequence[Sequence[int]]] = None,
     palette_name: str = "auto",
+    transparent_bg: bool = False,
 ) -> Dict[str, Any]:
     """单张精修。palette 为空时不做调色板量化（只做网格对齐）。
 
@@ -137,6 +173,20 @@ def refine_one(
         rgb_img = palette_pipe.apply_palette(Image.fromarray(rgb, "RGB"), pal_list)
         rgb = np.asarray(rgb_img)
 
+    # 收尾清理：量化后容易出现「孤立噪点」和「1 像素孔洞」，清一遍再输出
+    rgb = _clean_specks(rgb)
+
+    # 背景透明：按四角估计纯色背景，把接近背景的像素置为透明。
+    # 阈值 14 很保守，只清「几乎就是背景色」的像素，避免啃掉主体阴影。
+    if transparent_bg:
+        bg = palette_pipe._estimate_bg_color(Image.fromarray(rgb, "RGB"))
+        if bg is not None:
+            diff = np.abs(rgb.astype(np.int32) - bg.astype(np.int32)).max(axis=2)
+            mask = diff <= 14
+            if alpha is None:
+                alpha = np.full(rgb.shape[:2], 255, dtype=np.uint8)
+            alpha = np.where(mask, 0, alpha).astype(np.uint8)
+
     out = _from_array(rgb, alpha)
     if out.mode == "RGBA":
         out = palette_pipe.binarize_alpha(out)
@@ -164,6 +214,7 @@ def refine_batch(
     sample_method: str = "median",
     colors: int = 16,
     palette_name: str = "auto",
+    transparent_bg: bool = False,
 ) -> Dict[str, Any]:
     """一批图统一精修：共享色板 + 逐张网格对齐。
 
@@ -174,7 +225,8 @@ def refine_batch(
     interim = [
         refine_one(im, grid_snap=grid_snap, grid_size=grid_size,
                    target_size=target_size, sample_method=sample_method,
-                   palette=None, palette_name=palette_name)
+                   palette=None, palette_name=palette_name,
+                   transparent_bg=transparent_bg)
         for im in images
     ]
     if palette_name in ("auto", "") and colors:
@@ -190,6 +242,8 @@ def refine_batch(
         if pal:
             # apply_palette 只处理 RGB，alpha 需要从原图拼回后重新二值化
             rgb_img = palette_pipe.apply_palette(src.convert("RGB"), pal)
+            # 量化映射后可能又冒出新孤立色，再清一次
+            rgb_img = Image.fromarray(_clean_specks(np.asarray(rgb_img)), "RGB")
             if src.mode == "RGBA":
                 im = rgb_img.convert("RGBA")
                 im.putalpha(src.getchannel("A"))

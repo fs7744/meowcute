@@ -91,6 +91,15 @@ export default function RefineNode({
           </label>
         </div>
 
+        <div className="switch-row">
+          <span className="t" style={{ fontSize: 12 }}>背景透明（抠掉纯色底）</span>
+          <button className={`switch ${px.transparentBg ? 'on' : ''}`}
+            onClick={() => patchPixel({ transparentBg: !px.transparentBg })}
+            aria-label="切换背景透明">
+            <i />
+          </button>
+        </div>
+
         <button className="btn btn-sm" onClick={onRun} disabled={running}
           style={{ marginTop: 8, width: '100%' }}>
           {running ? <><span className="spin" /> 精修中…</> : '运行精修'}
