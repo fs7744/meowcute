@@ -99,7 +99,9 @@ export default function ResultNode({
         {m.vramWarning ? <div className="warn">{m.vramWarning}</div> : null}
 
         <div className="result-foot">
-          <button className="btn btn-sm" onClick={copy}>{copied ? '已复制' : '复制提示词'}</button>
+          {node.prompt ? (
+            <button className="btn btn-sm" onClick={copy}>{copied ? '已复制' : '复制提示词'}</button>
+          ) : null}
           <div className="grow" />
           <span className="hint">点击图片放大查看</span>
         </div>

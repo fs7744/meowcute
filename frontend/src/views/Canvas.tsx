@@ -66,6 +66,11 @@ export default function Canvas({ projectId, onBack }: Props) {
   const [ctxMenu, setCtxMenu] = useState<{
     sx: number; sy: number; wx: number; wy: number
   } | null>(null)
+  // 拖拽连线：按住输出端口拖动时，实时画一条临时曲线到光标
+  const [linking, setLinking] = useState<{ from: string; x: number; y: number } | null>(null)
+  const linkDragRef = useRef<{
+    from: string; startX: number; startY: number; moved: boolean
+  } | null>(null)
   // 一键运行工作流：状态 + 中断标记 + 当前生成任务（停止时取消它）
   const [wf, setWf] = useState<{
     running: boolean; label: string; done: number; total: number; error: string | null
@@ -372,14 +377,23 @@ export default function Canvas({ projectId, onBack }: Props) {
     setSelected(node.id)
   }
 
-  const startLink = (id: string) => {
-    setLinkFrom(id)
+  const startLink = (id: string, client?: { clientX: number; clientY: number }) => {
     setSelected(id)
+    if (!client) {
+      setLinkFrom(id)
+      return
+    }
+    const w = toWorld(client.clientX, client.clientY)
+    linkDragRef.current = {
+      from: id, startX: client.clientX, startY: client.clientY, moved: false,
+    }
+    setLinking({ from: id, x: w.x, y: w.y })
+    setLinkFrom(null)
   }
 
-  const finishLink = (toId: string) => {
-    if (!project || !linkFrom) return
-    const fromNode = project.nodes.find((n) => n.id === linkFrom)
+  const finishLinkId = (fromId: string, toId: string) => {
+    if (!project) return
+    const fromNode = project.nodes.find((n) => n.id === fromId)
     const toNode = project.nodes.find((n) => n.id === toId)
     if (!canConnect(fromNode, toNode)) {
       alert('这两类节点不能这样连。可用：选择图片 → 生成图/精修；生成图 → 精修/结果；精修 → 结果')
@@ -389,10 +403,14 @@ export default function Canvas({ projectId, onBack }: Props) {
       if (!p) return p
       // 精修/结果只保留一条入边：新连线替换旧入边，避免多源歧义
       const kept = p.edges.filter((e) => !(e.to === toId && (toNode?.type === 'refine' || toNode?.type === 'result')))
-      if (kept.some((e) => e.from === linkFrom && e.to === toId)) return { ...p, edges: kept }
-      return { ...p, edges: [...kept, { from: linkFrom, to: toId }] }
+      if (kept.some((e) => e.from === fromId && e.to === toId)) return { ...p, edges: kept }
+      return { ...p, edges: [...kept, { from: fromId, to: toId }] }
     })
     setLinkFrom(null)
+  }
+
+  const finishLink = (toId: string) => {
+    if (linkFrom) finishLinkId(linkFrom, toId)
   }
 
   /** 解析精修节点的输入源：优先用工作流本次刚产出的图，其次读画布状态。 */
@@ -507,6 +525,38 @@ export default function Canvas({ projectId, onBack }: Props) {
       window.removeEventListener('keydown', onKey)
     }
   }, [ctxMenu])
+
+  // 拖拽连线：从输出端口按下后，曲线实时跟随光标；松开在目标节点上即连线。
+  // 原地松开（几乎没移动）则退回「点选」模式，兼容原来的两步操作。
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const d = linkDragRef.current
+      if (!d) return
+      if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > 6) d.moved = true
+      const w = toWorld(e.clientX, e.clientY)
+      setLinking({ from: d.from, x: w.x, y: w.y })
+    }
+    const onUp = (e: MouseEvent) => {
+      const d = linkDragRef.current
+      if (!d) return
+      linkDragRef.current = null
+      setLinking(null)
+      if (!d.moved) {
+        setLinkFrom(d.from)
+        return
+      }
+      const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
+      const host = el?.closest('[data-node-id]') as HTMLElement | null
+      const toId = host?.dataset.nodeId
+      if (toId && toId !== d.from) finishLinkId(d.from, toId)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [toWorld, project])
 
   // Delete 键删除选中节点（输入框内不拦截）
   useEffect(() => {
@@ -759,10 +809,23 @@ export default function Canvas({ projectId, onBack }: Props) {
         <path key={`${e.from}-${e.to}-${i}`}
           d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
           fill="none" stroke="rgba(0,255,136,0.55)" strokeWidth={2}
-          strokeDasharray="0" />
+          strokeDasharray="0" markerEnd="url(#edge-arrow)" />
       )
     })
   }, [project])
+
+  // 拖拽连线的临时曲线：从源节点输出端口实时跟到光标
+  const tempLink = useMemo(() => {
+    if (!linking || !project) return null
+    const a = project.nodes.find((n) => n.id === linking.from)
+    if (!a) return null
+    const x1 = a.x + (NODE_W[a.type] || GEN_W)
+    const y1 = a.y + 44
+    const x2 = linking.x
+    const y2 = linking.y
+    const dx = Math.max(48, Math.abs(x2 - x1) * 0.42)
+    return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`
+  }, [linking, project])
 
   if (loadError) {
     return (
@@ -777,7 +840,7 @@ export default function Canvas({ projectId, onBack }: Props) {
   }
 
   return (
-    <div className="canvas-root">
+    <div className={`canvas-root ${(linking || linkFrom) ? 'linking' : ''}`}>
       <div
         ref={viewportRef}
         className={`canvas-viewport ${panning ? 'panning' : ''}`}
@@ -804,7 +867,23 @@ export default function Canvas({ projectId, onBack }: Props) {
           className="canvas-world"
           style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.z})` }}
         >
-          <svg className="canvas-links" width={1} height={1}>{edges}</svg>
+          <svg className="canvas-links" width={1} height={1}>
+            <defs>
+              <marker id="edge-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(0,255,136,0.75)" />
+              </marker>
+              <marker id="link-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#00ff88" />
+              </marker>
+            </defs>
+            {edges}
+            {tempLink ? (
+              <path d={tempLink} fill="none" stroke="#00ff88" strokeWidth={2}
+                strokeDasharray="7 5" markerEnd="url(#link-arrow)" opacity={0.9} />
+            ) : null}
+          </svg>
 
           {inputNodes.map((n, i) => (
             <InputNode
@@ -837,6 +916,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               onDragStart={startDragNode(n.id)}
               onCancel={() => cancelTask(n.id)}
               onFinishLink={finishLink}
+              onStartLink={startLink}
             />
           ))}
 

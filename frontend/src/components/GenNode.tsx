@@ -21,6 +21,7 @@ type Props = {
   onDragStart: (e: React.MouseEvent) => void
   onCancel: () => void
   onFinishLink?: (id: string) => void
+  onStartLink?: (id: string, client?: { clientX: number; clientY: number }) => void
 }
 
 const SIZES: [number, number][] = [
@@ -30,6 +31,7 @@ const SIZES: [number, number][] = [
 export default function GenNode({
   node, index, styles, backgrounds, examples, categories, projectId, task,
   onChange, onGenerate, onPreview, onDelete, onDragStart, onCancel, onFinishLink,
+  onStartLink,
 }: Props) {
   const [exCat, setExCat] = useState(categories[0] || '角色描述')
   const [uploading, setUploading] = useState(false)
@@ -110,7 +112,11 @@ export default function GenNode({
         <div className="port inl" title="点击完成连线（把「选择图片」的输出接进来作为参考图）"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onFinishLink?.(node.id) }} />
-        <div className="port out" />
+        <div className="port out" title="按住拖到目标节点即可连线"
+          onMouseDown={(e) => {
+            e.stopPropagation()
+            onStartLink?.(node.id, { clientX: e.clientX, clientY: e.clientY })
+          }} />
       </div>
 
       <div className="node-body" style={{ maxHeight: 'min(70vh, 760px)', overflowY: 'auto' }}>

@@ -9,7 +9,7 @@ type Props = {
   onDelete: () => void
   onDragStart: (e: React.MouseEvent) => void
   onRun: () => void
-  onStartLink: (id: string) => void
+  onStartLink: (id: string, client?: { clientX: number; clientY: number }) => void
   onFinishLink: (id: string) => void
 }
 
@@ -33,9 +33,11 @@ export default function RefineNode({
         <div className="port inl" title="点击完成连线（先点上游节点的输出端口）"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onFinishLink(node.id) }} />
-        <div className="port out" title="点击后，再点目标节点的输入端口连线"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onStartLink(node.id) }} />
+        <div className="port out" title="按住拖到目标节点即可连线"
+          onMouseDown={(e) => {
+            e.stopPropagation()
+            onStartLink(node.id, { clientX: e.clientX, clientY: e.clientY })
+          }} />
       </div>
 
       <div className="node-body">

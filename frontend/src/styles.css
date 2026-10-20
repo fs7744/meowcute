@@ -603,3 +603,10 @@ button { cursor: pointer; }
 .ctx-dot.d-gen { background: var(--green); }
 .ctx-dot.d-refine { background: var(--yellow); }
 .ctx-dot.d-result { background: var(--pink); }
+
+/* 连线中：可接收的输入端口高亮，源头端口点亮 */
+.canvas-root.linking .port.inl {
+  background: var(--green);
+  box-shadow: 0 0 0 3px rgba(0, 255, 136, .28), 0 0 10px rgba(0, 255, 136, .7);
+}
+.canvas-root.linking .port.out { background: var(--green); }
