@@ -41,9 +41,12 @@ set "NOOPEN=0"
 set "PY="
 set "FAILED="
 
-rem ---- pick an interpreter ----
-rem 顺序：显式 PYTHON > 项目 .venv > 已知托管环境 > python > py -3.13..
-if defined PYTHON (
+rem ---- pick / build a virtual environment ----
+rem 顺序：项目 .venv > 显式 PYTHON > 托管环境 > python > py -3.13..
+rem 优先用已经建好的 .venv；否则探测 3.11-3.13 解释器，首次运行建 .venv
+if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
+
+if not defined PY if defined PYTHON (
   set "PY=%PYTHON%"
   !PY! -c "import sys" >nul 2>&1
   if errorlevel 1 (
@@ -51,17 +54,13 @@ if defined PYTHON (
     pause
     exit /b 1
   )
-  goto :py_check_version
 )
-
-if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
 
 if not defined PY (
   if exist "%USERPROFILE%\.workbuddy\binaries\python\envs\pixelforge\Scripts\python.exe" (
     set "PY=%USERPROFILE%\.workbuddy\binaries\python\envs\pixelforge\Scripts\python.exe"
   )
 )
-
 if not defined PY (
   python -c "import sys" >nul 2>&1 && set "PY=python"
 )
@@ -111,6 +110,22 @@ if !PYMIN! GTR 13 (
   exit /b 1
 )
 
+rem ---- 首次运行：建项目 .venv（参考归档项目 pixelforge-2026-10 的做法） ----
+if not "%PY%"==".venv\Scripts\python.exe" (
+  if not exist ".venv\Scripts\python.exe" (
+    echo == 首次运行：建项目 .venv ==
+    "!PY!" -m venv .venv >nul 2>&1
+    if exist ".venv\Scripts\python.exe" (
+      rem 让 .venv 复用来源解释器已装的第三方包。来源本身也是 venv 时，
+      rem 普通 --system-site-packages 只会指向真实 base，看不到 torch；
+      rem 这里手写一条 .pth 指向来源自己的 site-packages（与 venv 内部机制一致）
+      "!PY!" -c "import sysconfig,pathlib;pathlib.Path(r'.venv\Lib\site-packages\_meowcute_source.pth').write_text(sysconfig.get_paths()['purelib'])" >nul 2>&1
+      set "PY=.venv\Scripts\python.exe"
+    ) else (
+      echo [警告] 建 .venv 失败，直接用当前解释器：!PY!
+    )
+  )
+)
 
 rem ---- pip 真的能用吗（嵌入式发行版常常没有 pip） ----
 !PY! -m pip --version >nul 2>&1

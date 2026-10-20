@@ -6,8 +6,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .venv/
-# 用户自建的项目虚拟环境不入库；脚本不会自动创建它，
-# 而是优先探测 %USERPROFILE%\.workbuddy 里的托管环境，或用 set PYTHON= 指定
+# 项目虚拟环境由 start.bat 首次运行时自动创建（参考归档项目 pixelforge-2026-10），
+# 不入库；.venv.bak* 保留给将来「版本越界时把旧环境挪到一边重建」用
 .venv.bak*/
 venv/
 env/
