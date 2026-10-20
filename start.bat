@@ -138,6 +138,7 @@ if errorlevel 1 (
 )
 
 :parse
+call :find_node
 if "%~1"=="" goto start
 if /i "%~1"=="--dev" ( set "DEV=1" & shift & goto parse )
 if /i "%~1"=="--no-open" ( set "NOOPEN=1" & shift & goto parse )
@@ -190,7 +191,7 @@ if "!DEV!"=="1" (
   echo    前端 http://127.0.0.1:5173
   start "meowcute-backend" cmd /c "!PY! -m uvicorn backend.app.main:app --host 127.0.0.1 --port !PORT! --reload"
   pushd frontend
-  call npm run dev
+  call "%NPM%" run dev
   popd
   exit /b 0
 )
@@ -198,7 +199,7 @@ if "!DEV!"=="1" (
 if not exist "frontend\dist" (
   echo == 构建前端 ==
   pushd frontend
-  call npm run build
+  call "%NPM%" run build
   if errorlevel 1 set "FAILED=1"
   popd
 )
@@ -237,9 +238,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
-where npm >nul 2>&1
-if errorlevel 1 (
-  echo [x] 没找到 npm。先装 Node.js 18 以上版本，装完重新打开窗口。
+if not defined NPM (
+  echo [x] 没找到 npm。请安装 Node.js 18 以上版本，装完重新打开窗口。
   pause
   exit /b 1
 )
@@ -247,7 +247,7 @@ if errorlevel 1 (
 if not exist "frontend\node_modules" (
   echo == 安装前端依赖 ==
   pushd frontend
-  call npm install --no-audit --no-fund
+  call "%NPM%" install --no-audit --no-fund
   if errorlevel 1 set "FAILED=1"
   popd
 )
@@ -257,3 +257,26 @@ if defined FAILED (
   exit /b 1
 )
 exit /b 0
+
+rem ---- node / npm detection (mirrors python detection) ----
+:find_node
+set "NPM="
+where npm >nul 2>&1
+if not errorlevel 1 (
+  set "NPM=npm"
+  goto find_node_done
+)
+if exist "%USERPROFILE%\.workbuddy\binaries\node\versions" (
+  for /f "delims=" %%d in ('dir /b /ad /o-n "%USERPROFILE%\.workbuddy\binaries\node\versions" 2^>nul') do (
+    if exist "%USERPROFILE%\.workbuddy\binaries\node\versions\%%d\npm.cmd" (
+      set "NPM=%USERPROFILE%\.workbuddy\binaries\node\versions\%%d\npm.cmd"
+      goto find_node_done
+    )
+  )
+)
+if not defined NPM (
+  echo [x] 没找到 npm。请安装 Node.js 18 以上版本，装完重新打开窗口。
+  pause
+  exit /b 1
+)
+:find_node_done
