@@ -37,6 +37,8 @@ export default function GenNode({
   const fileRef = useRef<HTMLInputElement>(null)
 
   const style = useMemo(() => styles.find((s) => s.id === node.styleId) || null, [styles, node.styleId])
+  // 像素精修只对像素类画风开放：写实/卡通/水彩走了量化会把渐变和细节压成色块
+  const isPixel = !!style?.pixelClass
   const running = !!task?.progress && !task.progress.doneAt
   const p = task?.progress
 
@@ -257,11 +259,13 @@ export default function GenNode({
                       title={s.hint}
                       onClick={() => onChange({
                         styleId: s.id,
-                        // 像素类画风自带精修建议（块大小/色数），切过去时套用色数，
-                        // 否则默认 16 色会把 HD 像素/半透明主体的色阶压断
-                        ...(s.pixelize
-                          ? { pixel: { ...node.pixel, colors: s.pixelize.colors } }
-                          : {}),
+                        // 像素类画风 → 自动开启精修并套用建议色数；
+                        // 非像素类 → 强制关闭，避免量化毁掉渐变和细节
+                        pixel: {
+                          ...node.pixel,
+                          enabled: !!s.pixelClass,
+                          ...(s.pixelize ? { colors: s.pixelize.colors } : {}),
+                        },
                       })}>
                       {s.pixelClass ? <i className="px" /> : null}
                       {s.name}
@@ -274,18 +278,25 @@ export default function GenNode({
           {style ? <div className="style-words-line">前置风格词：{style.words}</div> : null}
         </div>
 
-        {/* 6. 像素精修 */}
-        <div className={`pixel-box ${node.pixel.enabled ? 'on' : ''}`}>
+        {/* 6. 像素精修（仅像素类画风可用） */}
+        <div className={`pixel-box ${isPixel && node.pixel.enabled ? 'on' : ''}`}>
           <div className="switch-row">
             <span className="t">像素精修
               <span className="tag gray" style={{ marginLeft: 4 }}>网格对齐 + 调色板</span>
             </span>
-            <button className={`switch ${node.pixel.enabled ? 'on' : ''}`}
-              onClick={() => patchPixel({ enabled: !node.pixel.enabled })} aria-label="切换像素精修">
+            <button className={`switch ${isPixel && node.pixel.enabled ? 'on' : ''}`}
+              disabled={!isPixel}
+              onClick={() => { if (isPixel) patchPixel({ enabled: !node.pixel.enabled }) }}
+              aria-label="切换像素精修">
               <i />
             </button>
           </div>
-          {node.pixel.enabled ? (
+          {!isPixel ? (
+            <div className="hint">
+              像素精修只对像素类画风生效。当前{style ? `「${style.name}」` : '未选画风'}
+              不是像素画风，出图会保留原始细节与渐变。
+            </div>
+          ) : node.pixel.enabled ? (
             <>
               <div className="switch-row">
                 <span className="t" style={{ fontSize: 12 }}>网格对齐（FFT 检测 + 邻近吸附）</span>

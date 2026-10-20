@@ -281,6 +281,7 @@ def pixel_contract(
     colors: int = 16,
     background: str = "",
     material: str = "solid",
+    edit: bool = False,
 ) -> str:
     """像素契约。
 
@@ -289,11 +290,26 @@ def pixel_contract(
     模型只能画成实心色块 + 粗描边，通透感全丢——这是实机踩到的坑。
     半透明在像素画里应该用**色阶**表达（外缘亮、内部深、顶部高光），
     而不是 alpha；轮廓也应同色系、1 格宽，而不是粗黑边。
+
+    edit=True 用于参考图编辑（Qwen-Image-Edit）：编辑任务的第一目标是
+    「保持参考图构图与角色位置」，不能再塞「居中/主体占 65%/无场景」这类
+    重构图指令，否则模型会把参考图重新编排一遍，角色一致性直接丢掉。
     """
     g = grid or [64, 64]
     gw, gh = max(8, int(g[0])), max(8, int(g[1]))
     bg = (background or "").strip().rstrip("。")
     tail = f"{bg}。" if bg else ""
+
+    if edit:
+        translucent = ("半透明材质用 2-3 级色阶表现（外缘亮、内部深、顶部高光），"
+                       if material == "translucent" else "")
+        return (
+            f"保持参考图的构图、角色位置与体型比例不变，按 {gw}×{gh} 像素网格重绘："
+            "每个网格单元只允许一种纯色，图案边界严格对齐网格线；"
+            f"全图不超过 {int(colors)} 种颜色，使用有限的共享调色板；"
+            "禁止抗锯齿、平滑渐变、模糊与噪点纹理；"
+            f"{translucent}硬边平涂，剪影清晰可读。{tail}"
+        )
 
     if material == "translucent":
         # 半透明主体允许接触阴影，背景句里的「无投影」要收窄，否则前后矛盾
@@ -334,6 +350,7 @@ def build_prompt(
     colors: int = 16,
     background: str = "",
     material: str = "solid",
+    edit: bool = False,
 ) -> Dict[str, Any]:
     """组装最终提示词：风格词前置 → 主体描述 → 背景约束 → 像素契约。
 
@@ -354,7 +371,7 @@ def build_prompt(
     contract = ""
     if pixel and "严格像素画规格" not in body:
         contract = pixel_contract(grid=grid, colors=colors, background=bg,
-                                  material=material)
+                                  material=material, edit=edit)
     # 未开像素契约时，背景约束单独成句（仍要能控制底色，否则抠图无从谈起）
     bg_clause = ""
     if bg and not contract and bg not in body:

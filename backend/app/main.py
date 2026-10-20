@@ -357,7 +357,14 @@ def _contract_grid(pixel: PixelOptions, style_id: Optional[str],
         grid_px = int(style["pixelize"].get("grid") or 0)
         block = int(style["pixelize"].get("block") or 0)
     if grid_px > 0:
-        return [max(8, grid_px), max(8, grid_px)]
+        g = max(8, grid_px)
+        if width == height:
+            return [g, g]
+        # 非方形画布：短边定网格、长边按比例。直接给方网格会把 512×768
+        # 说成「64×64 网格」，模型只能拉伸构图，比例必崩。
+        if width < height:
+            return [g, max(8, int(round(g * height / width)))]
+        return [max(8, int(round(g * width / height))), g]
     if block <= 0:
         return [64, 64]
     return [max(8, width // block), max(8, height // block)]
@@ -365,16 +372,19 @@ def _contract_grid(pixel: PixelOptions, style_id: Optional[str],
 
 def _build_generation_prompt(prompt: str, style_id: Optional[str],
                              pixel: PixelOptions, width: int, height: int,
-                             background: str = "gray") -> Dict[str, Any]:
+                             background: str = "gray",
+                             edit: bool = False) -> Dict[str, Any]:
     style = get_style(style_id)
     pixel_class = bool(style and style.get("pixelClass"))
-    use_contract = pixel.enabled and (pixel_class or pixel.gridSnap)
+    # 像素契约只对像素类画风生效：gridSnap 是像素精修的子选项，不能用来
+    # 绕过画风把写实/卡通图也按像素规格约束。
+    use_contract = pixel.enabled and pixel_class
     grid = _contract_grid(pixel, style_id, width, height)
     material = detect_material(prompt)
     built = build_prompt(prompt, style_id, pixel=use_contract, grid=grid,
                          colors=pixel.colors,
                          background=background_phrase(background),
-                         material=material)
+                         material=material, edit=edit)
     settings = load_settings()
     base_neg = (settings.get("providers", {}).get("diffusers", {}) or {}).get("negativePrompt", "")
     built["negative"] = resolve_pixel_negative(base_neg, use_contract, material)
@@ -463,7 +473,8 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
                            + ("，只做以下调整：" + base if base else "。"))
 
         built = _build_generation_prompt(prompt_text, payload.styleId, pixel,
-                                         width, height, params.background)
+                                         width, height, params.background,
+                                         edit=bool(refs))
 
         seed = params.seed
         if seed is None:
@@ -481,10 +492,16 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
         images = list(result.images)
         meta = dict(result.meta or {})
 
+        # 像素精修只对「像素类画风」生效。写实/卡通/水彩这类画风如果也走
+        # 网格对齐 + 调色板量化，渐变和细节会被直接压成色块——这是毁图，不是精修。
+        style_def = get_style(payload.styleId)
+        pixel_on = bool(pixel.enabled and style_def and style_def.get("pixelClass"))
+        meta["pixelOn"] = pixel_on
+
         # ---- 像素精修 ----
         refined_meta: List[Dict[str, Any]] = []
         refined_images: List[Image.Image] = []
-        if pixel.enabled:
+        if pixel_on:
             progress_mod.report(task_id, 0, 0, "像素精修：网格对齐 + 调色板量化…")
             rb = await asyncio.to_thread(
                 refine_mod.refine_batch,
@@ -511,7 +528,7 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
                 "origUrl": orig_info["url"],
                 "origSize": [img.width, img.height],
             }
-            if pixel.enabled and i < len(refined_images):
+            if pixel_on and i < len(refined_images):
                 ref_info = storage.save_image(payload.projectId,
                                               refined_images[i].convert("RGBA"),
                                               kind="images", prefix="px", seq=i + 1)

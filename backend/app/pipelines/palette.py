@@ -106,8 +106,11 @@ def extract_palette(images: Sequence[Image.Image], colors: int,
     if len(px) == 0:
         return [(0, 0, 0), (255, 255, 255)]
 
-    # 1) 8 级粗量化合并噪声（AI 出的「纯色」常带 ±3 抖动，不合并会占满色位）
-    q = ((px.astype(np.int32) // 8) * 8 + 4).clip(0, 255).astype(np.uint8)
+    # 1) 粗量化合并噪声（AI 出的「纯色」常带 ±3 抖动，不合并会占满色位）。
+    # 桶宽随目标色数走：48 色这类高色数如果还用 8 级桶（32 档），半透明主体
+    # 的中间色阶会被并掉，通透感直接断层；4 级桶（64 档）能保住细腻色阶。
+    step = 4 if n >= 32 else 8
+    q = ((px.astype(np.int32) // step) * step + step // 2).clip(0, 255).astype(np.uint8)
     uniq, counts = np.unique(q, axis=0, return_counts=True)
     uniq = uniq.astype(np.int32)
     counts = counts.astype(np.float32)
