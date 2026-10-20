@@ -1,0 +1,8 @@
+# Windows 上 core.autocrlf=true 时，.sh 会被检出成 CRLF，
+# shebang 变成 "#!/usr/bin/env bash\r"，Git Bash 里 ./start.sh 会直接报错。
+*.sh   text eol=lf
+*.bat  text eol=crlf
+
+# 图片是二进制，别让 git 去尝试合并或统计行数
+*.png  binary
+*.ico  binary
