@@ -40,6 +40,9 @@ def _lock(pid: str) -> threading.Lock:
         return _LOCKS[pid]
 
 
+ALLOWED_TYPES = ("generate", "result", "input", "refine")
+
+
 def _now() -> float:
     return round(time.time(), 3)
 
@@ -67,22 +70,68 @@ def default_generate_node(x: float = 80, y: float = 120) -> Dict[str, Any]:
     }
 
 
-def create_project(name: str, template_id: str, template_defaults: Dict[str, Any]) -> Dict[str, Any]:
+def create_project(name: str, template_id: str, template_defaults: Dict[str, Any],
+                   template_graph: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     ensure_dirs()
     pid = new_asset_id("p")
     d = project_dir(pid)
     (d / "images").mkdir(parents=True, exist_ok=True)
     (d / "refs").mkdir(parents=True, exist_ok=True)
 
-    node = default_generate_node()
-    # 模板默认值落到第一张生成卡上（画风 / 参数 / 像素选项）
-    node["styleId"] = (template_defaults.get("styleId") or node["styleId"])
-    for k in ("width", "height", "n"):
-        if k in template_defaults:
-            node["params"][k] = template_defaults[k]
-    px = template_defaults.get("pixel")
-    if isinstance(px, dict):
-        node["pixel"] = {**node["pixel"], **px}
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, str]] = []
+    base_gen = default_generate_node()
+
+    # 自定义模板：按模板里的节点图初始化画布。运行时的图片/参考图/结果
+    # 跨项目没有意义，一律清空，只保留结构、参数与连线。
+    if isinstance(template_graph, dict) and isinstance(template_graph.get("nodes"), list):
+        idmap: Dict[str, str] = {}
+        for raw in template_graph["nodes"][:200]:
+            if not isinstance(raw, dict) or raw.get("type") not in ALLOWED_TYPES:
+                continue
+            nid = new_asset_id(raw["type"][:3])
+            idmap[str(raw.get("id") or "")] = nid
+            n = dict(raw)
+            n["id"] = nid
+            if n["type"] == "generate":
+                n["refs"] = []
+                n["prompt"] = str(n.get("prompt") or "")
+                n["styleId"] = n.get("styleId") or base_gen["styleId"]
+                n["params"] = {**base_gen["params"],
+                               **(n.get("params") if isinstance(n.get("params"), dict) else {})}
+                n["pixel"] = {**base_gen["pixel"],
+                              **(n.get("pixel") if isinstance(n.get("pixel"), dict) else {})}
+                n.pop("lastImages", None)
+            elif n["type"] == "input":
+                n["refs"] = []
+                n["label"] = str(n.get("label") or "")[:80]
+            elif n["type"] == "refine":
+                n["result"] = None
+                n["pixel"] = {**base_gen["pixel"],
+                              **(n.get("pixel") if isinstance(n.get("pixel"), dict) else {})}
+            else:
+                n.update({"images": [], "prompt": "", "negative": "", "meta": {}, "genId": None})
+            n["createdAt"] = _now()
+            nodes.append(n)
+        for e in template_graph.get("edges") or []:
+            if not isinstance(e, dict):
+                continue
+            a = idmap.get(str(e.get("from") or ""))
+            b = idmap.get(str(e.get("to") or ""))
+            if a and b and a != b:
+                edges.append({"from": a, "to": b})
+
+    if not nodes:
+        node = default_generate_node()
+        # 模板默认值落到第一张生成卡上（画风 / 参数 / 像素选项）
+        node["styleId"] = (template_defaults.get("styleId") or node["styleId"])
+        for k in ("width", "height", "n"):
+            if k in template_defaults:
+                node["params"][k] = template_defaults[k]
+        px = template_defaults.get("pixel")
+        if isinstance(px, dict):
+            node["pixel"] = {**node["pixel"], **px}
+        nodes = [node]
 
     project = {
         "id": pid,
@@ -91,8 +140,8 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
         "createdAt": _now(),
         "updatedAt": _now(),
         "viewport": {"x": 0, "y": 0, "z": 1},
-        "nodes": [node],
-        "edges": [],
+        "nodes": nodes,
+        "edges": edges,
     }
     with _lock(pid):
         _write(pid, project)
@@ -134,7 +183,7 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("节点数超过上限 2000")
     clean_nodes: List[Dict[str, Any]] = []
     for n in nodes:
-        if not isinstance(n, dict) or n.get("type") not in ("generate", "result"):
+        if not isinstance(n, dict) or n.get("type") not in ALLOWED_TYPES:
             continue
         item: Dict[str, Any] = {
             "id": str(n.get("id") or new_asset_id("n")),
@@ -149,7 +198,20 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "refs": [r for r in (n.get("refs") or []) if isinstance(r, dict)][:8],
                 "params": _clean_params(n.get("params")),
                 "pixel": _clean_pixel(n.get("pixel")),
+                "lastImages": [i for i in (n.get("lastImages") or []) if isinstance(i, dict)][:12],
                 "collapsed": bool(n.get("collapsed")),
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "input":
+            item.update({
+                "label": str(n.get("label") or "")[:80],
+                "refs": [r for r in (n.get("refs") or []) if isinstance(r, dict)][:8],
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "refine":
+            item.update({
+                "pixel": _clean_pixel(n.get("pixel")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
         else:

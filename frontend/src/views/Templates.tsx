@@ -87,6 +87,7 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
                   <div className="tpl-tagline">{t.tagline}</div>
                 </div>
                 <span className="tag">可用</span>
+                {t.custom ? <span className="tag pink">自定义</span> : null}
               </div>
 
               <div className="desc">{t.description}</div>
@@ -104,10 +105,12 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
                 ))}
               </div>
 
-              <div className="tpl-io">
-                <div><b>输入</b> · {t.inputs.map((i) => i.label + (i.required ? '' : '（可选）')).join(' · ')}</div>
-                <div><b>输出</b> · {t.outputs.map((o) => o.label).join(' · ')}</div>
-              </div>
+              {t.inputs.length || t.outputs.length ? (
+                <div className="tpl-io">
+                  <div><b>输入</b> · {t.inputs.map((i) => i.label + (i.required ? '' : '（可选）')).join(' · ')}</div>
+                  <div><b>输出</b> · {t.outputs.map((o) => o.label).join(' · ')}</div>
+                </div>
+              ) : null}
 
               <div className="tpl-actions">
                 <button className="btn btn-primary btn-sm" style={{ height: 34 }}
@@ -117,6 +120,17 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
                 <button className="btn btn-sm btn-ghost" onClick={() => setModal({ open: true, tid: t.id })}>
                   查看参数
                 </button>
+                {t.custom ? (
+                  <button className="btn btn-sm btn-danger" onClick={async () => {
+                    if (!confirm(`删除自定义模板「${t.name}」？已创建的项目不受影响。`)) return
+                    try {
+                      await api.deleteTemplate(t.id)
+                      setTemplates((list) => list.filter((x) => x.id !== t.id))
+                    } catch (e: any) {
+                      alert(`删除失败：${e.message || e}`)
+                    }
+                  }}>删除模板</button>
+                ) : null}
               </div>
             </div>
           ))}

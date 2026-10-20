@@ -39,6 +39,15 @@ export const api = {
 
   templates: () => fetch('/api/templates').then(j<{ templates: Template[] }>),
 
+  createTemplate: (payload: {
+    name: string; tagline?: string; description?: string
+    nodes?: any[]; edges?: any[]; defaults?: Record<string, any>
+  }) => fetch('/api/templates/custom', jsonInit(payload))
+    .then(j<{ ok: boolean; template: Template }>),
+
+  deleteTemplate: (id: string) =>
+    fetch(`/api/templates/custom/${id}`, { method: 'DELETE' }).then(j<{ ok: boolean }>),
+
   styles: () => fetch('/api/styles').then(j<{
     styles: Style[]; backgrounds: BackgroundOption[]
   }>),
@@ -121,7 +130,11 @@ export const api = {
   cancelTask: (taskId: string) =>
     fetch(`/api/tasks/${taskId}/cancel`, { method: 'POST' }).then(j<{ ok: boolean; message: string }>),
 
-  refine: (payload: { projectId: string; origAssetId: string; pixel: PixelOptions }) =>
+  refine: (payload: {
+    projectId: string; origAssetId?: string
+    sourceKind?: 'images' | 'refs'; sourceFile?: string
+    pixel: PixelOptions
+  }) =>
     fetch('/api/pixel/refine', jsonInit(payload)).then(j<{
       ok: boolean
       image: ResultImage

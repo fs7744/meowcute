@@ -20,6 +20,7 @@ type Props = {
   onDelete: () => void
   onDragStart: (e: React.MouseEvent) => void
   onCancel: () => void
+  onFinishLink?: (id: string) => void
 }
 
 const SIZES: [number, number][] = [
@@ -28,7 +29,7 @@ const SIZES: [number, number][] = [
 
 export default function GenNode({
   node, index, styles, backgrounds, examples, categories, projectId, task,
-  onChange, onGenerate, onPreview, onDelete, onDragStart, onCancel,
+  onChange, onGenerate, onPreview, onDelete, onDragStart, onCancel, onFinishLink,
 }: Props) {
   const [exCat, setExCat] = useState(categories[0] || '角色描述')
   const [uploading, setUploading] = useState(false)
@@ -106,6 +107,9 @@ export default function GenNode({
         <span className="node-title">{style ? `${style.name} · 文字生图` : '文字生图'}</span>
         <span className="node-idx">#{index + 1}</span>
         <button className="node-x" title="删除这张生成卡" onMouseDown={(e) => e.stopPropagation()} onClick={onDelete}>×</button>
+        <div className="port inl" title="点击完成连线（把「选择图片」的输出接进来作为参考图）"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onFinishLink?.(node.id) }} />
         <div className="port out" />
       </div>
 

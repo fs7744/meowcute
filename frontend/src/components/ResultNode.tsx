@@ -8,13 +8,14 @@ type Props = {
   onDragStart: (e: React.MouseEvent) => void
   onPreview: (img: ResultImage, meta: ResultMeta) => void
   onCopyPrompt: () => void
+  onFinishLink?: (id: string) => void
 }
 
 const fmtTime = (ts?: number) =>
   ts ? new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : ''
 
 export default function ResultNode({
-  node, index, onDelete, onDragStart, onPreview, onCopyPrompt,
+  node, index, onDelete, onDragStart, onPreview, onCopyPrompt, onFinishLink,
 }: Props) {
   const [showOrig, setShowOrig] = useState<Record<string, boolean>>({})
   const [copied, setCopied] = useState(false)
@@ -38,11 +39,18 @@ export default function ResultNode({
         </span>
         <span className="node-idx">R{index + 1}</span>
         <button className="node-x" title="删除这张结果卡" onMouseDown={(e) => e.stopPropagation()} onClick={onDelete}>×</button>
-        <div className="port inl" />
+        <div className="port inl" title="点击完成连线（先点上游节点的输出端口）"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onFinishLink?.(node.id) }} />
       </div>
 
       <div className="node-body">
         <div className="result-grid">
+          {node.images.length === 0 ? (
+            <div className="hint" style={{ padding: 12 }}>
+              把「生成图」或「像素精修」的输出连到左侧端口，结果会自动出现在这里。
+            </div>
+          ) : null}
           {node.images.map((img, i) => {
             const orig = !!showOrig[img.assetId]
             const r = img.refine

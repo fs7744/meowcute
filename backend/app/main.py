@@ -36,6 +36,7 @@ from . import progress as progress_mod
 from . import projects as projects_mod
 from . import prompt_examples as examples_mod
 from . import storage
+from . import custom_templates as ctpl
 from .config import DATA_DIR, ROOT, load_settings, save_settings, scan_models
 from .pipelines import refine as refine_mod
 from .providers.diffusers_local import DiffusersProvider
@@ -101,15 +102,54 @@ async def models() -> Dict[str, Any]:
 
 @app.get("/api/templates")
 async def templates() -> Dict[str, Any]:
-    return {"templates": list_templates()}
+    custom = [ctpl._public(t) for t in ctpl.list_templates()]
+    return {"templates": list_templates() + custom}
 
 
 @app.get("/api/templates/{tid}")
 async def template_detail(tid: str) -> Dict[str, Any]:
     t = get_template(tid)
+    if t:
+        return t
+    ct = ctpl.get_template(tid)
+    if not ct:
+        raise HTTPException(404, "模板不存在")
+    return ctpl._public(ct)
+
+
+class CustomTemplatePayload(BaseModel):
+    name: str = "未命名模板"
+    tagline: str = ""
+    description: str = ""
+    nodes: Optional[List[Dict[str, Any]]] = None
+    edges: Optional[List[Dict[str, Any]]] = None
+    graph: Optional[Dict[str, Any]] = None
+    defaults: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/templates/custom")
+async def create_custom_template(payload: CustomTemplatePayload) -> Dict[str, Any]:
+    """把画布节点图存成自定义模板。"""
+    try:
+        t = ctpl.create(payload.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "template": t}
+
+
+@app.put("/api/templates/custom/{tid}")
+async def update_custom_template(tid: str, payload: CustomTemplatePayload) -> Dict[str, Any]:
+    t = ctpl.update(tid, payload.model_dump(exclude_none=True))
     if not t:
         raise HTTPException(404, "模板不存在")
-    return t
+    return {"ok": True, "template": t}
+
+
+@app.delete("/api/templates/custom/{tid}")
+async def delete_custom_template(tid: str) -> Dict[str, Any]:
+    if not ctpl.delete(tid):
+        raise HTTPException(404, "模板不存在")
+    return {"ok": True}
 
 
 @app.get("/api/styles")
@@ -217,12 +257,17 @@ async def list_projects() -> Dict[str, Any]:
 @app.post("/api/projects")
 async def create_project(payload: CreateProjectPayload) -> Dict[str, Any]:
     t = get_template(payload.templateId)
+    graph = None
     if not t:
-        raise HTTPException(404, "模板不存在")
+        ct = ctpl.get_template(payload.templateId)
+        if not ct:
+            raise HTTPException(404, "模板不存在")
+        t = ctpl._public(ct)
+        graph = t.get("graph")
     if t.get("status") != "available":
         raise HTTPException(400, "该模板尚未开放")
     project = projects_mod.create_project(payload.name, payload.templateId,
-                                          t.get("defaults") or {})
+                                          t.get("defaults") or {}, graph)
     return {"ok": True, "project": project}
 
 
@@ -654,13 +699,19 @@ async def task_cancel(task_id: str) -> Dict[str, Any]:
 
 class RefinePayload(BaseModel):
     projectId: str
-    origAssetId: str
+    origAssetId: str = ""
+    # 精修源：images/ 下的生成产物，或 refs/ 下的输入图片（「选择图片」节点）
+    sourceKind: str = "images"
+    sourceFile: Optional[str] = None
     pixel: PixelOptions = Field(default_factory=PixelOptions)
 
 
 @app.post("/api/pixel/refine")
 async def refine_existing(payload: RefinePayload) -> Dict[str, Any]:
-    img = storage.load_image(payload.projectId, "images", f"{payload.origAssetId}.png")
+    if payload.sourceKind == "refs" and payload.sourceFile:
+        img = storage.load_image(payload.projectId, "refs", payload.sourceFile)
+    else:
+        img = storage.load_image(payload.projectId, "images", f"{payload.origAssetId}.png")
     if img is None:
         raise HTTPException(404, "原图不存在")
     p = payload.pixel

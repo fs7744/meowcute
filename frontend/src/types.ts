@@ -33,6 +33,9 @@ export type Template = {
     pixel?: Partial<PixelOptions>
   }
   notes: string[]
+  /** 自定义模板标记 + 节点图（内置模板没有） */
+  custom?: boolean
+  graph?: { nodes: any[]; edges: any[] }
 }
 
 export type PromptExample = {
@@ -92,7 +95,31 @@ export type GenNode = {
   refs: RefAsset[]
   params: GenParams
   pixel: PixelOptions
+  /** 最近一次生成的图片（供下游精修节点取图，不落盘也可以重建） */
+  lastImages?: ResultImage[]
   collapsed?: boolean
+  createdAt?: number
+}
+
+/** 选择图片节点：上传/挑选参考图，向下游输出图片。 */
+export type InputNode = {
+  id: string
+  type: 'input'
+  x: number
+  y: number
+  label?: string
+  refs: RefAsset[]
+  createdAt?: number
+}
+
+/** 像素精修节点：接收上游图片，按参数精修后向下游输出。 */
+export type RefineNode = {
+  id: string
+  type: 'refine'
+  x: number
+  y: number
+  pixel: PixelOptions
+  result?: ResultImage | null
   createdAt?: number
 }
 
@@ -143,7 +170,7 @@ export type ResultNode = {
   createdAt?: number
 }
 
-export type CanvasNode = GenNode | ResultNode
+export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode
 export type Edge = { from: string; to: string }
 
 export type Project = {
