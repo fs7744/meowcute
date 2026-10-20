@@ -62,6 +62,10 @@ export default function Canvas({ projectId, onBack }: Props) {
   // 连线模式：点了输出端口后记住源节点，再点目标节点的输入端口完成连线
   const [linkFrom, setLinkFrom] = useState<string | null>(null)
   const [refining, setRefining] = useState<Record<string, boolean>>({})
+  // 右键菜单：屏幕坐标定位，世界坐标用于在该处创建节点
+  const [ctxMenu, setCtxMenu] = useState<{
+    sx: number; sy: number; wx: number; wy: number
+  } | null>(null)
   // 一键运行工作流：状态 + 中断标记 + 当前生成任务（停止时取消它）
   const [wf, setWf] = useState<{
     running: boolean; label: string; done: number; total: number; error: string | null
@@ -283,12 +287,14 @@ export default function Canvas({ projectId, onBack }: Props) {
     } : p)
   }
 
-  const addGenNode = () => {
+  const addGenNode = (at?: { x: number; y: number }) => {
     if (!project) return
     const rect = viewportRef.current?.getBoundingClientRect()
-    const center = rect
-      ? toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2)
-      : { x: 200, y: 160 }
+    const center = at
+      ? { x: at.x + GEN_W / 2, y: at.y + 160 }
+      : (rect
+        ? toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2)
+        : { x: 200, y: 160 })
     const d = template?.defaults || {}
     const node: GenNodeType = {
       id: newId('gen'),
@@ -322,9 +328,11 @@ export default function Canvas({ projectId, onBack }: Props) {
     return { x: Math.round(c.x - w / 2), y: Math.round(c.y - h / 2) }
   }
 
-  const addInputNode = () => {
+  const addInputNode = (at?: { x: number; y: number }) => {
     if (!project) return
-    const spot = canvasSpot(INPUT_W, 240)
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(INPUT_W, 240)
     const node: InputNodeType = {
       id: newId('inp'), type: 'input', x: spot.x, y: spot.y,
       refs: [], label: '', createdAt: Date.now() / 1000,
@@ -333,9 +341,11 @@ export default function Canvas({ projectId, onBack }: Props) {
     setSelected(node.id)
   }
 
-  const addRefineNode = () => {
+  const addRefineNode = (at?: { x: number; y: number }) => {
     if (!project) return
-    const spot = canvasSpot(REFINE_W, 360)
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(REFINE_W, 360)
     const node: RefineNodeType = {
       id: newId('rf'), type: 'refine', x: spot.x, y: spot.y,
       pixel: {
@@ -348,9 +358,11 @@ export default function Canvas({ projectId, onBack }: Props) {
     setSelected(node.id)
   }
 
-  const addEmptyResultNode = () => {
+  const addEmptyResultNode = (at?: { x: number; y: number }) => {
     if (!project) return
-    const spot = canvasSpot(RES_W, 320)
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(RES_W, 320)
     const node: ResultNodeType = {
       id: newId('res'), type: 'result', x: spot.x, y: spot.y, genId: null,
       images: [], prompt: '', negative: '', meta: {},
@@ -482,6 +494,19 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
     setSelected(null)
   }
+
+  // 右键菜单：点任意处 / Esc 关闭
+  useEffect(() => {
+    if (!ctxMenu) return
+    const close = () => setCtxMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [ctxMenu])
 
   // Delete 键删除选中节点（输入框内不拦截）
   useEffect(() => {
@@ -759,11 +784,12 @@ export default function Canvas({ projectId, onBack }: Props) {
         onMouseDown={startPan}
         onWheel={onWheel}
         onContextMenu={(e) => {
-          // 图片保留浏览器原生右键菜单：素材工具里「右键另存为」是刚需，
-          // 只拦截空白画布的右键（避免和将来的右键菜单冲突）
           const t = e.target as HTMLElement
-          if (t.closest('img, .result-img-wrap, .ref-thumb')) return
+          // 图片保留浏览器原生右键菜单（右键另存为）；输入控件保留复制粘贴
+          if (t.closest('img, .result-img-wrap, .ref-thumb, input, textarea, select, [contenteditable="true"]')) return
           e.preventDefault()
+          const w = toWorld(e.clientX, e.clientY)
+          setCtxMenu({ sx: e.clientX, sy: e.clientY, wx: w.x, wy: w.y })
         }}
       >
         <div
@@ -890,10 +916,6 @@ export default function Canvas({ projectId, onBack }: Props) {
         <button className="btn btn-sm" onClick={() => setViewport({ x: 80, y: 60, z: 1 })}>100%</button>
         <button className="btn btn-sm" onClick={fitView}>适应视图</button>
         <div style={{ width: 1, height: 20, background: 'var(--line-strong)', margin: '0 4px' }} />
-        <button className="btn btn-sm" onClick={addInputNode}>＋ 选图</button>
-        <button className="btn btn-sm" onClick={addGenNode}>＋ 生成图</button>
-        <button className="btn btn-sm" onClick={addRefineNode}>＋ 像素精修</button>
-        <button className="btn btn-sm" onClick={addEmptyResultNode}>＋ 结果</button>
         {wf.running ? (
           <>
             <span className="hint" style={{ margin: '0 4px' }}>{wf.label} · {wf.done}/{wf.total}</span>
@@ -909,7 +931,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       </div>
 
       <div className="canvas-hint">
-        <b>滚轮</b> 缩放 · <b>拖拽空白</b> 平移 · <b>拖节点标题</b> 移动 · <b>Delete</b> 删除选中
+        <b>右键</b> 添加节点 · <b>滚轮</b> 缩放 · <b>拖拽空白</b> 平移 · <b>拖节点标题</b> 移动 · <b>Delete</b> 删除选中
       </div>
 
       {linkFrom ? (
@@ -920,6 +942,33 @@ export default function Canvas({ projectId, onBack }: Props) {
           color: 'var(--green)', borderRadius: 4,
         }}>
           正在连线：点击目标节点左侧的输入端口完成，点空白处取消
+        </div>
+      ) : null}
+
+      {ctxMenu ? (
+        <div
+          className="ctx-menu"
+          style={{
+            left: Math.min(ctxMenu.sx, window.innerWidth - 196),
+            top: Math.min(ctxMenu.sy, window.innerHeight - 236),
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="ctx-title">添加节点</div>
+          <button onClick={() => { addInputNode({ x: ctxMenu.wx, y: ctxMenu.wy }); setCtxMenu(null) }}>
+            <span className="ctx-dot d-input" /> 选择图片
+          </button>
+          <button onClick={() => { addGenNode({ x: ctxMenu.wx, y: ctxMenu.wy }); setCtxMenu(null) }}>
+            <span className="ctx-dot d-gen" /> 生成图
+          </button>
+          <button onClick={() => { addRefineNode({ x: ctxMenu.wx, y: ctxMenu.wy }); setCtxMenu(null) }}>
+            <span className="ctx-dot d-refine" /> 像素精修
+          </button>
+          <button onClick={() => { addEmptyResultNode({ x: ctxMenu.wx, y: ctxMenu.wy }); setCtxMenu(null) }}>
+            <span className="ctx-dot d-result" /> 图片结果
+          </button>
+          <div className="ctx-sep" />
+          <button onClick={() => setCtxMenu(null)}>取消</button>
         </div>
       ) : null}
 

@@ -564,3 +564,42 @@ button { cursor: pointer; }
   .logo-cn { font-size: 14px; }
   .page { padding: 18px; }
 }
+
+/* ===== 画布右键菜单（添加节点） ===== */
+.ctx-menu {
+  position: fixed;
+  z-index: 420;
+  min-width: 178px;
+  padding: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-hard);
+  user-select: none;
+}
+.ctx-menu .ctx-title {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 9px 6px;
+  letter-spacing: .04em;
+}
+.ctx-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  background: none;
+  border: 0;
+  color: var(--white);
+  font-size: 12.5px;
+  font-family: var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.ctx-menu button:hover { background: rgba(0, 255, 136, .1); color: var(--green); }
+.ctx-menu .ctx-sep { height: 1px; background: var(--line); margin: 5px 4px; }
+.ctx-dot { width: 7px; height: 7px; display: inline-block; flex: none; }
+.ctx-dot.d-input { background: var(--cyan); }
+.ctx-dot.d-gen { background: var(--green); }
+.ctx-dot.d-refine { background: var(--yellow); }
+.ctx-dot.d-result { background: var(--pink); }
