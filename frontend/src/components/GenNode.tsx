@@ -251,7 +251,15 @@ export default function GenNode({
                 <div className="style-chips">
                   {list.map((s) => (
                     <button key={s.id} className={`style-chip ${node.styleId === s.id ? 'on' : ''}`}
-                      title={s.hint} onClick={() => onChange({ styleId: s.id })}>
+                      title={s.hint}
+                      onClick={() => onChange({
+                        styleId: s.id,
+                        // 像素类画风自带精修建议（块大小/色数），切过去时套用色数，
+                        // 否则默认 16 色会把 HD 像素/半透明主体的色阶压断
+                        ...(s.pixelize
+                          ? { pixel: { ...node.pixel, colors: s.pixelize.colors } }
+                          : {}),
+                      })}>
                       {s.pixelClass ? <i className="px" /> : null}
                       {s.name}
                     </button>

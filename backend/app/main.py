@@ -40,8 +40,8 @@ from .config import DATA_DIR, ROOT, load_settings, save_settings, scan_models
 from .pipelines import refine as refine_mod
 from .providers.diffusers_local import DiffusersProvider
 from .styles import (
-    BACKGROUND_PRESETS, background_phrase, build_prompt, get_style, list_styles,
-    resolve_pixel_negative,
+    BACKGROUND_PRESETS, background_phrase, build_prompt, detect_material,
+    get_style, list_styles, resolve_pixel_negative,
 )
 from .templates import get_template, list_templates
 
@@ -361,15 +361,18 @@ def _build_generation_prompt(prompt: str, style_id: Optional[str],
     pixel_class = bool(style and style.get("pixelClass"))
     use_contract = pixel.enabled and (pixel_class or pixel.gridSnap)
     grid = _contract_grid(pixel, style_id, width, height)
+    material = detect_material(prompt)
     built = build_prompt(prompt, style_id, pixel=use_contract, grid=grid,
                          colors=pixel.colors,
-                         background=background_phrase(background))
+                         background=background_phrase(background),
+                         material=material)
     settings = load_settings()
     base_neg = (settings.get("providers", {}).get("diffusers", {}) or {}).get("negativePrompt", "")
-    built["negative"] = resolve_pixel_negative(base_neg, use_contract)
+    built["negative"] = resolve_pixel_negative(base_neg, use_contract, material)
     built["useContract"] = use_contract
     built["grid"] = grid
     built["background"] = background
+    built["material"] = material
     return built
 
 

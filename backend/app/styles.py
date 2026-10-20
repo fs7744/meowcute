@@ -36,7 +36,7 @@ STYLES: List[Dict[str, Any]] = [
         "tags": ["角色", "场景"],
         "hint": "现代独立游戏像素风（Owlboy/Sea of Stars 感），大色块+选择性高光，出图后自动 4× 像素精修",
         "prompt": "高清像素艺术风格，大块饱满色块，选择性高光与轮廓光，细腻色阶但保持像素硬边，现代独立游戏美术",
-        "pixelize": {"block": 4, "colors": 32},
+        "pixelize": {"block": 4, "colors": 48},
         "pixelClass": True,
     },
     {
@@ -255,15 +255,62 @@ def background_phrase(bg_id: Optional[str]) -> str:
     return str((_BG_BY_ID.get(bg_id) or {}).get("phrase") or "")
 
 
+# 半透明 / 软体材质关键词：命中后换 translucnet 契约（见 pixel_contract）。
+# 这些主体的共同点是「通透感来自色阶而不是 alpha」，用默认的实心契约会被
+# 压成一块带粗描边的色块。
+TRANSLUCENT_WORDS = (
+    "半透明", "透明", "史莱姆", "果冻", "凝胶", "水晶", "玻璃", "幽灵",
+    "气泡", "水球", "水母", "能量体", "光体", "烟雾", "云朵", "冰块",
+    "冰晶", "露珠", "液体", "黏液", "水滴", "宝石", "灵力", "发光体",
+)
+
+
+def detect_material(prompt: str) -> str:
+    """从主体描述猜材质：translucent（半透明/软体）或 solid。
+
+    「不透明」和「透明背景」里的「透明」不是材质，先排除，避免把实心角色
+    误判成半透明主体（那样会漏掉「半透明」负面词，画面发雾）。
+    """
+    text = prompt or ""
+    text = text.replace("不透明", "").replace("透明背景", "").replace("背景透明", "")
+    return "translucent" if any(w in text for w in TRANSLUCENT_WORDS) else "solid"
+
+
 def pixel_contract(
     grid: Optional[List[int]] = None,
     colors: int = 16,
     background: str = "",
+    material: str = "solid",
 ) -> str:
+    """像素契约。
+
+    material="translucent" 时换一套规格：半透明主体（史莱姆/果冻/水晶/幽灵）
+    如果照搬默认契约的「禁止半透明像素 + 1 像素深色轮廓 + 单级硬边阴影」，
+    模型只能画成实心色块 + 粗描边，通透感全丢——这是实机踩到的坑。
+    半透明在像素画里应该用**色阶**表达（外缘亮、内部深、顶部高光），
+    而不是 alpha；轮廓也应同色系、1 格宽，而不是粗黑边。
+    """
     g = grid or [64, 64]
     gw, gh = max(8, int(g[0])), max(8, int(g[1]))
     bg = (background or "").strip().rstrip("。")
     tail = f"{bg}。" if bg else ""
+
+    if material == "translucent":
+        # 半透明主体允许接触阴影，背景句里的「无投影」要收窄，否则前后矛盾
+        bg_t = bg.replace("无投影", "背景无投影（主体底部接触阴影除外）") if bg else ""
+        tail_t = f"{bg_t}。" if bg_t else ""
+        return (
+            f"严格像素画规格：画布精确划分为 {gw}×{gh} 的像素网格，"
+            f"每个网格单元只允许一种纯色，图案边界必须严格对齐网格线；"
+            f"全图不超过 {int(colors)} 种颜色，使用有限的共享调色板；"
+            "禁止抗锯齿、禁止模糊、禁止大面积渐变、禁止噪点纹理；"
+            "半透明材质用 2-3 级色阶表现：外缘与顶部偏亮、内部偏深、"
+            "高光呈通透的浅色块，不要用真正的半透明像素或模糊过渡；"
+            "轮廓最多 1 格宽，用同色系更深一档的颜色，不要粗黑描边；"
+            "允许主体底部 1-2 格接触阴影以体现贴地，背景其余部分保持纯净；"
+            f"居中构图，主体完整不裁切，剪影清晰可读。{tail_t}"
+        )
+
     return (
         f"严格像素画规格：画布精确划分为 {gw}×{gh} 的像素网格，"
         f"每个网格单元只允许一种纯色，图案边界必须严格对齐网格线；"
@@ -282,6 +329,7 @@ def build_prompt(
     grid: Optional[List[int]] = None,
     colors: int = 16,
     background: str = "",
+    material: str = "solid",
 ) -> Dict[str, Any]:
     """组装最终提示词：风格词前置 → 主体描述 → 背景约束 → 像素契约。
 
@@ -301,7 +349,8 @@ def build_prompt(
 
     contract = ""
     if pixel and "严格像素画规格" not in body:
-        contract = pixel_contract(grid=grid, colors=colors, background=bg)
+        contract = pixel_contract(grid=grid, colors=colors, background=bg,
+                                  material=material)
     # 未开像素契约时，背景约束单独成句（仍要能控制底色，否则抠图无从谈起）
     bg_clause = ""
     if bg and not contract and bg not in body:
@@ -325,10 +374,20 @@ def build_prompt(
     }
 
 
-def resolve_pixel_negative(base_negative: str, pixel: bool) -> str:
-    """像素模式下的负面词：把「像素画最怕的瑕疵」显式否定。"""
+def resolve_pixel_negative(base_negative: str, pixel: bool,
+                           material: str = "solid") -> str:
+    """像素模式下的负面词：把「像素画最怕的瑕疵」显式否定。
+
+    「半透明」只在非半透明主体时否定：史莱姆/果冻/水晶这类主体如果把它挂进
+    负面词，等于正面要求「半透明」、负面又禁止「半透明」，模型只能折中成
+    实心色块——这是实机效果差的直接原因之一。
+    """
     base = (base_negative or "").strip().strip("，, ")
     if not pixel:
         return base
-    extra = "抗锯齿, 渐变, 模糊, 半透明, 噪点, 平滑过渡, 写实照片"
+    if material == "translucent":
+        # 半透明靠离散色阶表达：只否定「平滑渐变」，不否定「色阶」
+        extra = "抗锯齿, 平滑渐变, 模糊, 噪点, 平滑过渡, 写实照片"
+    else:
+        extra = "抗锯齿, 渐变, 模糊, 噪点, 平滑过渡, 写实照片, 半透明"
     return f"{base}, {extra}" if base else extra

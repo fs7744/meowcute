@@ -34,21 +34,54 @@ FIXED_PALETTES = {
 }
 
 
+def _estimate_bg_color(rgb_img: Image.Image) -> Optional[np.ndarray]:
+    """四角采样估计纯色背景；四角不一致（场景/透明底）返回 None。
+
+    像素主体多数是居中构图，四角是背景。只有四块区域的中位色足够接近时
+    才认定「这是纯色背景」，避免把场景图/渐变底的像素也当成背景剔除。
+    """
+    arr = np.asarray(rgb_img, dtype=np.uint8)
+    h, w = arr.shape[:2]
+    s = max(1, min(h, w) // 16)
+    patches = [arr[:s, :s], arr[:s, w - s:], arr[h - s:, :s], arr[h - s:, w - s:]]
+    meds = np.stack([np.median(p.reshape(-1, 3), axis=0) for p in patches])
+    spread = float(np.abs(meds - meds.mean(axis=0)).max())
+    if spread <= 18.0:
+        return meds.mean(axis=0)
+    return None
+
+
 def _collect_pixels(images: Sequence[Image.Image], max_side: int = 384,
-                    max_total: int = 300_000) -> np.ndarray:
-    """把若干张图缩到小尺寸后拼成一维 RGB 像素数组（可复现，不随机采样）。"""
+                    max_total: int = 300_000,
+                    ignore_background: bool = True) -> np.ndarray:
+    """把若干张图缩到小尺寸后拼成一维 RGB 像素数组（可复现，不随机采样）。
+
+    ignore_background：纯色背景（中灰/绿幕）占画面大头，若让它参与色板提取，
+    频次加权会分掉大量色位给背景灰，主体（尤其半透明主体的色阶）只剩几档。
+    这里按四角估计背景色并剔除近背景像素，让色板集中在主体上。
+    """
     chunks: List[np.ndarray] = []
     for im in images:
         rgba = im.convert("RGBA")
         rgb = rgba.convert("RGB")
         w, h = rgb.size
         scale = min(1.0, max_side / max(w, h))
+        a_img = rgba.getchannel("A")
         if scale < 1.0:
-            rgb = rgb.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+            new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+            rgb = rgb.resize(new_size, Image.LANCZOS)
+            # alpha 必须跟着 RGB 一起缩，否则 arr 与掩码长度不一致会越界
+            a_img = a_img.resize(new_size, Image.NEAREST)
         arr = np.asarray(rgb, dtype=np.uint8).reshape(-1, 3)
         # 透明像素不参与色板：它们会被置黑，混进来会把色板拉向纯黑
-        a = np.asarray(rgba.getchannel("A"), dtype=np.uint8).reshape(-1)
+        a = np.asarray(a_img, dtype=np.uint8).reshape(-1)
         arr = arr[a > 8]
+        if ignore_background and len(arr):
+            bg = _estimate_bg_color(rgb)
+            if bg is not None:
+                # 只剔「几乎就是背景色」的像素（单通道差 ≤14），避免误伤主体阴影
+                diff = np.abs(arr.astype(np.int32) - bg.astype(np.int32)).max(axis=1)
+                arr = arr[diff > 14]
         chunks.append(arr)
     if not chunks:
         return np.zeros((0, 3), dtype=np.uint8)
@@ -65,10 +98,11 @@ def _weighted_dist(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return (d[..., 0] ** 2 * 2 + d[..., 1] ** 2 * 4 + d[..., 2] ** 2 * 3).astype(np.float32)
 
 
-def extract_palette(images: Sequence[Image.Image], colors: int) -> List[RGB]:
+def extract_palette(images: Sequence[Image.Image], colors: int,
+                    ignore_background: bool = True) -> List[RGB]:
     """从一批图里提取共享色板：频次加权的最远点采样（确定性，无随机）。"""
     n = max(2, min(int(colors), 256))
-    px = _collect_pixels(images)
+    px = _collect_pixels(images, ignore_background=ignore_background)
     if len(px) == 0:
         return [(0, 0, 0), (255, 255, 255)]
 
@@ -159,6 +193,7 @@ def resolve_palette(
     palette_name: str,
     colors: int,
     images: Optional[Sequence[Image.Image]] = None,
+    ignore_background: bool = True,
 ) -> Tuple[str, List[RGB]]:
     """解析色板选择：固定色板（gameboy/nes）或从图里提取（auto）。"""
     name = (palette_name or "auto").strip().lower()
@@ -167,4 +202,4 @@ def resolve_palette(
     imgs = list(images or [])
     if not imgs:
         return "auto", []
-    return "auto", extract_palette(imgs, colors)
+    return "auto", extract_palette(imgs, colors, ignore_background=ignore_background)
