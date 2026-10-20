@@ -122,7 +122,9 @@ def main() -> int:
     pid = r.json()["project"]["id"]
     check("新建项目", r.status_code == 200 and pid)
     proj = r.json()["project"]
-    check("项目自带生成卡", len(proj["nodes"]) == 1 and proj["nodes"][0]["type"] == "generate")
+    check("项目自带生成卡", any(n["type"] == "generate" for n in proj["nodes"]))
+    check("生成模板自带扣背景节点",
+          any(n["type"] == "matte" and n["matte"].get("enabled") for n in proj["nodes"]))
 
     r = client.get(f"/api/projects/{pid}")
     check("读取项目", r.status_code == 200)
@@ -138,7 +140,7 @@ def main() -> int:
         "viewport": {"x": -40, "y": 20, "z": 0.8}})
     check("保存画布", r.status_code == 200, str(r.status_code))
     saved = r.json()["project"]
-    check("节点数 2", len(saved["nodes"]) == 2)
+    check("节点数 +1", len(saved["nodes"]) == len(proj["nodes"]) + 1)
     check("边保存", len(saved["edges"]) == 1)
     check("视口保存", abs(saved["viewport"]["z"] - 0.8) < 1e-6)
 
@@ -222,6 +224,26 @@ def main() -> int:
     check("重精修 200", r.status_code == 200, str(r.status_code))
     check("重精修出图", r.json()["image"]["width"] > 0)
     px_id = r.json()["image"]["assetId"]
+
+    print("== 扣除背景接口 ==")
+    # 纯色灰底 + 中间一块主体：抠完四角应透明、中心应保留
+    mat_src = Image.new("RGBA", (256, 256), (128, 128, 128, 255))
+    dm = ImageDraw.Draw(mat_src)
+    dm.ellipse([70, 40, 186, 200], fill=(230, 140, 60, 255))
+    minfo = storage.save_image(pid, mat_src, "images")
+    r = client.get("/api/matte/status")
+    check("抠图引擎状态 200", r.status_code == 200 and bool(r.json().get("primary")))
+    r = client.post("/api/matte", json={
+        "projectId": pid, "origAssetId": minfo["id"],
+        "matte": {"enabled": True, "method": "auto", "hard": True}})
+    check("扣背景 200", r.status_code == 200, str(r.status_code))
+    body = r.json()["image"]
+    check("扣背景出图", body["width"] > 0 and bool(body.get("matte", {}).get("method")))
+    cut = storage.load_image(pid, "images", f"{body['assetId']}.png")
+    check("四角变透明", cut is not None and cut.getpixel((2, 2))[3] == 0,
+          str(None if cut is None else cut.getpixel((2, 2))))
+    check("主体保留", cut is not None and cut.getpixel((128, 120))[3] == 255,
+          str(None if cut is None else cut.getpixel((128, 120))))
 
     print("== 项目文件夹（输入与产出都落在项目目录） ==")
     from backend.app.config import PROJECTS_DIR
