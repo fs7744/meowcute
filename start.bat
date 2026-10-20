@@ -15,8 +15,10 @@ rem      at WindowsApps\python.exe, which exits with 9009 and is
 rem      not a real interpreter at all.
 rem   4) interpreter order matters: newer is NOT better here.
 rem      torch 2.6 / diffusers 0.38 only ship wheels up to cp313;
-rem      on 3.14+ pip falls back to building from source and dies
-rem      without MSVC. So try 3.13 down to 3.11 before bare py -3.
+rem      3.14+ would fall back to building from source and die
+rem      without MSVC, so the script rejects it and tries
+rem      3.13 -> 3.12 -> 3.11. It also probes the managed runtime
+rem      at %USERPROFILE%\.workbuddy first, and honors set PYTHON=.
 rem
 rem    start.bat            production: build frontend if needed, serve, open browser
 rem    start.bat --dev      dev mode: backend 8788 + Vite 5173
@@ -40,7 +42,7 @@ set "PY="
 set "FAILED="
 
 rem ---- pick an interpreter ----
-rem 顺序：显式 PYTHON > 项目 .venv > python > py -3.13 ... > py -3
+rem 顺序：显式 PYTHON > 项目 .venv > 已知托管环境 > python > py -3.13..
 if defined PYTHON (
   set "PY=%PYTHON%"
   !PY! -c "import sys" >nul 2>&1
@@ -49,10 +51,16 @@ if defined PYTHON (
     pause
     exit /b 1
   )
-  goto :py_ready
+  goto :py_check_version
 )
 
 if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
+
+if not defined PY (
+  if exist "%USERPROFILE%\.workbuddy\binaries\python\envs\pixelforge\Scripts\python.exe" (
+    set "PY=%USERPROFILE%\.workbuddy\binaries\python\envs\pixelforge\Scripts\python.exe"
+  )
+)
 
 if not defined PY (
   python -c "import sys" >nul 2>&1 && set "PY=python"
@@ -67,29 +75,23 @@ if not defined PY (
   py -3.11 -c "import sys" >nul 2>&1 && set "PY=py -3.11"
 )
 if not defined PY (
-  py -3 -c "import sys" >nul 2>&1 && set "PY=py -3"
-)
-if not defined PY (
-  python3 -c "import sys" >nul 2>&1 && set "PY=python3"
-)
-if not defined PY (
-  echo [x] 没找到可用的 Python。
+  echo [x] 没找到可用的 Python 3.11-3.13。
   echo.
-  echo     要求 3.11 以上版本。如果已经装了却仍然报这个错，
+  echo     本项目需要 3.11 到 3.13。如果已经装了却仍然报这个错，
   echo     多半是 where python 命中了微软商店的占位程序：
   echo       %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe
   echo     解决办法：设置 - 应用 - 高级应用设置 - 应用执行别名，
   echo     把 python.exe / python3.exe 两项关掉，然后重开这个窗口。
   echo.
-  echo     也可以直接指定解释器：
-  echo       set PYTHON=C:\Python312\python.exe
+  echo     也可以直接指定解释器（本机已实测可用）：
+  echo       set PYTHON=%USERPROFILE%\.workbuddy\binaries\python\envs\pixelforge\Scripts\python.exe
   echo       start.bat
   pause
   exit /b 1
 )
 
-:py_ready
-rem ---- 记录版本，太新的版本要提前警告 ----
+:py_check_version
+rem ---- 版本门槛：3.14+ 没有预编译包，源码编译必失败，直接拦下 ----
 set "PYVER=?"
 set "PYMIN=0"
 for /f "tokens=1,2" %%a in ('!PY! -c "import sys;print(sys.version_info[0],sys.version_info[1])" 2^>nul') do (
@@ -98,12 +100,17 @@ for /f "tokens=1,2" %%a in ('!PY! -c "import sys;print(sys.version_info[0],sys.v
   set "PYVER=%%a.%%b"
 )
 if !PYMIN! GTR 13 (
-  echo [警告] 当前解释器是 Python !PYVER!，偏新。
-  echo     torch 2.6 / diffusers 0.38 目前只提供到 3.13 的预编译包，
-  echo     3.14 以上会尝试源码编译，没装 MSVC 就会失败。
-  echo     建议装一个 3.12 再跑，或先 set PYTHON=... 指定解释器。
+  echo [x] 当前解释器是 Python !PYVER!，太新了。
+  echo     torch 2.6 / diffusers 0.38 只提供到 3.13 的预编译包，
+  echo     3.14 以上 pip 会尝试源码编译，没装 MSVC 就失败。
   echo.
+  echo     请指定一个 3.11-3.13 的解释器：
+  echo       set PYTHON=C:/Python312/python.exe
+  echo       start.bat
+  pause
+  exit /b 1
 )
+
 
 rem ---- pip 真的能用吗（嵌入式发行版常常没有 pip） ----
 !PY! -m pip --version >nul 2>&1

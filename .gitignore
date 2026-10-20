@@ -6,7 +6,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .venv/
-# 版本越界时脚本会把旧环境重命名成 .venv.bak-<时间戳>，同样不入库
+# 用户自建的项目虚拟环境不入库；脚本不会自动创建它，
+# 而是优先探测 %USERPROFILE%\.workbuddy 里的托管环境，或用 set PYTHON= 指定
 .venv.bak*/
 venv/
 env/
