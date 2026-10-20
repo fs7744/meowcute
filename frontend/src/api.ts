@@ -150,12 +150,14 @@ export function subscribeTask(
 ): () => void {
   const es = new EventSource(`/api/tasks/${taskId}/stream`)
   let closed = false
+  let finished = false
   const close = () => { if (!closed) { closed = true; es.close() } }
 
   es.onmessage = (ev) => {
     try {
       const data = JSON.parse(ev.data)
       if (data.type === 'done') {
+        finished = true
         close()
         onDone((data.result as GenerateResult) ?? null, data as TaskProgress)
       } else {
@@ -164,8 +166,18 @@ export function subscribeTask(
     } catch { /* 忽略心跳/坏帧 */ }
   }
   es.onerror = () => {
-    // 流断了不代表任务失败：关掉连接，前端会用 /api/tasks/{id} 兜底查询
+    // 流断了不代表任务失败：关掉连接，查一次任务状态兜底。
+    // 不做这一步的话，一键工作流会永远等在这个节点上。
     close()
+    if (finished) return
+    fetch(`/api/tasks/${taskId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return
+        const prog = data.progress || {}
+        onDone(data.result ?? null, { ...prog, doneAt: prog.doneAt ?? Date.now() } as TaskProgress)
+      })
+      .catch(() => undefined)
   }
   return close
 }

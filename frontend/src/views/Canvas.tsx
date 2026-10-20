@@ -8,9 +8,10 @@ import PromptModal from '../components/PromptModal'
 import RefineNode from '../components/RefineNode'
 import ResultNode from '../components/ResultNode'
 import type {
-  BackgroundOption, CanvasNode, GenNode as GenNodeType, InputNode as InputNodeType,
-  Project, PromptExample, PromptPreview, RefineNode as RefineNodeType, ResultImage,
-  ResultMeta, ResultNode as ResultNodeType, Style, TaskProgress, Template,
+  BackgroundOption, CanvasNode, GenNode as GenNodeType, GenerateResult,
+  InputNode as InputNodeType, Project, PromptExample, PromptPreview,
+  RefineNode as RefineNodeType, ResultImage, ResultMeta, ResultNode as ResultNodeType,
+  Style, TaskProgress, Template,
 } from '../types'
 
 type Props = {
@@ -61,6 +62,12 @@ export default function Canvas({ projectId, onBack }: Props) {
   // 连线模式：点了输出端口后记住源节点，再点目标节点的输入端口完成连线
   const [linkFrom, setLinkFrom] = useState<string | null>(null)
   const [refining, setRefining] = useState<Record<string, boolean>>({})
+  // 一键运行工作流：状态 + 中断标记 + 当前生成任务（停止时取消它）
+  const [wf, setWf] = useState<{
+    running: boolean; label: string; done: number; total: number; error: string | null
+  }>({ running: false, label: '', done: 0, total: 0, error: null })
+  const abortRef = useRef(false)
+  const activeTaskRef = useRef<string | null>(null)
 
   const [preview, setPreview] = useState<{
     src: string; origSrc?: string; title?: string; pixelSize?: [number, number]
@@ -376,63 +383,73 @@ export default function Canvas({ projectId, onBack }: Props) {
     setLinkFrom(null)
   }
 
-  const runRefine = async (node: RefineNodeType) => {
-    if (!project) return
-    const inEdge = project.edges.find((e) => e.to === node.id)
-    const src = inEdge ? project.nodes.find((n) => n.id === inEdge.from) : null
-    let srcKind: 'images' | 'refs' = 'images'
-    let srcAssetId = ''
-    let srcFile = ''
-    let srcUrl = ''
-    let srcW = 0
-    let srcH = 0
+  /** 解析精修节点的输入源：优先用工作流本次刚产出的图，其次读画布状态。 */
+  const resolveRefineSource = (node: RefineNodeType, override?: ResultImage[] | null) => {
+    if (override?.length) {
+      const im = override[0]
+      return { kind: 'images' as const, assetId: im.assetId, file: '',
+               url: im.url, w: im.width, h: im.height }
+    }
+    const inEdge = project?.edges.find((e) => e.to === node.id)
+    const src = inEdge ? project?.nodes.find((n) => n.id === inEdge.from) : null
     if (src?.type === 'generate') {
       const im = src.lastImages?.[0]
-      if (im) { srcAssetId = im.assetId; srcUrl = im.url; srcW = im.width; srcH = im.height }
+      if (im) return { kind: 'images' as const, assetId: im.assetId, file: '',
+                       url: im.url, w: im.width, h: im.height }
     } else if (src?.type === 'result') {
       const im = src.images?.[0]
-      if (im) { srcAssetId = im.assetId; srcUrl = im.url; srcW = im.width; srcH = im.height }
+      if (im) return { kind: 'images' as const, assetId: im.assetId, file: '',
+                       url: im.url, w: im.width, h: im.height }
     } else if (src?.type === 'input') {
       const r0 = src.refs?.[0]
-      if (r0) {
-        srcKind = 'refs'; srcFile = r0.file; srcAssetId = r0.id
-        srcUrl = r0.url; srcW = r0.width; srcH = r0.height
+      if (r0) return { kind: 'refs' as const, assetId: r0.id, file: r0.file,
+                       url: r0.url, w: r0.width, h: r0.height }
+    }
+    throw new Error('精修节点没有可用输入：请把「选择图片」或「生成图」的输出连到它的左侧端口。')
+  }
+
+  const executeRefine = async (
+    node: RefineNodeType, override?: ResultImage[] | null,
+  ): Promise<ResultImage> => {
+    if (!project) throw new Error('项目未加载')
+    const src = resolveRefineSource(node, override)
+    const r = await api.refine({
+      projectId: project.id, origAssetId: src.assetId,
+      sourceKind: src.kind, sourceFile: src.file || undefined,
+      pixel: node.pixel,
+    })
+    const im: any = r.image
+    return {
+      assetId: im.assetId, url: im.url, width: im.width, height: im.height,
+      origAssetId: src.assetId, origUrl: src.url, origSize: [src.w, src.h],
+      refine: im.refine,
+    }
+  }
+
+  const applyRefineResult = (node: RefineNodeType, result: ResultImage) => {
+    setProject((p) => {
+      if (!p) return p
+      const nodes = p.nodes.map((n) =>
+        n.id === node.id ? ({ ...n, result } as CanvasNode) : n)
+      // 精修结果同步到下游结果卡，结果卡复用现有渲染
+      for (const e of p.edges.filter((x) => x.from === node.id)) {
+        const target = nodes.find((n) => n.id === e.to)
+        if (target?.type === 'result') {
+          Object.assign(target, {
+            images: [result], prompt: '', negative: '',
+            meta: { ...(target.meta || {}), pixelEnabled: true },
+          })
+        }
       }
-    }
-    if (!srcUrl || (!srcAssetId && !srcFile)) {
-      alert('精修节点没有可用输入：请把「选择图片」或「生成图」的输出连到它的左侧端口。')
-      return
-    }
+      return { ...p, nodes }
+    })
+  }
+
+  const runRefine = async (node: RefineNodeType) => {
     setRefining((s) => ({ ...s, [node.id]: true }))
     try {
-      const r = await api.refine({
-        projectId: project.id, origAssetId: srcAssetId,
-        sourceKind: srcKind, sourceFile: srcFile || undefined,
-        pixel: node.pixel,
-      })
-      const im: any = r.image
-      const result: ResultImage = {
-        assetId: im.assetId, url: im.url, width: im.width, height: im.height,
-        origAssetId: srcAssetId, origUrl: srcUrl,
-        origSize: [srcW, srcH],
-        refine: im.refine,
-      }
-      setProject((p) => {
-        if (!p) return p
-        const nodes = p.nodes.map((n) =>
-          n.id === node.id ? ({ ...n, result } as CanvasNode) : n)
-        // 精修结果同步到下游结果卡，结果卡复用现有渲染
-        for (const e of p.edges.filter((x) => x.from === node.id)) {
-          const target = nodes.find((n) => n.id === e.to)
-          if (target?.type === 'result') {
-            Object.assign(target, {
-              images: [result], prompt: '', negative: '',
-              meta: { ...(target.meta || {}), pixelEnabled: true },
-            })
-          }
-        }
-        return { ...p, nodes }
-      })
+      const result = await executeRefine(node)
+      applyRefineResult(node, result)
     } catch (e: any) {
       alert(`精修失败：${e.message || e}`)
     } finally {
@@ -480,10 +497,11 @@ export default function Canvas({ projectId, onBack }: Props) {
   }, [selected, project])
 
   // ---------- 生成 ----------
-  const generate = async (node: GenNodeType) => {
-    if (!project) return
-    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
-    try {
+  /** 执行一次生成，返回完整结果（供手动按钮和一键工作流共用）。 */
+  const executeGenerate = (node: GenNodeType): Promise<GenerateResult> => {
+    return new Promise((resolve, reject) => {
+      if (!project) { reject(new Error('项目未加载')); return }
+      setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
       // 上游「选择图片」连进来时，用它作为参考图；否则用生成卡自带的参考图
       const inEdge = project.edges.find((e) => e.to === node.id
         && project.nodes.find((n) => n.id === e.from)?.type === 'input')
@@ -491,7 +509,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       const refFiles = up?.type === 'input' && up.refs.length
         ? up.refs.map((r) => r.file)
         : node.refs.map((r) => r.file)
-      const { taskId } = await api.generate({
+      api.generate({
         projectId: project.id,
         genNodeId: node.id,
         prompt: node.prompt,
@@ -499,27 +517,103 @@ export default function Canvas({ projectId, onBack }: Props) {
         refs: refFiles,
         params: node.params,
         pixel: node.pixel,
-      })
-      setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
-      closers.current[node.id] = subscribeTask(
-        taskId,
-        (p) => setTasks((t) => ({ ...t, [node.id]: { ...(t[node.id] || { taskId, error: null }), progress: p } })),
-        (result, prog) => {
-          setTasks((t) => ({
-            ...t,
-            [node.id]: {
-              taskId,
-              progress: prog,
-              error: prog.error || result?.error || null,
-            },
-          }))
-          if (result && !result.error && result.images?.length) {
-            addResultNode(node, result.images, result.prompt, result.negative, result.meta)
-          }
-        },
-      )
+      }).then(({ taskId }) => {
+        activeTaskRef.current = taskId
+        setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+        let settled = false
+        const close = subscribeTask(
+          taskId,
+          (p) => setTasks((t) => ({ ...t, [node.id]: { ...(t[node.id] || { taskId, error: null }), progress: p } })),
+          (result, prog) => {
+            if (settled) return
+            settled = true
+            close()
+            if (activeTaskRef.current === taskId) activeTaskRef.current = null
+            setTasks((t) => ({
+              ...t,
+              [node.id]: { taskId, progress: prog, error: prog.error || result?.error || null },
+            }))
+            if (result && !result.error && result.images?.length) resolve(result)
+            else reject(new Error(prog.error || result?.error || '生成失败'))
+          },
+        )
+        closers.current[node.id] = close
+      }).catch(reject)
+    })
+  }
+
+  const generate = async (node: GenNodeType) => {
+    try {
+      const result = await executeGenerate(node)
+      addResultNode(node, result.images, result.prompt, result.negative, result.meta)
     } catch (e: any) {
-      setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: String(e.message || e) } }))
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '', progress: null }), error: String(e.message || e) },
+      }))
+    }
+  }
+
+  const stopWorkflow = () => {
+    abortRef.current = true
+    const tid = activeTaskRef.current
+    if (tid) api.cancelTask(tid).catch(() => undefined)
+  }
+
+  /** 一键运行：按连线拓扑顺序跑完所有生成/精修节点，结果自动落到结果卡。 */
+  const runWorkflow = async () => {
+    if (!project || wf.running) return
+    const byId = new Map(project.nodes.map((n) => [n.id, n]))
+    const executable = project.nodes.filter((n) => n.type === 'generate' || n.type === 'refine')
+    if (!executable.length) {
+      alert('画布上没有可执行的节点：先添加「生成图」或「像素精修」并连好线。')
+      return
+    }
+    // 拓扑序：先跑上游，再跑下游（有环也不会死循环，seen 兜底）
+    const order: CanvasNode[] = []
+    const seen = new Set<string>()
+    const visit = (id: string) => {
+      if (seen.has(id)) return
+      seen.add(id)
+      for (const e of project.edges.filter((x) => x.to === id)) visit(e.from)
+      const n = byId.get(id)
+      if (n && (n.type === 'generate' || n.type === 'refine')) order.push(n)
+    }
+    executable.forEach((n) => visit(n.id))
+
+    abortRef.current = false
+    setWf({ running: true, label: '准备中…', done: 0, total: order.length, error: null })
+    const runtime = new Map<string, ResultImage[]>()
+    try {
+      for (let i = 0; i < order.length; i++) {
+        if (abortRef.current) throw new Error('已停止')
+        const n = order[i]
+        setWf({
+          running: true, done: i, total: order.length, error: null,
+          label: `${n.type === 'generate' ? '生成' : '精修'} ${i + 1}/${order.length}`,
+        })
+        if (n.type === 'generate') {
+          if (!n.prompt.trim()) throw new Error(`第 ${i + 1} 步：生成节点的提示词为空`)
+          const r = await executeGenerate(n)
+          addResultNode(n, r.images, r.prompt, r.negative, r.meta)
+          runtime.set(n.id, r.images)
+        } else if (n.type === 'refine') {
+          const inEdge = project.edges.find((e) => e.to === n.id)
+          const upstream = inEdge ? runtime.get(inEdge.from) : undefined
+          setRefining((s) => ({ ...s, [n.id]: true }))
+          try {
+            const result = await executeRefine(n, upstream)
+            applyRefineResult(n, result)
+            runtime.set(n.id, [result])
+          } finally {
+            setRefining((s) => ({ ...s, [n.id]: false }))
+          }
+        }
+      }
+      setWf({ running: false, label: '完成', done: order.length, total: order.length, error: null })
+    } catch (e: any) {
+      setWf({ running: false, label: '已停止', done: 0, total: order.length, error: String(e.message || e) })
+      alert(`工作流中断：${e.message || e}`)
     }
   }
 
@@ -800,6 +894,17 @@ export default function Canvas({ projectId, onBack }: Props) {
         <button className="btn btn-sm" onClick={addGenNode}>＋ 生成图</button>
         <button className="btn btn-sm" onClick={addRefineNode}>＋ 像素精修</button>
         <button className="btn btn-sm" onClick={addEmptyResultNode}>＋ 结果</button>
+        {wf.running ? (
+          <>
+            <span className="hint" style={{ margin: '0 4px' }}>{wf.label} · {wf.done}/{wf.total}</span>
+            <button className="btn btn-sm btn-danger" onClick={stopWorkflow}>停止</button>
+          </>
+        ) : (
+          <button className="btn btn-sm btn-primary" onClick={runWorkflow}
+            title="按连线顺序自动跑完所有生成 / 精修节点">
+            ▶ 运行工作流
+          </button>
+        )}
         <button className="btn btn-sm" onClick={() => doSave()}>立即保存</button>
       </div>
 
