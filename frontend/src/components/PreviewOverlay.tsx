@@ -65,6 +65,7 @@ export default function PreviewOverlay({ open, src, origSrc, title, pixelSize, o
           </div>
         ) : null}
         <div className="grow" />
+        <a className="btn btn-sm" href={shown} download title="下载当前显示的这一版">下载</a>
         <button className="btn btn-sm" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}>复位</button>
         <button className="btn btn-sm" onClick={() => setZoom((z) => Math.max(0.25, z / 1.25))}>−</button>
         <div className="pv-zoom">{Math.round(zoom * 100)}%</div>
@@ -76,6 +77,7 @@ export default function PreviewOverlay({ open, src, origSrc, title, pixelSize, o
         className={`pv-stage ${drag ? 'dragging' : ''}`}
         onWheel={onWheel}
         onMouseDown={(e) => {
+          if (e.button !== 0) return   // 右键留给浏览器原生菜单（另存为）
           setDrag(true)
           dragStart.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }
         }}

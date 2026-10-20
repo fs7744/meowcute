@@ -218,6 +218,22 @@ export default function GenNode({
                 value={node.params.steps ?? ''}
                 onChange={(e) => patchParams({ steps: e.target.value === '' ? null : Number(e.target.value) })} />
             </label>
+            <label className="gen-field">
+              <span className="gen-field-label">提示词质量</span>
+              <select className="select" value={node.params.maxSeqLen ?? ''}
+                onChange={(e) => patchParams({
+                  maxSeqLen: e.target.value === '' ? null : Number(e.target.value),
+                })}>
+                <option value="">自动（推荐）</option>
+                <option value={512}>快速</option>
+                <option value={768}>标准</option>
+                <option value={1024}>高质量</option>
+              </select>
+            </label>
+          </div>
+          <div className="hint" style={{ marginTop: 4 }}>
+            质量越高，长提示词（含像素契约）越不容易被截断；只影响文本编码，
+            对出图速度影响很小。自动会按提示词长度选档。
           </div>
         </div>
 

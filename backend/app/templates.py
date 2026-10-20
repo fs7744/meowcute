@@ -59,6 +59,7 @@ TEMPLATES: List[Dict[str, Any]] = [
             "height": 512,
             "n": 1,
             "background": "gray",
+            "maxSeqLen": None,
             "pixel": {"enabled": True, "gridSnap": True, "colors": 16,
                       "palette": "auto", "gridSize": None, "targetSize": None},
         },

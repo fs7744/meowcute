@@ -180,6 +180,20 @@ def _normalize_refs(ref=None, refs=None) -> List[Any]:
     return out[:MAX_REFS]
 
 
+def _resolve_seq_len(prompt: str, requested: Optional[int]) -> int:
+    """文本编码的最大序列长度：界面指定优先，否则按提示词长度估算。
+
+    不能写死：太短会把尾部的像素契约截断（中文提示词常 400 字），太长则
+    白白增加文本编码开销。估算按中文约 1.3 token/字 + 64 余量，向上取 128
+    的倍数，并夹在 [512, 1536]——512 是两条管线的默认值，低于它没有收益。
+    """
+    if requested:
+        return max(128, min(2048, int(requested)))
+    est = int(len(prompt or "") * 1.3) + 64
+    est = max(512, min(1536, est))
+    return (est + 127) // 128 * 128
+
+
 def resolve_edit_model(explicit: Optional[str] = None) -> str:
     """解析 Qwen-Image-Edit 底座路径，解析不到就抛带指引的错误。
 
@@ -602,7 +616,8 @@ class DiffusersProvider(BaseProvider):
 
     def _run_zimage(self, model_id: str, prompt: str, width: int, height: int,
                     steps: Optional[int], seed: Optional[int], generator: Any, n: int,
-                    task_id: Optional[str] = None):
+                    task_id: Optional[str] = None,
+                    max_seq_len: Optional[int] = None):
         """Z-Image 文生图：8 次 DiT 前向、CFG 固定 0、1024² 原生分辨率。
 
         注意：调度器把 step 0 当热身，num_inference_steps=9 才对应 8 次前向；
@@ -612,6 +627,7 @@ class DiffusersProvider(BaseProvider):
 
         pipe = self._load(model_id)
         use_steps = 9 if not steps else max(4, min(int(steps), 12))
+        msl = _resolve_seq_len(prompt, max_seq_len)
         w = int(width) // 16 * 16
         h = int(height) // 16 * 16
         images = []
@@ -623,10 +639,9 @@ class DiffusersProvider(BaseProvider):
                 height=h,
                 width=w,
                 generator=generator,
-                # 默认 512 token：画风词 + 主体 + 像素契约的中文提示词很容易顶满，
-                # 超出的尾部（恰恰是像素契约）会被静默截断。768 足够覆盖实测
-                # 最长的提示词（约 400 字），又比 1024 少一截文本编码开销。
-                max_sequence_length=768,
+                # 不写死：界面可选（512/768/1024/1536），未选时按提示词
+                # 长度自动估算，避免截断尾部的像素契约
+                max_sequence_length=msl,
                 # 步进回调：SSE 进度 + 取消检查（diffusers 每步结束调一次）
                 callback_on_step_end=progress_mod.make_step_callback(
                     task_id, use_steps, label=f"第 {i + 1} 张"),
@@ -635,12 +650,13 @@ class DiffusersProvider(BaseProvider):
             if generator is not None and seed is not None:
                 generator = torch.Generator(device=generator.device).manual_seed(int(seed) + i + 1)
         return images, {"steps": use_steps, "cfg": 0.0, "family": "zimage",
-                        "mode": "txt2img", "turbo": True}
+                        "mode": "txt2img", "turbo": True, "seqLen": msl}
 
     def _run_qwen_edit(self, model_id: str, prompt: str, negative: str,
                        width: int, height: int, steps: Optional[int],
                        seed: Optional[int], generator: Any, n: int,
-                       refs: Optional[Any] = None, task_id: Optional[str] = None):
+                       refs: Optional[Any] = None, task_id: Optional[str] = None,
+                       max_seq_len: Optional[int] = None):
         """Qwen-Image-Edit 指令式编辑：参考图（可多张）+ 中文指令 → 编辑图。
 
         - 必须传参考图（没有输入时直接报错，而不是静默出图）；
@@ -660,6 +676,7 @@ class DiffusersProvider(BaseProvider):
 
         pipe = self._load(model_id)
         use_steps = 40 if not steps else max(20, min(int(steps), 50))
+        msl = _resolve_seq_len(prompt, max_seq_len)
         from PIL import Image as _Image
 
         srcs = [r.convert("RGB") for r in refs]
@@ -680,6 +697,7 @@ class DiffusersProvider(BaseProvider):
                 true_cfg_scale=4.0,
                 guidance_scale=1.0,
                 generator=generator,
+                max_sequence_length=msl,
                 # 步进回调：40 步里每一步都报，长任务的进度条就靠它；
                 # 取消时抛 CancelledError 中止推理
                 callback_on_step_end=progress_mod.make_step_callback(
@@ -691,12 +709,13 @@ class DiffusersProvider(BaseProvider):
         return images, {"steps": use_steps, "cfg": 1.0, "trueCfg": 4.0,
                         "family": "qwen_edit",
                         "mode": "edit" if len(srcs) == 1 else "ref2img",
-                        "refCount": len(srcs), "size": [w, h]}
+                        "refCount": len(srcs), "size": [w, h], "seqLen": msl}
 
     def _run(self, model_id: str, prompt: str, negative: str, width: int, height: int,
              steps: int, seed: Optional[int], n: int,
              ref: Optional[Any] = None, refs: Optional[Any] = None,
-             task_id: Optional[str] = None):
+             task_id: Optional[str] = None,
+             max_seq_len: Optional[int] = None):
         torch = _require_torch()
 
         # 先看显存够不够，再决定要不要让用户干等：桌面程序占着显存时，模型会被
@@ -725,12 +744,14 @@ class DiffusersProvider(BaseProvider):
                     "Z-Image 是纯文生图底座，不支持参考图。请改用编辑底座（有参考图时自动路由）。"
                 )
             images, meta = self._run_zimage(model_id, prompt, width, height,
-                                            steps, seed, generator, n, task_id=task_id)
+                                            steps, seed, generator, n, task_id=task_id,
+                                            max_seq_len=max_seq_len)
         else:
             images, meta = self._run_qwen_edit(model_id, prompt, negative, width, height,
                                                steps, seed, generator, n,
                                                refs=_normalize_refs(ref, refs),
-                                               task_id=task_id)
+                                               task_id=task_id,
+                                               max_seq_len=max_seq_len)
         if vram_note:
             meta["vramWarning"] = vram_note
         return images, meta
@@ -746,6 +767,7 @@ class DiffusersProvider(BaseProvider):
         ref=None,
         refs: Optional[Any] = None,
         task_id: Optional[str] = None,
+        max_seq_len: Optional[int] = None,
     ) -> ProviderResult:
         # 入口先卡一次：缺 torch 时直接把安装指引抛给前端，
         # 而不是等 _run 里 import 出一句光秃秃的 "No module named 'torch'"
@@ -781,7 +803,7 @@ class DiffusersProvider(BaseProvider):
             images, meta = await asyncio.to_thread(
                 self._run, model_id, prompt, self.cfg.get("negativePrompt", ""),
                 width, height, steps, seed, n, ref, all_refs or None,
-                task_id,
+                task_id, max_seq_len,
             )
         status = _torch_status()
         out_meta = {"provider": "diffusers", "model": model_id, "device": status.get("device"),

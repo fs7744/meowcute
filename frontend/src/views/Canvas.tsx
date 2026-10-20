@@ -107,6 +107,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       params: {
         width: d.width || 512, height: d.height || 512, n: d.n || 1,
         steps: null, seed: null, background: (d as any).background || 'gray',
+        maxSeqLen: (d as any).maxSeqLen ?? null,
       },
       pixel: {
         enabled: true, gridSnap: true, colors: 16, palette: 'auto',
@@ -274,6 +275,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         width: (d as any).width || 512, height: (d as any).height || 512,
         n: (d as any).n || 1, steps: null, seed: null,
         background: (d as any).background || 'gray',
+        maxSeqLen: (d as any).maxSeqLen ?? null,
       },
       pixel: {
         enabled: true, gridSnap: true, colors: 16, palette: 'auto',
@@ -460,7 +462,13 @@ export default function Canvas({ projectId, onBack }: Props) {
         className={`canvas-viewport ${panning ? 'panning' : ''}`}
         onMouseDown={startPan}
         onWheel={onWheel}
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={(e) => {
+          // 图片保留浏览器原生右键菜单：素材工具里「右键另存为」是刚需，
+          // 只拦截空白画布的右键（避免和将来的右键菜单冲突）
+          const t = e.target as HTMLElement
+          if (t.closest('img, .result-img-wrap, .ref-thumb')) return
+          e.preventDefault()
+        }}
       >
         <div
           className="canvas-grid"

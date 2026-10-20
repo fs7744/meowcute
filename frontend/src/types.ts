@@ -60,6 +60,8 @@ export type GenParams = {
   steps: number | null
   seed: number | null
   background: 'gray' | 'green' | 'none'
+  // 提示词质量档位映射的文本序列长度：null=自动，512=快速，768=标准，1024=高质量
+  maxSeqLen: number | null
 }
 
 export type BackgroundOption = {

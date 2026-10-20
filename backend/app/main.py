@@ -415,6 +415,9 @@ class ParamsPayload(BaseModel):
     steps: Optional[int] = None
     seed: Optional[int] = None
     background: str = "gray"
+    # 文本序列长度：界面用「快速/标准/高质量」映射到 512/768/1024，
+    # 为空时由 provider 按提示词长度自动估算（不写死）
+    maxSeqLen: Optional[int] = None
 
 
 class GeneratePayload(BaseModel):
@@ -487,6 +490,7 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
             steps=params.steps, seed=seed, n=n,
             refs=refs or None,
             task_id=task_id,
+            max_seq_len=params.maxSeqLen,
         )
 
         images = list(result.images)
@@ -560,12 +564,13 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
                 "family": meta.get("family"),
                 "mode": meta.get("mode"),
                 "steps": meta.get("steps"),
+                "seqLen": meta.get("seqLen"),
                 "seed": seed,
                 "seconds": elapsed,
                 "autoRouted": bool(meta.get("autoRouted")),
                 "vramWarning": meta.get("vramWarning"),
                 "refCount": len(refs),
-                "pixelEnabled": bool(pixel.enabled),
+                "pixelEnabled": bool(pixel_on),
                 "palette": meta.get("refinePalette"),
             },
         }
