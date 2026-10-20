@@ -45,7 +45,7 @@ TEMPLATES: List[Dict[str, Any]] = [
         "steps": [
             {"n": 1, "title": "组装提示词", "detail": "画风词前置 → 主体 → 像素契约；纯字符串拼接，可预览"},
             {"n": 2, "title": "本地推理", "detail": "无参考图走 Z-Image（9 步）；有参考图自动走 Qwen-Image-Edit（40 步）"},
-            {"n": 3, "title": "像素精修", "detail": "FFT 检测网格 → 网格线吸附 → 每格多数表决 → 共享色板量化 → alpha 二值化"},
+            {"n": 3, "title": "像素精修", "detail": "FFT 检测网格 → 网格线吸附 → 每格取中位色 → 共享色板量化 → alpha 二值化"},
             {"n": 4, "title": "落盘成卡", "detail": "结果以卡片落到无限画布，保留原图与精修两版，可放大对比"},
         ],
         "outputs": [
@@ -55,8 +55,8 @@ TEMPLATES: List[Dict[str, Any]] = [
         ],
         "defaults": {
             "styleId": "pixel_16bit",
-            "width": 512,
-            "height": 512,
+            "width": 1024,
+            "height": 1024,
             "n": 1,
             "background": "gray",
             "pixel": {"enabled": True, "gridSnap": True, "colors": 16,

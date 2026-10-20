@@ -342,13 +342,22 @@ class PreviewPayload(BaseModel):
 
 def _contract_grid(pixel: PixelOptions, style_id: Optional[str],
                    width: int, height: int) -> List[int]:
-    """像素契约里的网格尺寸：目标尺寸 > 画风建议块大小 > 固定 64。"""
+    """像素契约里的网格尺寸：目标尺寸 > 画风固定网格 > 画风建议块大小 > 固定 64。
+
+    固定网格（pixelize.grid）优先于「画布宽 / block」：模型原生 1024 出图时，
+    block=4 会算出 256 网格，远超像素画需要的精度，反而让像素块细碎、
+    描边跨格。各画风直接声明目标素材网格更稳。
+    """
     if pixel.targetSize and len(pixel.targetSize) == 2:
         return [max(8, int(pixel.targetSize[0])), max(8, int(pixel.targetSize[1]))]
     style = get_style(style_id)
+    grid_px = 0
     block = 0
     if style and isinstance(style.get("pixelize"), dict):
+        grid_px = int(style["pixelize"].get("grid") or 0)
         block = int(style["pixelize"].get("block") or 0)
+    if grid_px > 0:
+        return [max(8, grid_px), max(8, grid_px)]
     if block <= 0:
         return [64, 64]
     return [max(8, width // block), max(8, height // block)]
@@ -438,15 +447,23 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
         n = max(1, min(int(params.n), 4))
         pixel = payload.pixel
 
-        built = _build_generation_prompt(payload.prompt, payload.styleId, pixel,
-                                         width, height, params.background)
         progress_mod.report(task_id, 0, 0, "读取参考图…")
-
         refs: List[Image.Image] = []
         for name in payload.refs[:MAX_REFS]:
             img = storage.load_image(payload.projectId, "refs", name)
             if img is not None:
                 refs.append(img)
+
+        # 有参考图 = 指令式编辑：主指令必须明确「保持角色外观不变」。
+        # 之前只有 UI 这么承诺，后端其实没拼这句，模型会自由发挥导致角色漂移。
+        prompt_text = payload.prompt
+        if refs:
+            base = (prompt_text or "").strip()
+            prompt_text = ("以参考图中的角色为准，保持其外观、配色、体型比例不变"
+                           + ("，只做以下调整：" + base if base else "。"))
+
+        built = _build_generation_prompt(prompt_text, payload.styleId, pixel,
+                                         width, height, params.background)
 
         seed = params.seed
         if seed is None:
@@ -475,7 +492,7 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
                 grid_snap=bool(pixel.gridSnap),
                 grid_size=pixel.gridSize,
                 target_size=pixel.targetSize,
-                sample_method="majority",
+                sample_method="median",
                 colors=int(pixel.colors),
                 palette_name=pixel.palette or "auto",
             )
@@ -628,7 +645,7 @@ async def refine_existing(payload: RefinePayload) -> Dict[str, Any]:
     rb = await asyncio.to_thread(
         refine_mod.refine_batch, [img],
         grid_snap=bool(p.gridSnap), grid_size=p.gridSize,
-        target_size=p.targetSize, sample_method="majority",
+        target_size=p.targetSize, sample_method="median",
         colors=int(p.colors), palette_name=p.palette or "auto")
     out = rb["items"][0]
     info = storage.save_image(payload.projectId, out["image"].convert("RGBA"),

@@ -583,7 +583,7 @@ function StylesPanel() {
                 <div className="ex-note mono" style={{ wordBreak: 'break-all' }}>{s.words}</div>
                 {s.pixelize ? (
                   <div className="ex-note">
-                    精修建议：块 {s.pixelize.block}px / {s.pixelize.colors} 色
+                    精修建议：{s.pixelize.grid ? `目标网格 ${s.pixelize.grid}×${s.pixelize.grid}` : `块 ${s.pixelize.block}px`} / {s.pixelize.colors} 色
                   </div>
                 ) : null}
               </div>

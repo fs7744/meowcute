@@ -34,9 +34,10 @@ _SEED: List[Dict[str, Any]] = [
         "id": "builtin-char-slime",
         "category": "角色描述",
         "title": "史莱姆（极简轮廓练习）",
-        "content": "半透明蓝色史莱姆，圆润水滴形身体，两只黑色小圆眼，嘴角上扬，底部扁平贴地，高光在左上角，轮廓为深蓝描边",
-        "note": "极简题材最适合验证像素精修效果：色块少、轮廓简单，"
-                "网格对齐好不好一眼看得出来。",
+        "content": "半透明蓝色史莱姆，圆润水滴形身体，两只黑色小圆眼，嘴角上扬，底部扁平贴地，左上角有高光，轮廓用同色系更深的蓝，不要粗描边",
+        "note": "半透明/软体题材最容易翻车：写「半透明」时不要再要求粗描边——"
+                "像素画里的通透感靠 2-3 级色阶（外缘亮、内部深、顶部高光）表达，"
+                "粗描边会把果冻感压成一块实心色块。",
         "builtin": True,
     },
     {
@@ -162,9 +163,22 @@ def load_examples() -> List[Dict[str, Any]]:
     data = _load_raw()
     existing = {e.get("id"): e for e in data.get("examples", []) if isinstance(e, dict)}
     changed = False
+    # 旧版内置文案 → 新文案的迁移表（只迁移用户没改过的条目）。
+    # 旧文案要求「深蓝描边」，与半透明主体的像素契约冲突，会让史莱姆变实心块。
+    _LEGACY_CONTENT = {
+        "builtin-char-slime": "半透明蓝色史莱姆，圆润水滴形身体，两只黑色小圆眼，"
+                              "嘴角上扬，底部扁平贴地，高光在左上角，轮廓为深蓝描边",
+    }
     for seed in _SEED:
-        if seed["id"] not in existing:
+        cur = existing.get(seed["id"])
+        if cur is None:
             existing[seed["id"]] = dict(seed)
+            changed = True
+        elif (cur.get("builtin")
+              and seed["id"] in _LEGACY_CONTENT
+              and cur.get("content") == _LEGACY_CONTENT[seed["id"]]):
+            cur["content"] = seed["content"]
+            cur["note"] = seed["note"]
             changed = True
     examples = list(existing.values())
     # 稳定排序：分类顺序 → 内置优先 → 创建时间

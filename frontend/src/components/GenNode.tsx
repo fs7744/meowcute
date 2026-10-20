@@ -23,7 +23,7 @@ type Props = {
 }
 
 const SIZES: [number, number][] = [
-  [512, 512], [512, 768], [768, 512], [1024, 1024],
+  [512, 512], [512, 768], [768, 512], [768, 768], [1024, 1024],
 ]
 
 export default function GenNode({
@@ -178,6 +178,9 @@ export default function GenNode({
                 className={`size-chip ${node.params.width === w && node.params.height === h ? 'on' : ''}`}
                 onClick={() => patchParams({ width: w, height: h })}>{w}×{h}</button>
             ))}
+          </div>
+          <div className="hint" style={{ marginTop: 4 }}>
+            1024×1024 是模型原生分辨率（细节最好）；512 更快但像素块更粗。
           </div>
           <div className="param-grid">
             <label className="gen-field">

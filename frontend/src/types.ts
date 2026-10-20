@@ -8,7 +8,7 @@ export type Style = {
   hint: string
   words: string
   pixelClass: boolean
-  pixelize?: { block: number; colors: number } | null
+  pixelize?: { block: number; colors: number; grid?: number } | null
 }
 
 export type TemplateInput = { key: string; label: string; required: boolean; hint: string }

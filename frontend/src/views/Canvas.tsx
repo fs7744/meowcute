@@ -105,7 +105,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       styleId: d.styleId || 'pixel_16bit',
       refs: [],
       params: {
-        width: d.width || 512, height: d.height || 512, n: d.n || 1,
+        width: d.width || 1024, height: d.height || 1024, n: d.n || 1,
         steps: null, seed: null, background: (d as any).background || 'gray',
       },
       pixel: {
@@ -271,7 +271,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       styleId: (d as any).styleId || 'pixel_16bit',
       refs: [],
       params: {
-        width: (d as any).width || 512, height: (d as any).height || 512,
+        width: (d as any).width || 1024, height: (d as any).height || 1024,
         n: (d as any).n || 1, steps: null, seed: null,
         background: (d as any).background || 'gray',
       },

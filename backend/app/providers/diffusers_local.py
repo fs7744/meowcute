@@ -623,6 +623,9 @@ class DiffusersProvider(BaseProvider):
                 height=h,
                 width=w,
                 generator=generator,
+                # 默认 512 token：画风词 + 主体 + 像素契约的中文提示词很容易顶满，
+                # 超出的尾部（恰恰是像素契约）会被静默截断，看起来像「契约没生效」
+                max_sequence_length=1024,
                 # 步进回调：SSE 进度 + 取消检查（diffusers 每步结束调一次）
                 callback_on_step_end=progress_mod.make_step_callback(
                     task_id, use_steps, label=f"第 {i + 1} 张"),
