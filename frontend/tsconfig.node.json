@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    // composite 项目不允许 noEmit，所以把产物丢进 node_modules（已被忽略），
+    // 免得 vite.config.js / .d.ts 落到 frontend/ 根目录被误提交
+    "outDir": "./node_modules/.tmp/tsconfig-node"
+  },
+  "include": ["vite.config.ts"]
+}
