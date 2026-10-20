@@ -245,6 +245,41 @@ def main() -> int:
     check("主体保留", cut is not None and cut.getpixel((128, 120))[3] == 255,
           str(None if cut is None else cut.getpixel((128, 120))))
 
+    # 边缘偏移：内缩一定比外扩留的像素少（啃边 / 留边时的可预测旋钮）
+    def _alpha_count(im):
+        if im is None:
+            return -1
+        return sum(1 for y in range(im.height) for x in range(im.width)
+                   if im.getpixel((x, y))[3] > 8)
+
+    def _bottom_row(im):
+        if im is None:
+            return -1
+        for y in range(im.height - 1, -1, -1):
+            for x in range(im.width):
+                if im.getpixel((x, y))[3] > 8:
+                    return y
+        return -1
+
+    def _matte(extra):
+        r = client.post("/api/matte", json={
+            "projectId": pid, "origAssetId": minfo["id"],
+            "matte": {"enabled": True, "method": "auto", "hard": True, **extra}})
+        assert r.status_code == 200, r.text
+        return r.json()["image"]
+
+    base = storage.load_image(pid, "images", f"{body['assetId']}.png")
+    shrunk = storage.load_image(pid, "images", f"{_matte({'edge': -2})['assetId']}.png")
+    grown = storage.load_image(pid, "images", f"{_matte({'edge': 2})['assetId']}.png")
+    check("边缘偏移方向正确", _alpha_count(shrunk) < _alpha_count(base) < _alpha_count(grown),
+          f"{_alpha_count(shrunk)}/{_alpha_count(base)}/{_alpha_count(grown)}")
+    check("边缘偏移记进 meta", body["matte"].get("edgeOffset") == 0)
+    # 底部裁切：切过的结果最下面一行必须更靠上（去接地投影）
+    trimmed = storage.load_image(pid, "images", f"{_matte({'bottomTrim': 0.1})['assetId']}.png")
+    check("底部裁切上移底边", 0 <= _bottom_row(trimmed) < _bottom_row(base),
+          f"{_bottom_row(trimmed)} vs {_bottom_row(base)}")
+    check("底部裁切记进 meta", trimmed is not None)
+
     print("== 项目文件夹（输入与产出都落在项目目录） ==")
     from backend.app.config import PROJECTS_DIR
     pdir = PROJECTS_DIR / pid

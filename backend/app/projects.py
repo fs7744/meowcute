@@ -55,6 +55,8 @@ DEFAULT_MATTE = {
     "feather": 0,
     "despill": True,
     "trim": False,
+    "edge": 0,
+    "bottomTrim": 0.0,
 }
 
 
@@ -314,6 +316,10 @@ def _clean_matte(m: Any) -> Dict[str, Any]:
     method = str(m.get("method") or "auto")[:16]
     if method not in ("auto", "u2net", "grabcut", "key"):
         method = "auto"
+    try:
+        bottom_trim = float(m.get("bottomTrim") or 0)
+    except Exception:
+        bottom_trim = 0.0
     return {
         "enabled": bool(m.get("enabled", True)),
         "method": method,
@@ -322,6 +328,8 @@ def _clean_matte(m: Any) -> Dict[str, Any]:
         "feather": _i(m.get("feather"), 0, 0, 24),
         "despill": bool(m.get("despill", True)),
         "trim": bool(m.get("trim")),
+        "edge": _i(m.get("edge"), 0, -3, 3),
+        "bottomTrim": round(max(0.0, min(bottom_trim, 0.3)), 3),
     }
 
 

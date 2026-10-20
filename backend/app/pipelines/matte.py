@@ -362,6 +362,106 @@ def _mask_keep(rgb: np.ndarray) -> np.ndarray:
     return np.array(mask) >= 128
 
 
+def _clean_alpha_specks(kept: np.ndarray, passes: int = 2) -> Tuple[np.ndarray, int]:
+    """去掉孤立的单像素前景噪点。
+
+    u2net 会在主体外和抗锯齿边撒零散 1px 点，二值化后成了扎眼的碎屑。判据刻意只认
+    「8 邻域里一个前景邻居都没有」：胡须、触角这类 1px 宽但有长度的结构，每颗像素
+    至少还有一个同类邻居，不会被误删。
+    """
+    if not kept.any():
+        return kept, 0
+    out = kept.copy()
+    removed = 0
+    for _ in range(max(1, passes)):
+        cnt = np.zeros(kept.shape, dtype=np.uint8)
+        for dy, dx in _NEIGHBOURS:
+            cnt += _neighbour_shift(out, dy, dx).astype(np.uint8)
+        lonely = out & (cnt == 0)
+        n = int(lonely.sum())
+        if not n:
+            break
+        out &= ~lonely
+        removed += n
+    return out, removed
+
+
+def _plausible(kept: np.ndarray) -> Tuple[bool, str]:
+    """分割结果是否有基本合理性——用来决定要不要换条路径重来。
+
+    两类失败最常见，且都不报错：把整幅图当主体（四边几乎全被保留）、什么都没留下。
+    语义分割在这两种情况下会安静地给出一个「看起来跑了」的结果，用户只看到一张
+    要么没抠、要么全空的图。这里先量一次，不合理就让调用方退到图割 / 颜色键。
+    """
+    if not kept.any():
+        return False, "没有识别出主体"
+    h, w = kept.shape
+    ratio = float(kept.sum()) / float(h * w)
+    if ratio < 0.015:
+        return False, "主体面积过小"
+    if ratio > 0.985:
+        return False, "几乎整幅图都被当成主体"
+    border = [kept[0, :].mean(), kept[-1, :].mean(), kept[:, 0].mean(), kept[:, -1].mean()]
+    if min(border) > 0.55:
+        return False, "主体铺满四条边（多半把背景也算进去了）"
+    return True, ""
+
+
+def _trim_bottom(kept: np.ndarray, ratio: float) -> Tuple[np.ndarray, int]:
+    """从主体底部按比例切掉一条（0 < ratio <= 0.3），用来去掉接地投影 / 地面残影。
+
+    为什么要给这么「粗暴」的旋钮：AI 出图常画一圈贴地软投影，而投影与浅色主体在
+    颜色和几何上都可能重合（实测浅蓝史莱姆底 + 淡紫投影，试过按亮度、按饱和度、
+    按到底色的距离、按列轮廓四种判据，都会把主体底部一起削掉）。与其上线一个
+    会咬掉角色脚的东西，不如把这条边界交给用户：拖一下就能对齐主体的真实底边，
+    结果完全可预测。
+    """
+    r = max(0.0, min(float(ratio), 0.3))
+    if r <= 0:
+        return kept, 0
+    ys, _ = np.nonzero(kept)
+    if not len(ys):
+        return kept, 0
+    y0, y1 = int(ys.min()), int(ys.max())
+    subj_h = max(1, y1 - y0 + 1)
+    cut_y = y1 - int(round(subj_h * r))
+    if cut_y <= y0:
+        return kept, 0
+    removed = kept[cut_y + 1:, :]
+    n = int(removed.sum())
+    out = kept.copy()
+    out[cut_y + 1:, :] = False
+    return out, n
+
+
+def _edge_offset(kept: np.ndarray, px: int) -> np.ndarray:
+    """整块 alpha 的边界内缩（负）或外扩（正），单位像素。
+
+    抠图边界永远有 1-2 像素的争议：硬边像素素材常常被啃掉一圈轮廓，照片类又容易
+    留一圈底色残影。与其在阈值上猜，不如给一个可预测的旋钮——用户看到「啃边」就
+    加、看到「留边」就减，效果立刻可见。
+    """
+    n = abs(int(px))
+    if n == 0:
+        return kept
+    out = kept.copy()
+    for _ in range(n):
+        if px < 0:
+            # 腐蚀必须取「所有邻居的交集」；用并集再与自身相与等于没做
+            acc = np.ones_like(out)
+            for dy, dx in _NEIGHBOURS:
+                acc &= _neighbour_shift(out, dy, dx)
+            out = acc
+        else:
+            acc = np.zeros_like(out)
+            for dy, dx in _NEIGHBOURS:
+                acc |= _neighbour_shift(out, dy, dx)
+            out = out | acc
+        if not out.any():
+            break
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # 路径 2：GrabCut 图割
 # --------------------------------------------------------------------------- #
@@ -472,12 +572,16 @@ def remove_background(
     hard: bool = True,
     despill: bool = True,
     method: str = "auto",
+    edge: int = 0,
+    bottom_trim: float = 0.0,
 ) -> Tuple[Image.Image, dict]:
     """抠掉背景。
 
     hard=True（默认，像素素材）：二值 alpha + 边缘去污，无软边、无白晕。
     hard=False（照片 / 半透明素材）：保留高斯羽化，边缘更自然。
     method: auto | u2net | grabcut | key
+    edge: 整块 alpha 的边界偏移，负数内缩、正数外扩，单位像素
+    bottom_trim: 从主体底部切掉的比例（0-0.3），用于去掉接地投影
     """
     rgba = img.convert("RGBA")
     arr = np.array(rgba)
@@ -498,42 +602,70 @@ def remove_background(
     removed = 0
     grown = 0
     holes_filled = 0
+    specks_removed = 0
     last_err = None
+    retry_reason = ""
 
-    for cand in chain:
+    def _try(cand: str):
         if cand == "u2net":
-            if not hard or min(h, w) < 64 or not u2net_available():
-                continue
-            try:
-                kept = _mask_keep(arr[:, :, :3])
-                used = "u2net"
-            except Exception as e:
-                last_err = f"u2net: {type(e).__name__}"
-                kept = None
-                continue
-        elif cand == "grabcut":
+            if not hard or min(h, w) < 32 or not u2net_available():
+                return None
+            return _mask_keep(arr[:, :, :3])
+        if cand == "grabcut":
             if not hard or min(h, w) < 96:
-                continue
-            try:
-                import cv2  # noqa: F401
-                kept = _grabcut_keep(arr[:, :, :3])
-                used = "grabcut"
-            except Exception as e:  # 无 cv2
-                last_err = f"grabcut: {type(e).__name__}"
-                kept = None
-                continue
+                return None
+            return _grabcut_keep(arr[:, :, :3])
+        k, rem, gr = _key_keep(rgb, palette, tolerance, edge_grow, grow_passes)
+        return k
+
+    # 逐级尝试；每一级都过一遍合理性检查，不合格就换下一条更保守的路径。
+    # first 记住第一个跑出来的结果：全都「看起来不对」时宁可用首选（语义分割）也不换成
+    # 颜色键——满幅构图的图标本来就该四边都有前景，不能因为启发式不认就换条更差的路径。
+    first = None
+    for cand in chain:
+        if cand == "key":
+            got, rem, gr = _key_keep(rgb, palette, tolerance, edge_grow, grow_passes)
         else:
+            try:
+                got = _try(cand)
+            except Exception as e:
+                last_err = f"{cand}: {type(e).__name__}"
+                continue
+            rem = gr = 0
+            if got is None:
+                continue
+        if first is None:
+            first = (got, cand, rem, gr)
+        ok, why = _plausible(got)
+        if ok:
+            kept, used = got, cand
+            if cand == "key":
+                removed, grown = rem, gr
+            break
+        # 不合理：记下原因，继续试下一条更保守的路径
+        retry_reason = why
+        last_err = f"{cand}: {why}"
+
+    if kept is None:
+        if first is not None:
+            kept, used, removed, grown = first
+            retry_reason = retry_reason or "分割结果不可靠，已保留首选结果"
+        else:  # 一条路径都没跑起来
             kept, removed, grown = _key_keep(rgb, palette, tolerance, edge_grow, grow_passes)
             used = "key"
-        break
-
-    if kept is None:  # 兜底
-        kept, removed, grown = _key_keep(rgb, palette, tolerance, edge_grow, grow_passes)
-        used = "key"
 
     kept = kept & ~already_clear
-    if hard and used != "key":
-        kept, holes_filled = _fill_small_holes(kept)
+    if edge:
+        before = int(kept.sum())
+        kept = _edge_offset(kept, edge)
+        grown += max(0, int(kept.sum()) - before)
+    if bottom_trim > 0:
+        kept, cut = _trim_bottom(kept, bottom_trim)
+        removed += cut
+    if hard:
+        kept, specks_removed = _clean_alpha_specks(kept)
+        if used != "key":
+            kept, holes_filled = _fill_small_holes(kept)
     removed = int((~kept).sum())
 
     despilled = 0
@@ -573,6 +705,9 @@ def remove_background(
         "hard": hard,
         "despilledPixels": despilled,
         "holesFilled": holes_filled,
+        "specksRemoved": specks_removed,
+        "edgeOffset": int(edge),
+        "bottomTrim": round(float(bottom_trim), 3),
         "edgeGrowPixels": grown,
         "removedRatio": round(removed / float(h * w), 4),
         "keptRatio": kept_ratio,
@@ -580,11 +715,13 @@ def remove_background(
     }
     if last_err:
         meta["fallbackReason"] = last_err
+    if retry_reason:
+        meta["retryReason"] = retry_reason
     # 几乎没抠掉 / 几乎全抠掉都说明这一趟大概率不对，前端要能直接提示
     if kept_ratio < 0.02:
-        meta["warning"] = "几乎没留下主体：可能是背景识别错了，试试调低容差或换个方法"
+        meta["warning"] = "几乎没留下主体：多半把背景当成了主体，把方法改成「颜色键」并调低容差试试"
     elif kept_ratio > 0.97:
-        meta["warning"] = "几乎没抠掉背景：主体可能铺满画面或背景不够纯，试试提高容差"
+        meta["warning"] = "几乎没抠掉背景：主体可能铺满画面，或背景与主体太接近"
     return out, meta
 
 

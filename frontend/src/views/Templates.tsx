@@ -29,12 +29,22 @@ const WHY = [
 
 export default function Templates({ onOpenProject, onGoProjects }: Props) {
   const [templates, setTemplates] = useState<Template[]>([])
-  const [modal, setModal] = useState<{ open: boolean; tid?: string }>({ open: false })
+  const [modal, setModal] = useState<{ open: boolean; tid?: string; params?: boolean }>({ open: false })
   const [error, setError] = useState<string | null>(null)
+  // 模板页视图：简略只留「名字 + 链路 + 入口」，适合模板多起来之后快速扫；
+  // 详细给全量说明。偏好记在 localStorage，下次进来还是你选的那个。
+  const [view, setView] = useState<'compact' | 'detail'>(() => (
+    localStorage.getItem('meowcute.templates.view') === 'compact' ? 'compact' : 'detail'
+  ))
+  useEffect(() => {
+    localStorage.setItem('meowcute.templates.view', view)
+  }, [view])
 
   useEffect(() => {
     api.templates().then((r) => setTemplates(r.templates)).catch((e) => setError(String(e.message || e)))
   }, [])
+
+  const compact = view === 'compact'
 
   const available = templates.filter((t) => t.status === 'available')
   const planned = templates.filter((t) => t.status !== 'available')
@@ -71,11 +81,19 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
         {error ? <div className="err">{error}</div> : null}
 
         <div className="section-head">
-          <div className="section-title">工作流模板</div>
-          <div className="section-sub">新建项目必须先选一个模板；模板决定画布上的节点链</div>
+          <div className="grow">
+            <div className="section-title">工作流模板</div>
+            <div className="section-sub">新建项目必须先选一个模板；模板决定画布上的节点链</div>
+          </div>
+          <div className="view-switch">
+            {([['compact', '简略'], ['detail', '详细']] as const).map(([k, label]) => (
+              <button key={k} className={`vs-btn ${view === k ? 'on' : ''}`}
+                onClick={() => setView(k)}>{label}</button>
+            ))}
+          </div>
         </div>
 
-        <div className="tpl-grid">
+        <div className={`tpl-grid ${compact ? 'compact' : ''}`}>
           {available.map((t) => (
             <div className="tpl-card available" key={t.id}>
               <div className="tpl-card-head">
@@ -90,11 +108,13 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
                 {t.custom ? <span className="tag pink">自定义</span> : null}
               </div>
 
-              <div className="desc">{t.description}</div>
+              {compact ? null : <div className="desc">{t.description}</div>}
 
-              <ul className="tpl-highlights">
-                {t.highlights.map((h) => <li key={h}>{h}</li>)}
-              </ul>
+              {compact ? null : (
+                <ul className="tpl-highlights">
+                  {t.highlights.map((h) => <li key={h}>{h}</li>)}
+                </ul>
+              )}
 
               <div className="tpl-flows">
                 {t.steps.map((s, i) => (
@@ -105,21 +125,23 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
                 ))}
               </div>
 
-              {t.inputs.length || t.outputs.length ? (
+              {compact || !t.inputs.length ? null : (
                 <div className="tpl-io">
                   <div><b>输入</b> · {t.inputs.map((i) => i.label + (i.required ? '' : '（可选）')).join(' · ')}</div>
-                  <div><b>输出</b> · {t.outputs.map((o) => o.label).join(' · ')}</div>
+                  {t.outputs.length ? <div><b>输出</b> · {t.outputs.map((o) => o.label).join(' · ')}</div> : null}
                 </div>
-              ) : null}
+              )}
 
               <div className="tpl-actions">
                 <button className="btn btn-primary btn-sm" style={{ height: 34 }}
                   onClick={() => setModal({ open: true, tid: t.id })}>
                   用此模板新建项目
                 </button>
-                <button className="btn btn-sm btn-ghost" onClick={() => setModal({ open: true, tid: t.id })}>
-                  查看参数
-                </button>
+                {compact ? null : (
+                  <button className="btn btn-sm btn-ghost" onClick={() => setModal({ open: true, tid: t.id, params: true })}>
+                    查看参数
+                  </button>
+                )}
                 {t.custom ? (
                   <button className="btn btn-sm btn-danger" onClick={async () => {
                     if (!confirm(`删除自定义模板「${t.name}」？已创建的项目不受影响。`)) return
@@ -172,7 +194,7 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
                     <span className="tag gray">规划中</span>
                   </div>
                   <div className="desc">{t.description}</div>
-                  <div className="hint">{t.notes?.[0]}</div>
+                  {compact ? null : <div className="hint">{t.notes?.[0]}</div>}
                 </div>
               ))}
             </div>
@@ -193,6 +215,7 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
         open={modal.open}
         templates={templates}
         defaultTemplateId={modal.tid}
+        paramsOnly={modal.params}
         onClose={() => setModal({ open: false })}
         onCreate={create}
       />

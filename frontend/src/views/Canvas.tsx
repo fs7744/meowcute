@@ -450,6 +450,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       matte: {
         enabled: true, method: 'auto', tolerance: 80,
         hard: true, feather: 0, despill: true, trim: false,
+        edge: 0, bottomTrim: 0,
       },
       result: null, createdAt: Date.now() / 1000,
     }

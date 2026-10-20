@@ -26,7 +26,12 @@ export default function MatteNode({
   node, index, running, sourceLabel, onChange, onDelete, onDragStart,
   onRun, onStartLink, onFinishLink, onPreview,
 }: Props) {
-  const m = node.matte
+  // 老项目 / 旧模板里可能没有后加的字段，合并默认值避免控件拿到 undefined
+  const DEFAULTS: MatteNodeType['matte'] = {
+    enabled: true, method: 'auto', tolerance: 80, hard: true,
+    feather: 0, despill: true, trim: false, edge: 0, bottomTrim: 0,
+  }
+  const m = { ...DEFAULTS, ...node.matte }
   const patch = (p: Partial<typeof m>) => onChange({ matte: { ...m, ...p } })
 
   // 引擎体检：让用户知道这一趟到底走的是语义分割还是颜色键兜底
@@ -131,6 +136,27 @@ export default function MatteNode({
           </button>
         </div>
 
+        <div className="param-grid">
+          <label className="gen-field">
+            <span className="gen-field-label" title="负=内缩，去掉一圈底色残影；正=外扩，补回被啃掉的轮廓">
+              边缘 {m.edge > 0 ? `+${m.edge}` : m.edge}px
+            </span>
+            <input type="range" min={-3} max={3} step={1} value={m.edge}
+              onChange={(e) => patch({ edge: Number(e.target.value) })} />
+          </label>
+          <label className="gen-field">
+            <span className="gen-field-label" title="从主体底部按比例切掉，用来去掉 AI 画的接地投影">
+              底部裁切 {Math.round(m.bottomTrim * 100)}%
+            </span>
+            <input type="range" min={0} max={0.12} step={0.01} value={m.bottomTrim}
+              onChange={(e) => patch({ bottomTrim: Number(e.target.value) })} />
+          </label>
+        </div>
+        <div className="hint" style={{ marginTop: -6 }}>
+          抠图边界差 1px 就调「边缘」；角色脚下拖着一圈灰影就拉「底部裁切」——
+          投影和浅色主体常常长在一起，自动判断会连带削掉脚，所以这里交给你手上。
+        </div>
+
         <button className="btn btn-sm" onClick={onRun} disabled={running}
           style={{ marginTop: 8, width: '100%' }}>
           {running ? <><span className="spin" /> 抠图中…</> : '运行扣背景'}
@@ -151,6 +177,12 @@ export default function MatteNode({
             </div>
             {meta?.warning ? (
               <div className="ref-note" style={{ marginTop: 4 }}>{meta.warning}</div>
+            ) : null}
+            {meta?.retryReason ? (
+              <div className="hint" style={{ marginTop: 4 }}>
+                这图的构成不太典型（{meta.retryReason}），已换更稳的路径处理；
+                边缘仍不理想的话，用「边缘偏移」和「底部裁切」微调。
+              </div>
             ) : null}
           </div>
         ) : (

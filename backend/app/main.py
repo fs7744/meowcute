@@ -753,6 +753,10 @@ class MatteOptions(BaseModel):
     despill: bool = True
     # 抠完按 alpha 包围盒裁到主体，便于直接当素材用
     trim: bool = False
+    # 边界偏移：负=内缩（去掉一圈底色残影），正=外扩（补回被啃掉的轮廓）
+    edge: int = 0
+    # 从主体底部切掉的比例（0-0.3）：AI 画的接地投影只能这样确定性地去掉
+    bottomTrim: float = 0.0
 
 
 class MattePayload(BaseModel):
@@ -784,6 +788,7 @@ async def matte_existing(payload: MattePayload) -> Dict[str, Any]:
         matte_mod.remove_background, img,
         tolerance=int(m.tolerance), feather=int(m.feather),
         hard=bool(m.hard), despill=bool(m.despill),
+        edge=int(m.edge), bottom_trim=float(m.bottomTrim),
         method=m.method if m.method in ("auto", "u2net", "grabcut", "key") else "auto")
     if m.trim:
         out, trim_info = matte_mod.trim_to_subject(out)

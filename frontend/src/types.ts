@@ -71,6 +71,10 @@ export type MatteOptions = {
   despill: boolean
   /** 抠完裁到主体包围盒 */
   trim: boolean
+  /** 边界偏移：负=内缩（去掉一圈底色残影），正=外扩（补回被啃掉的轮廓） */
+  edge: number
+  /** 从主体底部切掉的比例（0-0.3），用于去掉 AI 画的接地投影 */
+  bottomTrim: number
 }
 
 /** 抠图指标：走的是哪条路径、抠掉了多少、有没有可疑 */
@@ -86,6 +90,10 @@ export type MatteMeta = {
   residualKeyPixels?: number
   warning?: string
   fallbackReason?: string
+  /** 分割结果不可靠时的原因（说明为什么换了条路径） */
+  retryReason?: string
+  edgeOffset?: number
+  specksRemoved?: number
   trim?: { box: [number, number, number, number] }
 }
 
