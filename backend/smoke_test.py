@@ -421,6 +421,8 @@ def main() -> int:
     check("每方向 8 帧", all(d.get("count") == 8 for d in seq_meta.get("directions", [])),
           str([d.get("count") for d in seq_meta.get("directions", [])]))
     check("序列帧带拼条图", len(seq.get("images", [])) == 2)
+    check("没有抠图失败帧", seq_meta.get("matteErrors") == 0,
+          str(seq_meta.get("matteErrors")))
 
     r = client.post("/api/spritesheet", json={
         "projectId": wpid,
@@ -435,6 +437,9 @@ def main() -> int:
     check("精灵整图无错误", not sheet.get("error"), str(sheet.get("error")))
     check("两个方向各一张表", len(sheet_meta.get("directions", [])) == 2)
     check("有八方向总览", bool(sheet_meta.get("overview", {}).get("url")))
+    check("总览按方向数收窄",
+          sheet_meta["overviewSize"][0] < 1024 * 3,
+          str(sheet_meta.get("overviewSize")))
     check("单元格 128", all(d.get("frameSize") == {"w": 128, "h": 128}
                           for d in sheet_meta.get("directions", [])),
           str([d.get("frameSize") for d in sheet_meta.get("directions", [])]))

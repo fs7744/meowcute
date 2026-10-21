@@ -211,9 +211,16 @@ async def run_sequence(
         picked, dropped = dedup_frames(picked)
         prepared: List[Image.Image] = []
         removed: List[float] = []
+        matte_errors = 0
         for f in picked:
             progress_mod.check_cancel(task_id)
-            cut, m = prepare_frame(f, matte=matte, tolerance=tolerance)
+            try:
+                cut, m = prepare_frame(f, matte=matte, tolerance=tolerance)
+            except Exception:
+                # 单帧抠图失败（罕见：极端尺寸 / 全同色画面）不该让整批失败：
+                # 用未抠的帧兜底，计数交给上层提示
+                cut, m = f.convert("RGBA"), {"matte": False}
+                matte_errors += 1
             prepared.append(cut)
             removed.append(float(m.get("removedRatio", 0)))
         done += 1
@@ -225,6 +232,7 @@ async def run_sequence(
             "count": len(prepared),
             "sourceFrames": len(frames),
             "dropped": dropped,
+            "matteErrors": matte_errors,
             "strip": contact_strip(prepared),
             "bgRemovedAvg": round(sum(removed) / max(1, len(removed)), 3),
         })
@@ -235,5 +243,6 @@ async def run_sequence(
         "directions": len(out),
         "counts": [d["count"] for d in out],
         "dropped": sum(d["dropped"] for d in out),
+        "matteErrors": sum(d.get("matteErrors", 0) for d in out),
     }
     return out, meta

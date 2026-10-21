@@ -343,6 +343,12 @@ export type WalkMeta = {
   mirroredDirections: number
   /** 用现成视频的方向数（跳过推导 + Wan） */
   existingDirections: number
+  /** 单个方向失败不连累整批：这里列出缺席的方向与原因 */
+  failures?: { dir: WalkDir; label: string; stage: string; error: string }[]
+  /** 一段视频的峰值显存（GB），取各方向最大值 */
+  vramPeakGB?: number | null
+  /** 出完片并卸载底座后的显存占用（GB） */
+  vramAfterGB?: number | null
   fps: number
   numFrames: number
   size: [number, number]
@@ -371,6 +377,8 @@ export type SequenceMeta = {
   tolerance: number
   counts: number[]
   dropped: number
+  /** 抠图失败、退回未抠图的帧数（单帧失败不中断整批） */
+  matteErrors?: number
   seconds: number
   directions: SequenceDirection[]
 }
@@ -534,6 +542,8 @@ export type ResultMeta = {
   seconds?: number
   autoRouted?: boolean
   vramWarning?: string | null
+  /** 这次生成的峰值显存（GB），用于让用户看得见资源消耗 */
+  vram?: { peakGB: number; reservedGB: number; totalGB: number } | null
   refCount?: number
   pixelEnabled?: boolean
   palette?: string

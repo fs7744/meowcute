@@ -243,12 +243,15 @@ async def generate_walk(
         task_id=task_id,
     )
     rmeta = dict(result.meta or {})
-    return list(result.images), {
+    out = {
         "prompt": prompt, "mode": "i2v", "frames": len(result.images),
         "fps": rmeta.get("fps"), "seconds": round(time.time() - t, 1),
         "model": rmeta.get("model"), "size": rmeta.get("size"),
         "steps": rmeta.get("steps"), "seed": seed,
     }
+    if rmeta.get("vram"):
+        out["vram"] = rmeta["vram"]
+    return list(result.images), out
 
 
 async def run_walk(
@@ -301,11 +304,23 @@ async def run_walk(
     clips: Dict[str, List[Image.Image]] = {}
     derive_meta: Dict[str, Dict[str, Any]] = {}
     walk_meta: Dict[str, Dict[str, Any]] = {}
+    failures: List[Dict[str, Any]] = []
+
+    def _fail(d: str, stage: str, err: Exception) -> None:
+        """单个方向失败不连累整批：八方向是分钟级任务，OOM 掉一个方向就把
+        已完成的全丢掉太浪费——记下来，能用的先交付。"""
+        failures.append({"dir": d, "label": DIR_LABELS.get(d, d),
+                         "stage": stage, "error": str(err)[:300]})
+
     for d in src_dirs:
         src = src_map[d]
-        frames = normalize_source_frames(src["frames"], width=width, height=height)
-        if not frames:
-            raise RuntimeError(f"方向 {DIR_LABELS[d]} 的现成视频没有可用帧")
+        try:
+            frames = normalize_source_frames(src["frames"], width=width, height=height)
+            if not frames:
+                raise RuntimeError("没有可用帧")
+        except Exception as e:
+            _fail(d, "existing", e)
+            continue
         clips[d] = frames
         derive_meta[d] = {"direction": d, "label": DIR_LABELS[d], "mode": "existing"}
         walk_meta[d] = {
@@ -320,10 +335,18 @@ async def run_walk(
     # 第一轮：方向立绘（编辑底座）
     views: Dict[str, Image.Image] = {}
     for d in gen_dirs:
-        img, meta = await derive_direction(
-            base, d, steps=steps, seed=seed,
-            width=width, height=height, max_seq_len=max_seq_len,
-            provider_cfg=provider_cfg, task_id=task_id)
+        progress_mod.report(task_id, done, total_steps,
+                            f"{DIR_LABELS[d]}立绘推导中…")
+        try:
+            img, meta = await derive_direction(
+                base, d, steps=steps, seed=seed,
+                width=width, height=height, max_seq_len=max_seq_len,
+                provider_cfg=provider_cfg, task_id=task_id)
+        except progress_mod.CancelledError:
+            raise
+        except Exception as e:
+            _fail(d, "derive", e)
+            continue
         views[d] = img
         derive_meta[d] = meta
         done += 1
@@ -332,18 +355,41 @@ async def run_walk(
 
     # 第二轮：行走视频（Wan 常驻）
     for d in gen_dirs:
+        if d not in views:
+            continue                     # 立绘就失败的方向不用再跑视频
         progress_mod.report(task_id, done, total_steps,
                             f"{DIR_LABELS[d]}行走视频（Wan）…")
-        frames, meta = await generate_walk(
-            views[d], action=action, steps=steps, seed=seed,
-            width=width, height=height, num_frames=num_frames,
-            fps=fps, max_side=max_side,
-            provider_cfg=provider_cfg, task_id=task_id)
+        try:
+            frames, meta = await generate_walk(
+                views[d], action=action, steps=steps, seed=seed,
+                width=width, height=height, num_frames=num_frames,
+                fps=fps, max_side=max_side,
+                provider_cfg=provider_cfg, task_id=task_id)
+        except progress_mod.CancelledError:
+            raise
+        except Exception as e:
+            _fail(d, "walk", e)
+            continue
         clips[d] = frames
         walk_meta[d] = meta
         done += 1
         progress_mod.report(task_id, done, total_steps,
                             f"{DIR_LABELS[d]}行走视频完成（{done}/{total_steps}）")
+
+    # 视频出完就把 Wan 卸掉：下游（序列帧 / 精灵整图）是纯 CPU 计算，
+    # 抱着 17GB 底座纯属占着茅坑——也让这一步之后的显存立刻回到基线。
+    if gen_dirs:
+        try:
+            from ..providers.diffusers_local import DiffusersProvider
+
+            DiffusersProvider.unload()
+            progress_mod.report(task_id, done, total_steps, "已释放视频底座显存")
+        except Exception:
+            pass
+
+    if not clips:
+        detail = "；".join(f"{f['label']}：{f['error']}" for f in failures[:3])
+        raise RuntimeError(f"全部方向都失败了（{detail or '没有可用输入'}）")
 
     # 组装输出（含镜像方向）
     out: List[Dict[str, Any]] = []
@@ -359,6 +405,12 @@ async def run_walk(
             }
         else:
             src = DIR_MIRROR_OF.get(d)
+            if not src or src not in clips:
+                # 镜像源本身失败了：这个方向跟着缺席，不要拿空帧去填
+                if not any(f["dir"] == d for f in failures):
+                    _fail(d, "mirror",
+                          RuntimeError(f"镜像源 {DIR_LABELS.get(src or '', src)} 没有产出"))
+                continue
             frames = [f.transpose(Image.FLIP_LEFT_RIGHT) for f in clips[src]]
             entry = {
                 "dir": d, "label": DIR_LABELS[d], "frames": frames,
@@ -374,8 +426,9 @@ async def run_walk(
         "dirMode": dir_mode, "dirModeLabel": DIR_MODE_LABELS.get(dir_mode, dir_mode),
         "action": action, "directions": len(out),
         "realDirections": len(real_dirs),
-        "mirroredDirections": len(out) - len(real_dirs),
+        "mirroredDirections": len([d for d in out if d["mirrored"]]),
         "existingDirections": len(src_dirs),
+        "failures": failures,
         "fps": fps, "numFrames": num_frames,
         "size": [width, height], "maxSide": max_side,
         "seconds": round(time.time() - t0, 1),

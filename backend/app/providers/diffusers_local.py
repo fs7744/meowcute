@@ -19,6 +19,7 @@ import asyncio
 import gc
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from .base import BaseProvider, ProviderResult
@@ -29,6 +30,10 @@ _CACHE: Dict[str, Any] = {}
 _CAPS: Dict[str, Dict[str, Any]] = {}
 _FAMILY: Dict[str, str] = {}
 _LOCK = asyncio.Lock()
+
+# 最近一次用到某个底座的时间戳：显存是独占资源，跑完就一直抱着不放会让
+# 其他程序（浏览器 / 游戏 / 另一个 AI 工具）长期分不到显存。
+_LAST_USE = time.time()
 
 _FP8_LINEAR_CLS: Any = None
 
@@ -436,12 +441,32 @@ class DiffusersProvider(BaseProvider):
                 "Z-Image 是 bf16 单流 DiT，需要 CUDA GPU（如 RTX 4090）；CPU 推理不可行。"
             )
         # low_cpu_mem_usage 保持默认 True：实测 False 会让推理慢 10 倍以上
+        #
+        # 显存策略（原来是 pipe.to("cuda")：整条管线常驻约 20GB——transformer
+        # 12GB + Qwen3-4B 编码器 8GB。跑完一张图就一直占着 20GB 不放，其他
+        # 程序全部分不到显存，「显存消耗很大」主要就是这一处）。
+        # 改成 cpu offload：只有当前用到的模块在 GPU 上，编码器/VAE 按阶段换入
+        # 换出；显存仍紧张时再把 transformer 压成 fp8（12GB → 约 6GB）。
+        free_gb = 0.0
+        try:
+            free_gb = torch.cuda.mem_get_info()[0] / 2**30
+        except Exception:
+            pass
+        # bf16 + offload 的峰值约 15GB：卡上还剩 17GB 以上就保持 bf16（画质最好），
+        # 不够了才压 fp8（峰值约 8GB）。MEOWCUTE_ZIMAGE_FP8=1/0 可强制开关。
+        mode = os.environ.get("MEOWCUTE_ZIMAGE_FP8", "auto").strip().lower()
+        use_fp8 = mode == "1" or (mode == "auto" and 0 < free_gb < 17)
         pipe = ZImagePipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16)
-        pipe.to("cuda")
+        if use_fp8:
+            self._quantize_fp8(pipe.transformer, "zimage.transformer")
+        # 注意：不要和 enable_model_cpu_offload 一起用 pipe.to("cuda")——
+        # 那会把所有模块先搬上 GPU，offload 就白开了
+        pipe.enable_model_cpu_offload()
         pipe.set_progress_bar_config(disable=True)
         _CAPS[model_id] = {
             "family": "zimage",
-            "notes": ["Z-Image：中文提示词直喂，9 步蒸馏，guidance 固定 0"],
+            "notes": ["Z-Image：中文提示词直喂，9 步蒸馏，guidance 固定 0",
+                      "cpu offload" + (" + transformer fp8" if use_fp8 else "")],
         }
         _CACHE[model_id] = pipe
         return pipe
@@ -492,11 +517,26 @@ class DiffusersProvider(BaseProvider):
                 model_id, torch_dtype=torch.bfloat16)
             if use_fp8:
                 self._quantize_fp8(pipe.transformer, "qwen_edit.transformer")
-        pipe.enable_model_cpu_offload()
+
+        # 实测 fp8 + model offload 的峰值约 22.4GB（4090 24GB）：卡干净时刚好
+        # 放得下，但只要有别的程序占了几 GB 就会 OOM。显存不够时自动换成
+        # sequential offload——每个子模块用完即换出，峰值降到几 GB，代价是慢
+        # （权重要反复过 PCIe）。宁可慢也别崩。
+        offload = "model"
+        try:
+            free_gb = torch.cuda.mem_get_info()[0] / 2**30
+            if 0 < free_gb < 21:
+                pipe.enable_sequential_cpu_offload()
+                offload = "sequential"
+            else:
+                pipe.enable_model_cpu_offload()
+        except Exception:
+            pipe.enable_model_cpu_offload()
         pipe.set_progress_bar_config(disable=True)
         _CAPS[model_id] = {
             "family": "qwen_edit",
-            "notes": ["Qwen-Image-Edit：中文指令直喂；必须传参考图；fp8 + cpu offload"],
+            "notes": ["Qwen-Image-Edit：中文指令直喂；必须传参考图；fp8 + "
+                      f"{offload} offload"],
         }
         _CACHE[model_id] = pipe
         return pipe
@@ -652,6 +692,13 @@ class DiffusersProvider(BaseProvider):
             scale = max_side / max(w, h)
             w, h = max(16, int(w * scale) // 16 * 16), max(16, int(h * scale) // 16 * 16)
         src = src.resize((w, h), _Image.LANCZOS)
+        # 峰值统计从这张视频开始算：不清零的话会带上之前方向的峰值，报出来的
+        # 数字对不上「一段视频到底要多少显存」
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
         # 4k+1：Wan 时序 VAE 把帧数压成 (n-1)/4+1 个潜帧，非 4k+1 会补齐或报错
         frames = max(5, (int(num_frames) - 1) // 4 * 4 + 1)
         out = pipe(
@@ -671,11 +718,28 @@ class DiffusersProvider(BaseProvider):
             callback_on_step_end=progress_mod.make_step_callback(task_id, use_steps),
         )
         imgs = _frames_to_pil(out.frames)
+        # 峰值显存：用户抱怨「显存很大」时，最需要知道的就是这个数到底多少。
+        # 注意报 reserved 而不是 allocated——分配器把峰值一直攥着不还，
+        # nvidia-smi 的「已用」其实是 reserved。
+        vram: Dict[str, Any] = {}
+        try:
+            if torch.cuda.is_available():
+                vram = {
+                    "peakGB": round(torch.cuda.max_memory_allocated() / 2**30, 2),
+                    "reservedGB": round(torch.cuda.memory_reserved() / 2**30, 2),
+                    "totalGB": round(
+                        torch.cuda.get_device_properties(0).total_memory / 2**30, 2),
+                }
+        except Exception:
+            pass
+        # 一段视频跑完就把缓存块还回去：八方向连跑五段，分配器会越攒越大
+        _release_vram()
         return imgs, {
             "steps": use_steps, "cfg": 5.0, "family": "wan",
             "mode": "i2v", "frames": len(imgs), "fps": fps,
             "seconds": round(len(imgs) / max(1, int(fps)), 2),
             "size": [w, h],
+            **({"vram": vram} if vram else {}),
         }
 
     def _load_component_fp8(self, model_id: str, subdir: str, cls, tag: str):
@@ -877,6 +941,11 @@ class DiffusersProvider(BaseProvider):
         w = int(width) // 16 * 16
         h = int(height) // 16 * 16
         images = []
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
         for i in range(max(1, min(n, 4))):
             out = pipe(
                 prompt=prompt,
@@ -895,8 +964,22 @@ class DiffusersProvider(BaseProvider):
             images.append(out.images[0].convert("RGBA"))
             if generator is not None and seed is not None:
                 generator = torch.Generator(device=generator.device).manual_seed(int(seed) + i + 1)
-        return images, {"steps": use_steps, "cfg": 0.0, "family": "zimage",
-                        "mode": "txt2img", "turbo": True, "seqLen": msl}
+        # 出完图就把分配器的缓存块还回去：跑完一张 1024² 后 nvidia-smi 还显示
+        # 十几 GB「已用」，其实全是缓存，别的程序抢不到
+        _release_vram()
+        meta = {"steps": use_steps, "cfg": 0.0, "family": "zimage",
+                "mode": "txt2img", "turbo": True, "seqLen": msl}
+        try:
+            if torch.cuda.is_available():
+                meta["vram"] = {
+                    "peakGB": round(torch.cuda.max_memory_allocated() / 2**30, 2),
+                    "reservedGB": round(torch.cuda.memory_reserved() / 2**30, 2),
+                    "totalGB": round(
+                        torch.cuda.get_device_properties(0).total_memory / 2**30, 2),
+                }
+        except Exception:
+            pass
+        return images, meta
 
     def _run_qwen_edit(self, model_id: str, prompt: str, negative: str,
                        width: int, height: int, steps: Optional[int],
@@ -1018,6 +1101,7 @@ class DiffusersProvider(BaseProvider):
         # 入口先卡一次：缺 torch 时直接把安装指引抛给前端，
         # 而不是等 _run 里 import 出一句光秃秃的 "No module named 'torch'"
         _require_torch()
+        _touch()
         requested = self._resolve_model()
         family = detect_family(requested)
         all_refs = _normalize_refs(ref, refs)
@@ -1078,6 +1162,7 @@ class DiffusersProvider(BaseProvider):
         几十帧出、按时长而非张数描述），塞进同一个方法只会让调用方猜。
         """
         _require_torch()
+        _touch()
         model_id = self._resolve_model()
         if detect_family(model_id) != "wan":
             raise RuntimeError(
@@ -1139,13 +1224,73 @@ class DiffusersProvider(BaseProvider):
 
     @staticmethod
     def unload() -> None:
+        """卸载全部驻留底座并归还显存。"""
+        if not _CACHE:
+            # 没东西也清一次：PyTorch 的缓存分配器会把跑过的峰值一直攥着，
+            # nvidia-smi 看到的「已用」多半是这块缓存，不是真的在用。
+            _release_vram()
+            return
         _CACHE.clear()
         _CAPS.clear()
         gc.collect()
+        _release_vram()
+
+    @staticmethod
+    def release(model_id: Optional[str] = None) -> None:
+        """只卸一个模型（其余保持驻留）。没给 id 时等价于 unload()。"""
+        if model_id is None:
+            DiffusersProvider.unload()
+            return
+        if model_id in _CACHE:
+            _CACHE.pop(model_id, None)
+            _CAPS.pop(model_id, None)
+            gc.collect()
+            _release_vram()
+
+    @staticmethod
+    def is_loaded() -> bool:
+        return bool(_CACHE)
+
+    @staticmethod
+    def idle_seconds() -> float:
+        """距上次真正用到底座过了多久（用于空闲自动卸载）。"""
+        return time.time() - _LAST_USE
+
+    @staticmethod
+    def vram_gb() -> Dict[str, float]:
+        """当前显存账（GB）：已用 / 缓存占用 / 本次峰值 / 总量。
+
+        报告「reserved」而不是只看 allocated，是因为用户抱怨的「显存很大」
+        基本都是 reserved——分配器不主动还，只有 empty_cache 才降得下去。
+        """
         try:
             import torch
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if not torch.cuda.is_available():
+                return {}
+            return {
+                "allocated": round(torch.cuda.memory_allocated() / 2**30, 2),
+                "reserved": round(torch.cuda.memory_reserved() / 2**30, 2),
+                "peak": round(torch.cuda.max_memory_allocated() / 2**30, 2),
+                "total": round(
+                    torch.cuda.get_device_properties(0).total_memory / 2**30, 2),
+            }
         except Exception:
-            pass
+            return {}
+
+
+def _touch() -> None:
+    """每次真正跑到推理都刷一下「最近使用」时间。"""
+    global _LAST_USE
+    _LAST_USE = time.time()
+
+
+def _release_vram() -> None:
+    """归还 PyTorch 缓存的显存块（gc 之后调用，确保没有引用残留）。"""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass

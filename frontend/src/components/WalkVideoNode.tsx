@@ -196,7 +196,13 @@ export default function WalkVideoNode({
           <div className="walk-src-head">
             <span>视频来源</span>
             <span className="walk-src-count">
-              {existingCount ? `${existingCount}/${realDirs.length} 用现成视频` : '全部 Wan 生成'}
+              {existingCount ? (
+                <>
+                  {existingCount}/{realDirs.length} 用现成视频
+                  <button className="walk-src-reset" title="全部改回 Wan 生成"
+                    onClick={() => patch({ sources: {} })}>全部改回</button>
+                </>
+              ) : '全部 Wan 生成'}
             </span>
           </div>
           {realDirs.map((d) => {
@@ -324,7 +330,32 @@ export default function WalkVideoNode({
               <span className="meta-pill walk-pill-src">现成 {meta.existingDirections}</span>
             ) : null}
             <span className="meta-pill">{meta.numFrames} 帧 @ {meta.fps}fps</span>
+            {meta.vramPeakGB ? (
+              <span className="meta-pill" title="一段视频的峰值显存（卸载底座前的分配器峰值）">
+                峰值显存 {meta.vramPeakGB}GB
+              </span>
+            ) : null}
+            {meta.vramAfterGB != null ? (
+              <span className="meta-pill good" title="出完片并卸载视频底座后的显存占用">
+                已释放至 {meta.vramAfterGB}GB
+              </span>
+            ) : null}
             <span className="meta-pill">{meta.seconds}s</span>
+          </div>
+        ) : null}
+
+        {meta?.failures?.length ? (
+          <div className="walk-fails">
+            <b>{meta.failures.length} 个方向失败</b>
+            {meta.failures.slice(0, 4).map((f) => (
+              <div key={`${f.dir}-${f.stage}`} title={f.error}>
+                {f.label}（{f.stage === 'derive' ? '立绘' : f.stage === 'walk' ? '视频'
+                  : f.stage === 'existing' ? '现成视频' : '镜像'}）：{f.error}
+              </div>
+            ))}
+            {meta.failures.length > 4
+              ? <div>……还有 {meta.failures.length - 4} 个</div> : null}
+            <div className="walk-fails-tip">已成功的方向已保留，可只重跑失败的部分</div>
           </div>
         ) : null}
 

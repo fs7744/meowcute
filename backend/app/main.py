@@ -25,6 +25,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -76,6 +77,37 @@ app.add_middleware(
 async def _on_startup() -> None:
     # 启动即准备好数据目录与示例库，避免首个请求踩初始化路径
     examples_mod.load_examples()
+    asyncio.create_task(_idle_unload_loop())
+
+
+# 空闲多久后自动卸载驻留底座（秒）。显存是独占资源：跑完一张图后如果一直
+# 抱着 20GB，浏览器 / 游戏 / 别的 AI 工具就分不到显存了。跑任务时不会触发
+# （有未完成任务就跳过），代价只是下次生成要多一次加载。
+IDLE_UNLOAD_SECONDS = float(os.environ.get("MEOWCUTE_IDLE_UNLOAD", "600"))
+
+
+async def _idle_unload_loop() -> None:
+    """每 60 秒看一次：没有任务在跑且底座空闲超过阈值，就卸掉归还显存。"""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            if not DiffusersProvider.is_loaded():
+                continue
+            if DiffusersProvider.idle_seconds() < IDLE_UNLOAD_SECONDS:
+                continue
+            # 有任务没结束就别动：中途卸掉模型会直接把任务打挂
+            busy = any(v.done_at is None for v in progress_mod._TASKS.values())
+            if busy:
+                continue
+            before = DiffusersProvider.vram_gb().get("reserved", 0)
+            DiffusersProvider.unload()
+            after = DiffusersProvider.vram_gb().get("reserved", 0)
+            print(f"[meowcute] 空闲 {IDLE_UNLOAD_SECONDS:.0f}s，已卸载驻留底座"
+                  f"（显存 {before}GB → {after}GB）", flush=True)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            print(f"[meowcute] 空闲卸载检查失败：{e}", flush=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -661,6 +693,8 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
                 "seconds": elapsed,
                 "autoRouted": bool(meta.get("autoRouted")),
                 "vramWarning": meta.get("vramWarning"),
+                # 峰值显存（GB）：显存是这条工具链最容易被抱怨的资源，报出来
+                "vram": meta.get("vram"),
                 "refCount": len(refs),
                 "pixelEnabled": bool(pixel_on),
                 "palette": meta.get("refinePalette"),
@@ -1077,6 +1111,16 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
                          if payload.maxSeqLen else None),
             provider_cfg=provider_cfg, task_id=task_id,
             sources=src_frames or None)
+
+        # 显存账：峰值取各方向最大值（每段视频都单独清零过峰值统计），
+        # 收尾值是卸载后的——这两个数能直接回答「这条链到底吃多少显存」
+        peaks = [float((d.get("walk") or {}).get("vram", {}).get("peakGB") or 0)
+                 for d in directions]
+        if any(peaks):
+            meta["vramPeakGB"] = round(max(peaks), 2)
+        after = DiffusersProvider.vram_gb().get("reserved")
+        if after is not None:
+            meta["vramAfterGB"] = after
 
         # 每方向存一个动画 GIF（视频中间产物）+ 首帧缩略图由前端 <img> 直出
         out_dirs = []

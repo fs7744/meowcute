@@ -799,6 +799,12 @@ button { cursor: pointer; }
   font-size: 11px; color: var(--muted); margin-bottom: 6px;
 }
 .walk-src-count { font-family: var(--mono); font-size: 10px; color: var(--cyan); }
+.walk-src-reset {
+  margin-left: 6px; padding: 0 4px; font-size: 9px; line-height: 14px;
+  background: transparent; border: 1px solid var(--line-strong); color: var(--muted);
+  cursor: pointer;
+}
+.walk-src-reset:hover { color: var(--white); border-color: var(--white); }
 .walk-src-row {
   position: relative; display: flex; align-items: center; gap: 5px;
   padding: 3px 0; border-top: 1px dashed var(--line);
@@ -868,6 +874,17 @@ button { cursor: pointer; }
   background: rgba(255, 138, 76, 0.08); font-size: 10px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 部分方向失败：成功的已经交付，这里只提示缺席的原因 */
+.walk-fails {
+  margin-top: 8px; padding: 6px 8px; border: 1px solid rgba(255, 90, 120, 0.5);
+  background: rgba(255, 90, 120, 0.08); font-size: 10px; color: var(--pink);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.walk-fails b { font-weight: 700; }
+.walk-fails div {
+  color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.walk-fails-tip { color: var(--muted); opacity: 0.7; font-size: 9px; }
 .btn-xs {
   padding: 1px 6px; font-size: 10px; line-height: 18px;
 }

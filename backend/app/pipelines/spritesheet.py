@@ -206,6 +206,7 @@ def overview(sheets: Dict[str, Image.Image], *, cols: int = 4, gap: int = 10,
     items += [(d, s) for d, s in sheets.items() if d not in OVERVIEW_ORDER]
     if not items:
         return Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+    cols = max(1, min(int(cols), len(items)))     # 方向少时别留一整排空白
     cw = max(s.width for _, s in items)
     ch = max(s.height for _, s in items)
     rows = (len(items) + cols - 1) // cols

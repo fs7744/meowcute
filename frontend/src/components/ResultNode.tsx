@@ -92,6 +92,11 @@ export default function ResultNode({
           {m.family ? <span className="tag gray">{m.family}</span> : null}
           {m.steps ? <span className="tag gray">{m.steps} 步</span> : null}
           {m.seconds ? <span className="tag gray">{m.seconds}s</span> : null}
+          {m.vram?.peakGB ? (
+            <span className="tag gray" title={`本次生成峰值显存 ${m.vram.peakGB}GB / 共 ${m.vram.totalGB}GB`}>
+              峰值显存 {m.vram.peakGB}GB
+            </span>
+          ) : null}
           {m.autoRouted ? <span className="tag yellow">已自动路由编辑底座</span> : null}
           {m.refCount ? <span className="tag purple">{m.refCount} 参考图</span> : null}
         </div>

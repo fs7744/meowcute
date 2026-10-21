@@ -115,6 +115,11 @@ export default function SequenceNode({
             <span className="meta-pill">{meta.directions.length} 个方向</span>
             <span className="meta-pill">每方向 {meta.framesPerDir} 帧</span>
             {meta.dropped ? <span className="meta-pill">去重 {meta.dropped} 帧</span> : null}
+            {meta.matteErrors ? (
+              <span className="meta-pill bad" title="这些帧抠图失败，已退回未抠图版本">
+                抠图失败 {meta.matteErrors} 帧
+              </span>
+            ) : null}
             <span className="meta-pill">{meta.seconds}s</span>
           </div>
         ) : null}

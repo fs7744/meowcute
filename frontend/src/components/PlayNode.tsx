@@ -58,6 +58,9 @@ export default function PlayNode({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   // 每方向的精灵表 Image 缓存：加载完成后才能逐格画
   const imgCache = useRef<Map<string, HTMLImageElement>>(new Map())
+  // 棋盘格底图缓存：按画布尺寸生成一次，播放时只 drawImage 一次，
+  // 而不是每帧重画上千个小方块（8fps × 1024 个 fillRect 在中低端机很明显）
+  const bgCache = useRef<{ key: string; canvas: HTMLCanvasElement } | null>(null)
   const [ready, setReady] = useState(0)
 
   const cur = dirs.find((d) => d.dir === dir) ?? dirs[0] ?? null
@@ -106,14 +109,25 @@ export default function PlayNode({
     canvas.height = fh * v.zoom
     ctx.imageSmoothingEnabled = false
     ctx.clearRect(0, 0, canvas.width, canvas.height)
-    // 棋盘格底：透明区域一眼能看出来
-    const cell = Math.max(6, Math.round(8 * v.zoom))
-    for (let y = 0; y < canvas.height; y += cell) {
-      for (let x = 0; x < canvas.width; x += cell) {
-        ctx.fillStyle = ((x / cell + y / cell) % 2 === 0) ? '#2a2d3a' : '#23263a'
-        ctx.fillRect(x, y, cell, cell)
+    // 棋盘格底：透明区域一眼能看出来（按尺寸缓存的离屏画布）
+    const bkey = `${canvas.width}x${canvas.height}`
+    if (!bgCache.current || bgCache.current.key !== bkey) {
+      const bg = document.createElement('canvas')
+      bg.width = canvas.width
+      bg.height = canvas.height
+      const bctx = bg.getContext('2d')
+      if (bctx) {
+        const cell = Math.max(6, Math.round(8 * v.zoom))
+        for (let y = 0; y < bg.height; y += cell) {
+          for (let x = 0; x < bg.width; x += cell) {
+            bctx.fillStyle = ((x / cell + y / cell) % 2 === 0) ? '#2a2d3a' : '#23263a'
+            bctx.fillRect(x, y, cell, cell)
+          }
+        }
       }
+      bgCache.current = { key: bkey, canvas: bg }
     }
+    ctx.drawImage(bgCache.current.canvas, 0, 0)
     if (!img || !img.complete || img.naturalWidth === 0) return
     const f = cur.frames[Math.min(frame, total - 1)]
     ctx.drawImage(img, f.x, f.y, fw, fh, 0, 0, canvas.width, canvas.height)
