@@ -90,7 +90,7 @@ if [ "$DO_GPU" = "1" ]; then
   else
     echo "没找到 backend/install_gpu_deps.sh。手动装："
     echo "  $PY -m pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124"
-    echo "  $PY -m pip install diffusers==0.38.0 transformers==4.57.6 torchao==0.16.0 accelerate"
+    echo "  $PY -m pip install diffusers==0.38.0 transformers==4.57.6 torchao==0.16.0 accelerate ftfy"
   fi
   exit 0
 fi

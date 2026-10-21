@@ -19,7 +19,7 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
 
@@ -29,6 +29,16 @@ ALLOWED_KINDS = {"images", "refs", "thumbs"}
 
 # 文件名前缀：out=生成原图，px=像素精修，ref=参考图输入
 SAFE_PREFIX = re.compile(r"[^a-z0-9_-]")
+
+# 视频资产扩展名：GIF 走 PIL，其余走 OpenCV（见 load_video_frames）
+VIDEO_EXTS = (".gif", ".mp4", ".mov", ".avi", ".webm", ".mkv", ".m4v")
+VIDEO_MIME = {
+    ".gif": "image/gif", ".mp4": "video/mp4", ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo", ".webm": "video/webm",
+    ".mkv": "video/x-matroska", ".m4v": "video/mp4",
+}
+# 上传视频大小上限：行走循环不需要长视频，100MB 足够挡误操作
+MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
 
 
@@ -89,11 +99,178 @@ def save_image(pid: str, img: Image.Image, kind: str = "images",
     }
 
 
+def save_gif(pid: str, frames: List[Image.Image], kind: str = "images",
+             asset_id: Optional[str] = None, prefix: str = "walk",
+             fps: int = 24) -> Dict[str, Any]:
+    """把一段帧序列存成动画 GIF，返回同 save_image 的信息 + frames/fps。
+
+    行走视频的中间产物用 GIF 而不是逐帧 PNG：81 帧 × 8 方向存成 PNG 是
+    648 个文件，翻项目文件夹时全是噪音；GIF 一个方向一个文件，浏览器
+    <img> 原生就能播。RGB 调色板量化在这一步是可以接受的——视频帧还要
+    经过「序列帧」节点的抠图与重采样，最终精度由精灵整图节点决定。
+
+    注意 PIL 的 GIF 写入会**合并连续完全相同的帧**（只写变化区域）：
+    Wan 输出开头 / 结尾常有几帧不变，合并后文件更小、循环里也不会出现
+    同姿势的重复帧——正是序列帧节点想去重做的事。读回来的帧数可能少于
+    写入的帧数，下游按实际帧数处理即可。
+    """
+    ensure_dirs()
+    if not frames:
+        raise ValueError("没有可保存的帧")
+    aid = asset_id or asset_stem(prefix)
+    d = assets_dir(pid, kind)
+    path = d / f"{aid}.gif"
+    duration = max(20, int(round(1000.0 / max(1, int(fps)))))
+    rgb = [f.convert("RGB") for f in frames]
+    rgb[0].save(
+        path, "GIF", save_all=True, append_images=rgb[1:],
+        duration=duration, loop=0, disposal=2, optimize=True,
+    )
+    raw = path.read_bytes()
+    return {
+        "id": aid,
+        "file": path.name,
+        "url": f"/api/projects/{pid}/{kind}/{path.name}",
+        "width": rgb[0].width,
+        "height": rgb[0].height,
+        "sha256": hashlib.sha256(raw).hexdigest()[:16],
+        "bytes": len(raw),
+        "frames": len(rgb),
+        "fps": int(fps),
+    }
+
+
+def load_gif(pid: str, kind: str, filename: str
+             ) -> Tuple[List[Image.Image], List[int], Dict[str, Any]]:
+    """读一个动画 GIF 的全部帧（RGBA）+ 每帧时长(ms)。
+
+    与 load_image 分开：那个会把动画压成第一帧（convert("RGBA") 只取当前
+    帧）。序列帧节点重跑时要的是整段视频。
+    """
+    p = asset_path(pid, kind, filename)
+    if p is None or not filename.lower().endswith(".gif"):
+        return [], [], {}
+    try:
+        from PIL import ImageSequence
+
+        img = Image.open(p)
+        frames = [f.convert("RGBA") for f in ImageSequence.Iterator(img)]
+        durations = [max(1, int(f.info.get("duration", 100)))
+                     for f in ImageSequence.Iterator(Image.open(p))]
+        meta = {"frames": len(frames), "size": [img.width, img.height],
+                "loop": img.info.get("loop", 0)}
+        return frames, durations, meta
+    except Exception:
+        return [], [], {}
+
+
+def load_video_frames(pid: str, kind: str, filename: str,
+                      max_frames: int = 600
+                      ) -> Tuple[List[Image.Image], float, Dict[str, Any]]:
+    """读一个视频文件的全部帧（RGBA）+ 帧率。
+
+    GIF 用 PIL（和 load_gif 同一条路，帧率取平均帧间隔的倒数）；其余格式
+    （mp4/mov/webm…）走 OpenCV 的 VideoCapture——venv 里 cv2 是随 GPU
+    依赖一起装的，没装时返回空列表让调用方给清楚提示。
+
+    行走循环一般 24~60fps、几秒长，max_frames 600 足够；超长视频截断而不是
+    报错——序列帧节点后面本来就会抽稀。
+    """
+    p = asset_path(pid, kind, filename)
+    if p is None:
+        return [], 0.0, {}
+    low = filename.lower()
+    try:
+        if low.endswith(".gif"):
+            frames, durations, meta = load_gif(pid, kind, filename)
+            if not frames:
+                return [], 0.0, {}
+            avg = max(1.0, sum(durations) / len(durations))
+            return frames, round(1000.0 / avg, 3), {"frames": len(frames),
+                                                    "source": "gif"}
+        import cv2
+        cap = cv2.VideoCapture(str(p))
+        if not cap.isOpened():
+            return [], 0.0, {}
+        fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+        frames: List[Image.Image] = []
+        while len(frames) < max_frames:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            # cv2 是 BGR；alpha 通道没有，直接转 RGB
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(Image.fromarray(rgb).convert("RGBA"))
+        cap.release()
+        if not frames:
+            return [], 0.0, {}
+        return frames, round(float(fps), 3), {"frames": len(frames),
+                                              "source": "opencv"}
+    except ImportError:
+        return [], 0.0, {"error": "缺 opencv-python：读取 mp4 等视频需要它（pip install opencv-python）"}
+    except Exception as e:
+        return [], 0.0, {"error": f"视频解码失败：{e}"}
+
+
+def save_video(pid: str, src: Path, kind: str = "images",
+               prefix: str = "vidsrc") -> Dict[str, Any]:
+    """把上传的视频原样存进项目（不转码：GIF 保持 PIL 可读，其余交给
+    load_video_frames 的 OpenCV 路径解码）。"""
+    ensure_dirs()
+    d = assets_dir(pid, kind)
+    aid = asset_stem(prefix)
+    path = d / f"{aid}{src.suffix.lower()}"
+    path.write_bytes(src.read_bytes())
+    raw = path.read_bytes()
+    return {
+        "id": aid,
+        "file": path.name,
+        "url": f"/api/projects/{pid}/{kind}/{path.name}",
+        "bytes": len(raw),
+    }
+
+
+def list_videos(pid: str, kind: str = "images") -> List[Dict[str, Any]]:
+    """列出项目里的视频资产：以前生成的 walk-*.gif + 上传的 vidsrc-*。
+
+    行走视频节点「选择现成视频」用：自己历史生成的片段和外部导入的片段
+    在同一个列表里，文件名带方向信息（walk-down-…）的直接标出来。
+    """
+    d = assets_dir(pid, kind)
+    if not d.is_dir():
+        return []
+    out: List[Dict[str, Any]] = []
+    for f in sorted(d.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if not f.is_file() or f.suffix.lower() not in VIDEO_EXTS:
+            continue
+        stem = f.stem
+        if stem.startswith("walk-"):
+            parts = stem.split("-")
+            src_dir = parts[1] if len(parts) > 1 else None
+            origin = "generated"
+        elif stem.startswith("vidsrc-"):
+            src_dir = None
+            origin = "upload"
+        else:
+            continue
+        st = f.stat()
+        out.append({
+            "file": f.name,
+            "url": f"/api/projects/{pid}/{kind}/{f.name}",
+            "origin": origin,
+            "dir": src_dir,
+            "bytes": st.st_size,
+            "mtime": st.st_mtime,
+        })
+    return out
+
+
 def asset_path(pid: str, kind: str, filename: str) -> Optional[Path]:
     """解析资产文件路径（挡路径穿越）。"""
     if not filename or "/" in filename or "\\" in filename or ".." in filename:
         return None
-    if not filename.lower().endswith(".png"):
+    low = filename.lower()
+    if not (low.endswith(".png") or low.endswith(VIDEO_EXTS)):
         return None
     p = assets_dir(pid, kind) / filename
     return p if p.is_file() else None

@@ -31,17 +31,20 @@ KNOWN_MODELS: Dict[str, str] = {
 }
 
 DEFAULT_EDIT_MODEL = "models/qwen-image-edit-2511"
+DEFAULT_VIDEO_MODEL = "models/wan2.2-ti2v-5b"
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     # 本地底座：Z-Image-Turbo（文生图）+ Qwen-Image-Edit-2511（指令编辑 / 参考图）
+    # + Wan2.2 TI2V-5B（图生视频，行走视频节点用）
     "activeProvider": "diffusers",
     "providers": {
         "diffusers": {
-            "label": "本地底座（Z-Image / Qwen-Edit）",
+            "label": "本地底座（Z-Image / Qwen-Edit / Wan 视频）",
             "baseUrl": "",
             "apiKey": "",
             "model": "models/z-image-turbo",
             "editModel": DEFAULT_EDIT_MODEL,
+            "videoModel": DEFAULT_VIDEO_MODEL,
             # 负面词带像素约束：AI 出图最常见的三类瑕疵，对像素风是致命伤
             "negativePrompt": "模糊, 低质量, 水印, 文字, 渐变, 抗锯齿, 3D渲染, 照片, 噪点",
             "enabled": True,

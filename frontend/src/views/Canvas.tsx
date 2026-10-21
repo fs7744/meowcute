@@ -3,19 +3,25 @@ import { api, subscribeTask } from '../api'
 import GenNode from '../components/GenNode'
 import InputNode from '../components/InputNode'
 import MatteNode from '../components/MatteNode'
+import PlayNode from '../components/PlayNode'
 import PreviewOverlay from '../components/PreviewOverlay'
 import ProjectFiles from '../components/ProjectFiles'
 import PromptModal from '../components/PromptModal'
 import RefineNode from '../components/RefineNode'
 import ResultNode from '../components/ResultNode'
+import SequenceNode from '../components/SequenceNode'
+import SpriteSheetNode from '../components/SpriteSheetNode'
 import ThreeViewNode from '../components/ThreeViewNode'
 import ViewGenNode from '../components/ViewGenNode'
+import WalkVideoNode from '../components/WalkVideoNode'
 import type {
   BackgroundOption, CanvasNode, GenNode as GenNodeType, GenerateResult,
-  InputNode as InputNodeType, MatteNode as MatteNodeType, Project, PromptExample,
-  PromptPreview, RefineNode as RefineNodeType, ResultImage, ResultMeta,
-  ResultNode as ResultNodeType, Style, TaskProgress, Template,
+  InputNode as InputNodeType, MatteNode as MatteNodeType, PlayNode as PlayNodeType,
+  Project, PromptExample, PromptPreview, RefineNode as RefineNodeType, ResultImage,
+  ResultMeta, ResultNode as ResultNodeType, SequenceNode as SequenceNodeType,
+  SpriteSheetNode as SpriteSheetNodeType, Style, TaskProgress, Template,
   ThreeViewNode as ThreeViewNodeType, ViewGenNode as ViewGenNodeType,
+  WalkVideoNode as WalkVideoNodeType,
 } from '../types'
 
 type Props = {
@@ -34,9 +40,14 @@ const REFINE_W = 360
 const MATTE_W = 340
 const VIEWGEN_W = 360
 const THREEVIEW_W = 380
+const WALKVIDEO_W = 380
+const SEQUENCE_W = 380
+const SPRITESHEET_W = 380
+const PLAY_W = 380
 const NODE_W: Record<string, number> = {
   generate: GEN_W, result: RES_W, input: INPUT_W, refine: REFINE_W, matte: MATTE_W,
-  viewgen: VIEWGEN_W, threeview: THREEVIEW_W,
+  viewgen: VIEWGEN_W, threeview: THREEVIEW_W, walkvideo: WALKVIDEO_W,
+  sequence: SEQUENCE_W, spritesheet: SPRITESHEET_W, play: PLAY_W,
 }
 
 /** 哪些类型的节点可以作为某个节点的上游（决定自定义工作流是否合法）。 */
@@ -49,7 +60,13 @@ const UPSTREAM_RULES: Record<string, string[]> = {
   viewgen: ['input', 'generate', 'matte', 'refine', 'result'],
   // 拼板允许多条入边（正/侧/背各一路），所以不在 SINGLE_INPUT 里
   threeview: ['input', 'generate', 'matte', 'refine', 'viewgen', 'result'],
-  result: ['generate', 'refine', 'matte', 'viewgen', 'threeview'],
+  // 八方向链是一条直线：每步只收上一步的产物
+  walkvideo: ['input', 'generate', 'matte', 'refine', 'result'],
+  sequence: ['walkvideo'],
+  spritesheet: ['sequence'],
+  play: ['spritesheet'],
+  result: ['generate', 'refine', 'matte', 'viewgen', 'threeview',
+           'walkvideo', 'sequence', 'spritesheet', 'play'],
 }
 
 const UPSTREAM_HINT: Record<string, string> = {
@@ -58,7 +75,11 @@ const UPSTREAM_HINT: Record<string, string> = {
   matte: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
   viewgen: '选择图片 / 生成图 / 扣除背景 / 像素精修 / 图片结果',
   threeview: '生成图 / 侧视图 / 背视图 / 扣除背景 / 图片结果',
-  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 三视图拼板',
+  walkvideo: '生成图 / 选择图片 / 扣除背景 / 像素精修',
+  sequence: '行走视频',
+  spritesheet: '序列帧',
+  play: '精灵整图',
+  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 三视图拼板 / 行走链',
 }
 
 function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): boolean {
@@ -69,7 +90,8 @@ function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): b
 
 /** 只能接收单条入边的类型：新连线替换旧入边，避免多源歧义。
  *  三视图拼板不在列：它要收正/侧/背三路。 */
-const SINGLE_INPUT = new Set(['refine', 'matte', 'result', 'viewgen'])
+const SINGLE_INPUT = new Set(['refine', 'matte', 'result', 'viewgen',
+                              'walkvideo', 'sequence', 'spritesheet', 'play'])
 
 /** 右键「添加节点」的目录：分类 → 具体节点。
  *  节点类型只会越来越多，平铺成一条长列表很快就用不了了。 */
@@ -114,6 +136,19 @@ const NODE_CATALOG: {
     ],
   },
   {
+    id: 'walk', label: '八方向行走', hint: '一张角色图 → 八方向行走精灵表',
+    items: [
+      { type: 'walkvideo', label: '行走视频', dot: 'd-walk',
+        hint: '各方向立绘 + Wan 图生视频：右侧方向由左侧镜像' },
+      { type: 'sequence', label: '序列帧', dot: 'd-sequence',
+        hint: '每方向视频 → 抽帧 / 去重 / 抠图 → 透明底帧' },
+      { type: 'spritesheet', label: '精灵整图', dot: 'd-sheet',
+        hint: '共享缩放规整后拼成每方向一张横排精灵表' },
+      { type: 'play', label: '可操控预览', dot: 'd-play',
+        hint: '方向键 / 按钮切换八个方向播放行走循环' },
+    ],
+  },
+  {
     id: 'output', label: '输出', hint: '看结果、导出素材',
     items: [
       { type: 'result', label: '图片结果', dot: 'd-result',
@@ -126,6 +161,8 @@ const NODE_LABEL: Record<string, string> = {
   input: '选择图片', generate: '生成图', refine: '像素精修',
   matte: '扣除背景', result: '图片结果',
   viewgen: '生成视角', threeview: '三视图拼板',
+  walkvideo: '行走视频', sequence: '序列帧',
+  spritesheet: '精灵整图', play: '可操控预览',
 }
 const nodeLabel = (t: string) => NODE_LABEL[t] || t
 
@@ -495,6 +532,10 @@ export default function Canvas({ projectId, onBack }: Props) {
     else if (type === 'matte') addMatteNode(at)
     else if (type === 'viewgen') addViewGenNode(at, preset === 'back' ? 'back' : 'side')
     else if (type === 'threeview') addThreeViewNode(at)
+    else if (type === 'walkvideo') addWalkVideoNode(at)
+    else if (type === 'sequence') addSequenceNode(at)
+    else if (type === 'spritesheet') addSpriteSheetNode(at)
+    else if (type === 'play') addPlayNode(at)
     else addEmptyResultNode(at)
   }
 
@@ -524,6 +565,70 @@ export default function Canvas({ projectId, onBack }: Props) {
         enabled: true, bg: '1B4332', gap: 12, baseline: 0.93, cell: null,
       },
       result: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addWalkVideoNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(WALKVIDEO_W, 420)
+    const node: WalkVideoNodeType = {
+      id: newId('wk'), type: 'walkvideo', x: spot.x, y: spot.y,
+      walkvideo: {
+        enabled: true, dirMode: 'eight', action: '行走', styleId: null,
+        steps: null, seed: null, width: 384, height: 512,
+        numFrames: 81, fps: 24, maxSide: 512, maxSeqLen: null,
+      },
+      result: null, images: [], meta: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addSequenceNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(SEQUENCE_W, 420)
+    const node: SequenceNodeType = {
+      id: newId('sq'), type: 'sequence', x: spot.x, y: spot.y,
+      sequence: {
+        enabled: true, framesPerDir: 8, fps: 8, matte: true, tolerance: 40,
+      },
+      result: null, images: [], meta: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addSpriteSheetNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(SPRITESHEET_W, 420)
+    const node: SpriteSheetNodeType = {
+      id: newId('sh'), type: 'spritesheet', x: spot.x, y: spot.y,
+      spritesheet: {
+        enabled: true, size: 128, cols: 0, sharedScale: true, anchor: 'bottom',
+      },
+      result: null, images: [], meta: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addPlayNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(PLAY_W, 460)
+    const node: PlayNodeType = {
+      id: newId('pl'), type: 'play', x: spot.x, y: spot.y,
+      play: { enabled: true, fps: 8, zoom: 2 },
+      result: null, meta: null, createdAt: Date.now() / 1000,
     }
     setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
     setSelected(node.id)
@@ -742,18 +847,25 @@ export default function Canvas({ projectId, onBack }: Props) {
     return out
   }
 
-  // ---------- 角色三视图 ----------
+  // ---------- 角色三视图 / 八方向行走 ----------
   /** 节点的产出图，外加它在磁盘上的位置（images/ 产出还是 refs/ 上传）。
-   *  runtime 给定时优先用它——一键工作流里上游刚跑完，React 状态还没刷新。 */
+   *  runtime 给定时优先用它——一键工作流里上游刚跑完，React 状态还没刷新。
+   *  meta 是八方向链的结构化产出（walk / sequence / sheet），下游节点靠它
+   *  知道「哪张图属于哪个方向」。 */
   const outputOf = (
     id: string, runtime?: Map<string, ResultImage[]>,
-  ): { images: ResultImage[]; kind: 'images' | 'refs'; file: string } | null => {
+  ): { images: ResultImage[]; kind: 'images' | 'refs'; file: string;
+        meta?: any } | null => {
     const p = projectRef.current
     const n = p?.nodes.find((x) => x.id === id)
     if (!n) return null
     if (runtime) {
       const r = runtime.get(id)
-      if (r?.length) return { images: r, kind: 'images', file: '' }
+      if (r?.length) {
+        const meta = (n.type === 'walkvideo' || n.type === 'sequence'
+          || n.type === 'spritesheet') ? n.meta : undefined
+        return { images: r, kind: 'images', file: '', meta }
+      }
     }
     if (n.type === 'generate') {
       return n.lastImages?.length ? { images: n.lastImages, kind: 'images', file: '' } : null
@@ -769,6 +881,12 @@ export default function Canvas({ projectId, onBack }: Props) {
                    origAssetId: r0.id, origUrl: r0.url }],
         kind: 'refs', file: r0.file,
       }
+    }
+    // 八方向链的四个节点：多图产出 + 结构化 meta
+    if (n.type === 'walkvideo' || n.type === 'sequence' || n.type === 'spritesheet') {
+      const images = (n.images?.length ? n.images : (n.result ? [n.result] : []))
+      if (!images.length) return null
+      return { images, kind: 'images', file: '', meta: n.meta ?? undefined }
     }
     return n.result ? { images: [n.result], kind: 'images', file: '' } : null
   }
@@ -1031,6 +1149,297 @@ export default function Canvas({ projectId, onBack }: Props) {
     }))
   }
 
+  // ---------- 八方向行走链 ----------
+  /** 直线链节点（行走视频/序列帧/精灵整图/可操控预览）的唯一上游。
+   *  metaRuntime 里放着一键工作流刚跑出来的结构化产出——上游节点的
+   *  setProject 还没刷进 projectRef，不能直接读节点状态。 */
+  const resolveChainInput = (
+    node: CanvasNode, runtime?: Map<string, ResultImage[]>,
+    metaRuntime?: Map<string, any>,
+  ) => {
+    const p = projectRef.current
+    const inEdge = p?.edges.find((e) => e.to === node.id)
+    if (!inEdge) {
+      throw new Error(`「${nodeLabel(node.type)}」没有上游：把上一步连到左侧端口`)
+    }
+    const out = outputOf(inEdge.from, runtime)
+    if (!out?.images.length) {
+      throw new Error('上游还没有产出：先跑上一步的节点')
+    }
+    const src = p?.nodes.find((n) => n.id === inEdge.from)
+    return {
+      out,
+      fromId: inEdge.from,
+      label: src ? nodeLabel(src.type) : '',
+      meta: metaRuntime?.get(inEdge.from) ?? out.meta,
+    }
+  }
+
+  const executeWalkVideo = async (
+    node: WalkVideoNodeType, runtime?: Map<string, ResultImage[]>,
+  ): Promise<{ images: ResultImage[]; meta: any }> => {
+    if (!project) throw new Error('项目未加载')
+    const src = resolveFrontOutput(node, runtime)
+    const im = src.images[0]
+    const w = node.walkvideo
+    const { taskId } = await api.walkVideo({
+      projectId: project.id,
+      origAssetId: src.kind === 'images' ? im.assetId : '',
+      sourceKind: src.kind, sourceFile: src.kind === 'refs' ? src.file : undefined,
+      dirMode: w?.dirMode ?? 'eight',
+      action: w?.action ?? '行走',
+      styleId: w?.styleId ?? null,
+      steps: w?.steps ?? null,
+      seed: w?.seed ?? null,
+      width: w?.width ?? 384,
+      height: w?.height ?? 512,
+      numFrames: w?.numFrames ?? 81,
+      fps: w?.fps ?? 24,
+      maxSide: w?.maxSide ?? 512,
+      maxSeqLen: w?.maxSeqLen ?? null,
+      // 现成视频来源：这些方向跳过推导 + Wan，直接用文件里的帧
+      sources: Object.entries(w?.sources || {})
+        .filter(([, f]) => !!f)
+        .map(([dir, file]) => ({ dir, file: file as string })),
+    })
+    activeTaskRef.current = taskId
+    setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+    const r: any = await awaitTask<any>(taskId, node.id)
+    if (activeTaskRef.current === taskId) activeTaskRef.current = null
+    const meta: any = r.walk || {}
+    const images: ResultImage[] = (r.images || []).map((o: any, i: number) => ({
+      assetId: o.assetId, url: o.url, width: o.width, height: o.height,
+      origAssetId: im.assetId, origUrl: im.url, origSize: [im.width, im.height],
+      walkDir: o.walkDir ?? meta.directions?.[i]?.dir,
+    }))
+    return { images, meta }
+  }
+
+  const applyWalkVideoResult = (
+    node: WalkVideoNodeType, images: ResultImage[], meta: any,
+  ) => {
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => n.id === node.id
+        ? ({ ...n, result: images[0] ?? null, images, meta } as CanvasNode) : n),
+    } : p)
+    pushDownstreamResult(node.id, images, { walk: meta })
+    if (!projectRef.current?.edges.some((e) => e.from === node.id)) {
+      ensureResultCard(node, images, { walk: meta })
+    }
+  }
+
+  const runWalkVideo = async (node: WalkVideoNodeType) => {
+    if (!node.walkvideo?.enabled) return
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const { images, meta } = await executeWalkVideo(node)
+      applyWalkVideoResult(node, images, meta)
+    } catch (e: any) {
+      alert(`行走视频失败：${e.message || e}`)
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    }
+  }
+
+  const executeSequence = async (
+    node: SequenceNodeType, runtime?: Map<string, ResultImage[]>,
+    metaRuntime?: Map<string, any>,
+  ): Promise<{ images: ResultImage[]; meta: any }> => {
+    if (!project) throw new Error('项目未加载')
+    const up = resolveChainInput(node, runtime, metaRuntime)
+    const s = node.sequence
+    // 方向清单：优先用上游结构化 meta（GIF 文件名），退回按图上的 walkDir 分组
+    let directions: { dir: string; gif: string }[] = []
+    const metaDirs: any[] = up.meta?.directions || []
+    if (metaDirs.length && metaDirs[0]?.gif?.url) {
+      directions = metaDirs.map((d) => ({
+        dir: d.dir, gif: `${d.gif.assetId}.gif`,
+      }))
+    } else {
+      for (const im of up.out.images) {
+        if (im.walkDir) directions.push({ dir: im.walkDir, gif: `${im.assetId}.gif` })
+      }
+    }
+    if (!directions.length) {
+      throw new Error('上游没有方向信息：先跑「行走视频」节点')
+    }
+    const { taskId } = await api.sequence({
+      projectId: project.id,
+      directions,
+      framesPerDir: s?.framesPerDir ?? 8,
+      fps: s?.fps ?? 8,
+      matte: s?.matte ?? true,
+      tolerance: s?.tolerance ?? 40,
+    })
+    activeTaskRef.current = taskId
+    setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+    const r: any = await awaitTask<any>(taskId, node.id)
+    if (activeTaskRef.current === taskId) activeTaskRef.current = null
+    const meta: any = r.sequence || {}
+    const images: ResultImage[] = (r.images || []).map((o: any) => ({
+      assetId: o.assetId, url: o.url, width: o.width, height: o.height,
+      origAssetId: up.out.images[0]?.assetId || '', origUrl: up.out.images[0]?.url || '',
+      walkDir: o.walkDir,
+    }))
+    return { images, meta }
+  }
+
+  const applySequenceResult = (
+    node: SequenceNodeType, images: ResultImage[], meta: any,
+  ) => {
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => n.id === node.id
+        ? ({ ...n, result: images[0] ?? null, images, meta } as CanvasNode) : n),
+    } : p)
+    pushDownstreamResult(node.id, images, { sequence: meta })
+    if (!projectRef.current?.edges.some((e) => e.from === node.id)) {
+      ensureResultCard(node, images, { sequence: meta })
+    }
+  }
+
+  const runSequence = async (node: SequenceNodeType) => {
+    if (!node.sequence?.enabled) return
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const { images, meta } = await executeSequence(node)
+      applySequenceResult(node, images, meta)
+    } catch (e: any) {
+      alert(`序列帧失败：${e.message || e}`)
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    }
+  }
+
+  const executeSpriteSheet = async (
+    node: SpriteSheetNodeType, runtime?: Map<string, ResultImage[]>,
+    metaRuntime?: Map<string, any>,
+  ): Promise<{ images: ResultImage[]; meta: any }> => {
+    if (!project) throw new Error('项目未加载')
+    const up = resolveChainInput(node, runtime, metaRuntime)
+    const sh = node.spritesheet
+    // 每方向的帧文件清单：从上游序列帧的结构化 meta 拿（含顺序）
+    const metaDirs: any[] = up.meta?.directions || []
+    let directions: { dir: string; frames: string[] }[] = []
+    if (metaDirs.length && metaDirs[0]?.frames?.length) {
+      directions = metaDirs.map((d) => ({
+        dir: d.dir,
+        frames: (d.frames || []).map((f: any) => `${f.assetId}.png`),
+      }))
+    } else {
+      for (const im of up.out.images) {
+        if (im.walkDir) directions.push({ dir: im.walkDir, frames: [`${im.assetId}.png`] })
+      }
+    }
+    if (!directions.length) {
+      throw new Error('上游没有序列帧：先跑「序列帧」节点')
+    }
+    const { taskId } = await api.spriteSheet({
+      projectId: project.id,
+      directions,
+      size: sh?.size ?? 128,
+      cols: sh?.cols ?? 0,
+      sharedScale: sh?.sharedScale ?? true,
+      anchor: sh?.anchor ?? 'bottom',
+    })
+    activeTaskRef.current = taskId
+    setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+    const r: any = await awaitTask<any>(taskId, node.id)
+    if (activeTaskRef.current === taskId) activeTaskRef.current = null
+    const meta: any = r.sheet || {}
+    const images: ResultImage[] = (r.images || []).map((o: any, i: number) => ({
+      assetId: o.assetId, url: o.url, width: o.width, height: o.height,
+      origAssetId: up.out.images[0]?.assetId || '', origUrl: up.out.images[0]?.url || '',
+      walkDir: o.walkDir ?? (i === 0 ? undefined : meta.directions?.[i - 1]?.dir),
+    }))
+    return { images, meta }
+  }
+
+  const applySpriteSheetResult = (
+    node: SpriteSheetNodeType, images: ResultImage[], meta: any,
+  ) => {
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => n.id === node.id
+        ? ({ ...n, result: images[0] ?? null, images, meta } as CanvasNode) : n),
+    } : p)
+    pushDownstreamResult(node.id, images, { sheet: meta })
+    if (!projectRef.current?.edges.some((e) => e.from === node.id)) {
+      ensureResultCard(node, images, { sheet: meta })
+    }
+  }
+
+  const runSpriteSheet = async (node: SpriteSheetNodeType) => {
+    if (!node.spritesheet?.enabled) return
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const { images, meta } = await executeSpriteSheet(node)
+      applySpriteSheetResult(node, images, meta)
+    } catch (e: any) {
+      alert(`精灵整图失败：${e.message || e}`)
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    }
+  }
+
+  /** 可操控预览：不调后端，把上游精灵整图的元数据组装成播放载荷。 */
+  const executePlay = async (
+    node: PlayNodeType, runtime?: Map<string, ResultImage[]>,
+    metaRuntime?: Map<string, any>,
+  ): Promise<{ images: ResultImage[]; meta: any }> => {
+    const up = resolveChainInput(node, runtime, metaRuntime)
+    const sheetMeta: any = up.meta || {}
+    const dirs: any[] = sheetMeta.directions || []
+    if (!dirs.length) {
+      throw new Error('上游还没有精灵表：先跑「精灵整图」节点')
+    }
+    const p = node.play
+    const playMeta = {
+      fps: p?.fps ?? 8,
+      zoom: p?.zoom ?? 2,
+      seconds: 0,
+      directions: dirs.map((d) => ({
+        dir: d.dir, label: d.label, url: d.sheet?.url,
+        cols: d.cols, rows: d.rows, frameSize: d.frameSize, frames: d.frames || [],
+      })),
+    }
+    const ov = sheetMeta.overview
+    const images: ResultImage[] = ov ? [{
+      assetId: ov.assetId, url: ov.url, width: ov.width, height: ov.height,
+      origAssetId: up.out.images[0]?.assetId || '', origUrl: up.out.images[0]?.url || '',
+    }] : up.out.images.slice(0, 1)
+    return { images, meta: playMeta }
+  }
+
+  const applyPlayResult = (node: PlayNodeType, images: ResultImage[], meta: any) => {
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => n.id === node.id
+        ? ({ ...n, result: images[0] ?? null, meta } as CanvasNode) : n),
+    } : p)
+    pushDownstreamResult(node.id, images, { play: meta })
+    if (!projectRef.current?.edges.some((e) => e.from === node.id)) {
+      ensureResultCard(node, images, { play: meta })
+    }
+  }
+
+  const runPlay = async (node: PlayNodeType) => {
+    if (!node.play?.enabled) return
+    try {
+      const { images, meta } = await executePlay(node)
+      applyPlayResult(node, images, meta)
+    } catch (e: any) {
+      alert(`预览组装失败：${e.message || e}`)
+    }
+  }
+
   const deleteNode = (id: string) => {
     const node = project?.nodes.find((n) => n.id === id)
     if (!node) return
@@ -1185,14 +1594,18 @@ export default function Canvas({ projectId, onBack }: Props) {
     const p = projectRef.current
     if (!p) return { images, fromId: gen.id }
     const runtime = new Map<string, ResultImage[]>([[gen.id, images]])
+    const metaRuntime = new Map<string, any>()
     let cur = images
     let fromId = gen.id
     const seen = new Set<string>([gen.id])
     for (;;) {
-      const next = p.nodes.find((n): n is MatteNodeType | ViewGenNodeType | ThreeViewNodeType =>
+      const next = p.nodes.find((n): n is MatteNodeType | ViewGenNodeType | ThreeViewNodeType
+        | WalkVideoNodeType | SequenceNodeType | SpriteSheetNodeType | PlayNodeType =>
         !seen.has(n.id)
         && p.edges.some((e) => e.from === fromId && e.to === n.id)
-        && (n.type === 'matte' || n.type === 'viewgen' || n.type === 'threeview'))
+        && (n.type === 'matte' || n.type === 'viewgen' || n.type === 'threeview'
+          || n.type === 'walkvideo' || n.type === 'sequence'
+          || n.type === 'spritesheet' || n.type === 'play'))
       if (!next) break
       seen.add(next.id)
       if (next.type === 'matte') {
@@ -1224,7 +1637,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         } catch (e: any) {
           throw new Error(`生成视角失败：${e.message || e}`)
         }
-      } else {
+      } else if (next.type === 'threeview') {
         if (!next.threeview?.enabled) {
           runtime.set(next.id, cur)
           fromId = next.id
@@ -1238,6 +1651,74 @@ export default function Canvas({ projectId, onBack }: Props) {
           fromId = next.id
         } catch (e: any) {
           throw new Error(`三视图拼板失败：${e.message || e}`)
+        }
+      } else if (next.type === 'walkvideo') {
+        if (!next.walkvideo?.enabled) {
+          runtime.set(next.id, cur)
+          pushDownstreamResult(next.id, cur, {})
+          fromId = next.id
+          continue
+        }
+        try {
+          const { images: imgs, meta } = await executeWalkVideo(next, runtime)
+          applyWalkVideoResult(next, imgs, meta)
+          cur = imgs
+          runtime.set(next.id, imgs)
+          metaRuntime.set(next.id, meta)
+          fromId = next.id
+        } catch (e: any) {
+          throw new Error(`行走视频失败：${e.message || e}`)
+        }
+      } else if (next.type === 'sequence') {
+        if (!next.sequence?.enabled) {
+          runtime.set(next.id, cur)
+          pushDownstreamResult(next.id, cur, {})
+          fromId = next.id
+          continue
+        }
+        try {
+          const { images: imgs, meta } = await executeSequence(next, runtime, metaRuntime)
+          applySequenceResult(next, imgs, meta)
+          cur = imgs
+          runtime.set(next.id, imgs)
+          metaRuntime.set(next.id, meta)
+          fromId = next.id
+        } catch (e: any) {
+          throw new Error(`序列帧失败：${e.message || e}`)
+        }
+      } else if (next.type === 'spritesheet') {
+        if (!next.spritesheet?.enabled) {
+          runtime.set(next.id, cur)
+          pushDownstreamResult(next.id, cur, {})
+          fromId = next.id
+          continue
+        }
+        try {
+          const { images: imgs, meta } = await executeSpriteSheet(next, runtime, metaRuntime)
+          applySpriteSheetResult(next, imgs, meta)
+          cur = imgs
+          runtime.set(next.id, imgs)
+          metaRuntime.set(next.id, meta)
+          fromId = next.id
+        } catch (e: any) {
+          throw new Error(`精灵整图失败：${e.message || e}`)
+        }
+      } else {
+        if (!next.play?.enabled) {
+          runtime.set(next.id, cur)
+          pushDownstreamResult(next.id, cur, {})
+          fromId = next.id
+          continue
+        }
+        try {
+          const { images: imgs, meta } = await executePlay(next, runtime, metaRuntime)
+          applyPlayResult(next, imgs, meta)
+          cur = imgs
+          runtime.set(next.id, imgs)
+          metaRuntime.set(next.id, meta)
+          fromId = next.id
+        } catch (e: any) {
+          throw new Error(`可操控预览失败：${e.message || e}`)
         }
       }
     }
@@ -1270,19 +1751,23 @@ export default function Canvas({ projectId, onBack }: Props) {
     if (tid) api.cancelTask(tid).catch(() => undefined)
   }
 
-  /** 一键运行：按连线拓扑顺序跑完所有生成/精修/扣背景/视角节点，结果自动落到结果卡。 */
+  /** 一键运行：按连线拓扑顺序跑完所有生成/精修/扣背景/视角/八方向节点，
+   *  结果自动落到结果卡。 */
   const runWorkflow = async () => {
     if (!project || wf.running) return
     type RunnerNode = GenNodeType | RefineNodeType | MatteNodeType
       | ViewGenNodeType | ThreeViewNodeType
+      | WalkVideoNodeType | SequenceNodeType | SpriteSheetNodeType | PlayNodeType
     // 关掉的后处理节点也算一步：它只是透传，不参与执行，但要负责把图交给下游结果卡
     const isRunner = (n: CanvasNode): n is RunnerNode =>
       n.type === 'generate' || n.type === 'refine' || n.type === 'matte'
       || n.type === 'viewgen' || n.type === 'threeview'
+      || n.type === 'walkvideo' || n.type === 'sequence'
+      || n.type === 'spritesheet' || n.type === 'play'
     const byId = new Map(project.nodes.map((n) => [n.id, n]))
     const executable = project.nodes.filter(isRunner)
     if (!executable.length) {
-      alert('画布上没有可执行的节点：先添加「生成图」「像素精修」「扣除背景」或「视角生成」并连好线。')
+      alert('画布上没有可执行的节点：先添加「生成图」「像素精修」「扣除背景」「视角生成」或「八方向行走」节点并连好线。')
       return
     }
     // 拓扑序：先跑上游，再跑下游（有环也不会死循环，seen 兜底）
@@ -1300,6 +1785,7 @@ export default function Canvas({ projectId, onBack }: Props) {
     abortRef.current = false
     setWf({ running: true, label: '准备中…', done: 0, total: order.length, error: null })
     const runtime = new Map<string, ResultImage[]>()
+    const metaRuntime = new Map<string, any>()
     try {
       for (let i = 0; i < order.length; i++) {
         if (abortRef.current) throw new Error('已停止')
@@ -1309,7 +1795,11 @@ export default function Canvas({ projectId, onBack }: Props) {
           : n.type === 'matte' ? (n.matte?.enabled ? '扣背景' : '跳过扣背景')
           : n.type === 'viewgen' ? (n.viewgen?.enabled
             ? (n.viewgen?.view === 'back' ? '背视图' : '侧视图') : '跳过视角')
-          : (n.threeview?.enabled ? '三视图拼板' : '跳过拼板')
+          : n.type === 'threeview' ? (n.threeview?.enabled ? '三视图拼板' : '跳过拼板')
+          : n.type === 'walkvideo' ? (n.walkvideo?.enabled ? '行走视频' : '跳过行走视频')
+          : n.type === 'sequence' ? (n.sequence?.enabled ? '序列帧' : '跳过序列帧')
+          : n.type === 'spritesheet' ? (n.spritesheet?.enabled ? '精灵整图' : '跳过精灵整图')
+          : (n.play?.enabled ? '可操控预览' : '跳过预览')
         setWf({
           running: true, done: i, total: order.length, error: null,
           label: `${kind} ${i + 1}/${order.length}`,
@@ -1345,6 +1835,47 @@ export default function Canvas({ projectId, onBack }: Props) {
             runtime.set(n.id, [result])
           } catch (e: any) {
             throw new Error(`第 ${i + 1} 步（三视图拼板）：${e.message || e}`)
+          }
+          continue
+        }
+        // 八方向行走链：直线四步，每步只收上一步；关掉的节点透传
+        if (n.type === 'walkvideo' || n.type === 'sequence'
+          || n.type === 'spritesheet' || n.type === 'play') {
+          const opts = n.type === 'walkvideo' ? n.walkvideo
+            : n.type === 'sequence' ? n.sequence
+            : n.type === 'spritesheet' ? n.spritesheet : n.play
+          if (!opts?.enabled) {
+            const inEdge = project.edges.find((e) => e.to === n.id)
+            const up = inEdge ? runtime.get(inEdge.from) || [] : []
+            runtime.set(n.id, up)
+            metaRuntime.set(n.id, metaRuntime.get(inEdge?.from || '') ?? null)
+            if (up.length) pushDownstreamResult(n.id, up, {})
+            continue
+          }
+          try {
+            if (n.type === 'walkvideo') {
+              const { images: imgs, meta } = await executeWalkVideo(n, runtime)
+              applyWalkVideoResult(n, imgs, meta)
+              runtime.set(n.id, imgs)
+              metaRuntime.set(n.id, meta)
+            } else if (n.type === 'sequence') {
+              const { images: imgs, meta } = await executeSequence(n, runtime, metaRuntime)
+              applySequenceResult(n, imgs, meta)
+              runtime.set(n.id, imgs)
+              metaRuntime.set(n.id, meta)
+            } else if (n.type === 'spritesheet') {
+              const { images: imgs, meta } = await executeSpriteSheet(n, runtime, metaRuntime)
+              applySpriteSheetResult(n, imgs, meta)
+              runtime.set(n.id, imgs)
+              metaRuntime.set(n.id, meta)
+            } else {
+              const { images: imgs, meta } = await executePlay(n, runtime, metaRuntime)
+              applyPlayResult(n, imgs, meta)
+              runtime.set(n.id, imgs)
+              metaRuntime.set(n.id, meta)
+            }
+          } catch (e: any) {
+            throw new Error(`第 ${i + 1} 步（${kind}）：${e.message || e}`)
           }
           continue
         }
@@ -1524,6 +2055,22 @@ export default function Canvas({ projectId, onBack }: Props) {
   )
   const threeViewNodes = useMemo(
     () => (project?.nodes || []).filter((n): n is ThreeViewNodeType => n.type === 'threeview'),
+    [project?.nodes],
+  )
+  const walkVideoNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is WalkVideoNodeType => n.type === 'walkvideo'),
+    [project?.nodes],
+  )
+  const sequenceNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is SequenceNodeType => n.type === 'sequence'),
+    [project?.nodes],
+  )
+  const spriteSheetNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is SpriteSheetNodeType => n.type === 'spritesheet'),
+    [project?.nodes],
+  )
+  const playNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is PlayNodeType => n.type === 'play'),
     [project?.nodes],
   )
 
@@ -1782,6 +2329,75 @@ export default function Canvas({ projectId, onBack }: Props) {
                 src: url, title,
                 pixelSize: n.result ? [n.result.width, n.result.height] : undefined,
               })}
+            />
+          ))}
+
+          {walkVideoNodes.map((n, i) => (
+            <WalkVideoNode
+              key={n.id}
+              node={n}
+              index={i}
+              projectId={project.id}
+              running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              sourceLabel={frontLabel(n.id)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runWalkVideo(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {sequenceNodes.map((n, i) => (
+            <SequenceNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              upstreamLabel={upstreamLabel(n.id)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runSequence(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {spriteSheetNodes.map((n, i) => (
+            <SpriteSheetNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              upstreamLabel={upstreamLabel(n.id)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runSpriteSheet(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {playNodes.map((n, i) => (
+            <PlayNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={false}
+              upstreamLabel={upstreamLabel(n.id)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runPlay(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
             />
           ))}
 

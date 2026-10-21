@@ -17,7 +17,8 @@ from .config import DATA_DIR, ensure_dirs
 from .jsonlimits import dumps_bounded, parse_bounded
 
 _PATH = DATA_DIR / "custom_templates.json"
-_ALLOWED = ("generate", "result", "input", "refine", "matte", "viewgen", "threeview")
+_ALLOWED = ("generate", "result", "input", "refine", "matte", "viewgen",
+            "threeview", "walkvideo", "sequence", "spritesheet", "play")
 _ICON_COLORS = ["#FFB020", "#40E0D0", "#FF6B9D", "#8B7BFF", "#5B9DFF"]
 
 
@@ -85,6 +86,26 @@ def _clean_node(n: Any) -> Optional[Dict[str, Any]]:
             "threeview": n.get("threeview") if isinstance(n.get("threeview"), dict) else {},
             "result": None,
         })
+    elif n["type"] == "walkvideo":
+        item.update({
+            "walkvideo": n.get("walkvideo") if isinstance(n.get("walkvideo"), dict) else {},
+            "result": None,
+        })
+    elif n["type"] == "sequence":
+        item.update({
+            "sequence": n.get("sequence") if isinstance(n.get("sequence"), dict) else {},
+            "result": None,
+        })
+    elif n["type"] == "spritesheet":
+        item.update({
+            "spritesheet": n.get("spritesheet") if isinstance(n.get("spritesheet"), dict) else {},
+            "result": None,
+        })
+    elif n["type"] == "play":
+        item.update({
+            "play": n.get("play") if isinstance(n.get("play"), dict) else {},
+            "result": None,
+        })
     else:
         item.update({"images": [], "prompt": "", "negative": "", "meta": {}, "genId": None})
     return item
@@ -139,7 +160,9 @@ def _public(t: Dict[str, Any]) -> Dict[str, Any]:
     steps = []
     labels = {"input": "选择图片", "generate": "生成图", "refine": "像素精修",
               "matte": "扣除背景", "result": "图片结果",
-              "viewgen": "生成视角", "threeview": "三视图拼板"}
+              "viewgen": "生成视角", "threeview": "三视图拼板",
+              "walkvideo": "行走视频", "sequence": "序列帧",
+              "spritesheet": "精灵整图", "play": "可操控预览"}
     for i, n in enumerate(nodes):
         steps.append({"n": i + 1, "title": labels.get(n.get("type"), n.get("type")),
                       "detail": "画布节点，占位坐标见 graph"})

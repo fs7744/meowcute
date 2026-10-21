@@ -135,6 +135,34 @@ def _chroma_channel(palette: List[np.ndarray]) -> Optional[int]:
     return None
 
 
+def _rgb_to_hsv_u8(rgb: np.ndarray) -> np.ndarray:
+    """RGB(0-255) → OpenCV 量纲的 HSV（H 0-180、S/V 0-255），纯 numpy。
+
+    与 cv2.cvtColor(rgb, COLOR_RGB2HSV) 等价（uint8 量纲下 H 折半）。
+    自己算而不是 import cv2：没装 OpenCV 的环境（包括本机）跑不了色相判定，
+    而溢色清洗只是抠图链上「锦上添花」的一步，不该把整条链带崩——
+    以前这里直接 import cv2，绿 / 蓝底素材一进 despill 就整单失败。
+    """
+    r = rgb[..., 0].astype(np.float32) / 255.0
+    g = rgb[..., 1].astype(np.float32) / 255.0
+    b = rgb[..., 2].astype(np.float32) / 255.0
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    diff = mx - mn
+    h = np.zeros_like(mx)
+    mask = diff > 1e-6
+    idx = (mx == r) & mask
+    h[idx] = ((g[idx] - b[idx]) / diff[idx]) % 6.0
+    idx = (mx == g) & mask
+    h[idx] = ((b[idx] - r[idx]) / diff[idx]) + 2.0
+    idx = (mx == b) & mask
+    h[idx] = ((r[idx] - g[idx]) / diff[idx]) + 4.0
+    h = h * 30.0 / 2.0                       # 0-360 → OpenCV 的 0-180
+    s = np.where(mx > 1e-6, diff / np.maximum(mx, 1e-6), 0.0)
+    hsv = np.stack([h, s * 255.0, mx * 255.0], axis=-1)
+    return np.clip(hsv, 0, 255).astype(np.uint8)
+
+
 def _hue_spill(rgb: np.ndarray, channel: int, hue_tol: int = 26,
                sat_min: float = 0.25, val_min: float = 0.05) -> np.ndarray:
     """按**色相**认出「被底色染过」的像素（不只是 RGB 距离近的）。
@@ -143,14 +171,10 @@ def _hue_spill(rgb: np.ndarray, channel: int, hue_tol: int = 26,
     的 RGB 距离约 178，任何合理容差都抓不到，于是留着一条绿丝。色相 + 饱和度
     + 明度下限三条件能抓到它，同时排除「深色但不同相」的描边像素。
 
-    注意 OpenCV 的 HSV 色相量纲随输入 dtype 变：float 图 H 是 0-360，uint8 图
-    才是 0-180。这里显式转 uint8，否则目标色相会整体差一倍（绿 120 被当成 60
-    = 红），判定会静默失效。
+    量纲与 OpenCV 对齐：uint8 图 H 是 0-180（float 图才是 0-360），
+    目标色相按这个量纲写死（绿 120 → 60）。
     """
-    import cv2
-
-    u8 = (np.clip(rgb, 0, 255)).astype(np.uint8)
-    hsv = cv2.cvtColor(u8, cv2.COLOR_RGB2HSV)
+    hsv = _rgb_to_hsv_u8(np.clip(rgb, 0, 255).astype(np.uint8))
     target = {0: 0, 1: 60, 2: 120}.get(channel, 60)
     dist = np.abs(hsv[..., 0].astype(np.int16) - target)
     dist = np.minimum(dist, 180 - dist)

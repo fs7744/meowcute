@@ -1,7 +1,7 @@
 import type {
   BackgroundOption, DoctorReport, GenerateResult, GenParams, MatteOptions, PixelOptions,
   Project, ProjectFilesInfo, ProjectSummary, PromptExample, PromptPreview, ResultImage,
-  Style, TaskProgress, Template, RefAsset,
+  Style, TaskProgress, Template, RefAsset, VideoAsset,
 } from './types'
 
 async function j<T>(r: Response): Promise<T> {
@@ -177,6 +177,60 @@ export const api = {
     cell?: [number, number] | null
   }) =>
     fetch('/api/threeview/compose', jsonInit(payload)).then(j<{ ok: boolean; image: ResultImage }>),
+
+  /** 八方向 · 行走视频：正视图 → 各方向立绘 + Wan 行走视频（任务制）。
+   *  sources 里填了文件名的方向跳过生成，直接用现成视频。 */
+  walkVideo: (payload: {
+    projectId: string
+    origAssetId?: string
+    sourceKind?: 'images' | 'refs'; sourceFile?: string
+    dirMode?: 'eight' | 'four' | 'single'
+    action?: string
+    styleId?: string | null
+    steps?: number | null
+    seed?: number | null
+    width?: number; height?: number
+    numFrames?: number; fps?: number; maxSide?: number
+    maxSeqLen?: number | null
+    sources?: { dir: string; file: string }[]
+  }) =>
+    fetch('/api/walkvideo', jsonInit(payload)).then(j<{ taskId: string }>),
+
+  /** 八方向 · 行走视频：项目内可选的现成视频（历史生成 + 上传）。 */
+  listProjectVideos: (projectId: string) =>
+    fetch(`/api/projects/${encodeURIComponent(projectId)}/videos`)
+      .then(j<{ videos: VideoAsset[] }>),
+
+  /** 八方向 · 行走视频：上传一段现成视频（mp4/mov/webm/gif…）。 */
+  uploadProjectVideo: (projectId: string, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return fetch(`/api/projects/${encodeURIComponent(projectId)}/videos/upload`,
+      { method: 'POST', body: fd })
+      .then(j<{ ok: boolean; video: { id: string; file: string; url: string; bytes: number } }>)
+  },
+
+  /** 八方向 · 序列帧：每方向视频 → 抽帧/去重/抠图（任务制）。 */
+  sequence: (payload: {
+    projectId: string
+    directions: { dir: string; gif: string }[]
+    framesPerDir?: number
+    fps?: number
+    matte?: boolean
+    tolerance?: number
+  }) =>
+    fetch('/api/sequence', jsonInit(payload)).then(j<{ taskId: string }>),
+
+  /** 八方向 · 精灵整图：每方向透明帧 → 共享缩放规整 → 横排精灵表（任务制）。 */
+  spriteSheet: (payload: {
+    projectId: string
+    directions: { dir: string; frames: string[] }[]
+    size?: number
+    cols?: number
+    sharedScale?: boolean
+    anchor?: 'bottom' | 'center' | 'top'
+  }) =>
+    fetch('/api/spritesheet', jsonInit(payload)).then(j<{ taskId: string }>),
 }
 
 /** 订阅任务 SSE：progress 回调每次进度，done 回调最终结果。返回取消订阅函数。 */

@@ -180,6 +180,49 @@ def _normalize_refs(ref=None, refs=None) -> List[Any]:
     return out[:MAX_REFS]
 
 
+def _frames_to_pil(frames: Any) -> List[Any]:
+    """把视频管线的输出统一成一维 PIL 列表（RGBA）。
+
+    Wan I2V 的输出结构随 output_type 变：output_type="pil" 是 [batch][frame] 的
+    PIL 列表，="np" 是 numpy 数组 [batch][frame][h][w][c]。这里两种都收，
+    免得为了换输出类型去改调用点——类型差异不是业务逻辑该操心的事。
+
+    顺带解决了一个真实踩坑：把 [0]（取 batch 0）后的结果当成 PIL 用，
+    在默认 np 模式下会报 'numpy.ndarray' object has no attribute 'convert'。
+    """
+    import numpy as np
+    from PIL import Image
+
+    seq = frames[0] if (hasattr(frames, "__len__") and len(frames)
+                        and isinstance(frames[0], (list, tuple))) else frames
+    # numpy 输出带 batch 维（[b][f][h][w][c]）。这里把所有前置 batch 维压掉：
+    # 判据是「单个元素的维度 ≥ 4」——只有帧数据才有 5 维，灰度图只有 2 维、
+    # 单帧 HWC 只有 3 维，不会被误当 batch。逐元素 isinstance 判断既啰嗦又易错。
+    if not hasattr(seq, "ndim") and len(seq) and hasattr(seq[0], "ndim"):
+        if seq[0].ndim >= 4:          # [b][f][h][w][c]
+            seq = [seq[b] for b in range(len(seq))]
+    out: List[Any] = []
+    for f in seq:
+        if isinstance(f, Image.Image):
+            out.append(f.convert("RGBA"))
+        else:
+            arr = np.asarray(f)
+            if arr.ndim >= 4:          # 残留 batch 维（单个视频对象）
+                arr = arr[0]
+            # 只在「最后一维明显不是通道」时才转置。必须同时满足首末维都是
+            # 小通道数（3/4）才算 CHW——只用 shape[0] 判会把 HWC 的小尺寸图
+            # （比如 8×10×3）误转置成 (3,8,10) 再喂给 fromarray，直接抛 TypeError。
+            if (arr.ndim == 3 and arr.shape[-1] not in (3, 4)
+                    and arr.shape[0] in (3, 4)):
+                arr = np.transpose(arr, (1, 2, 0))   # CHW → HWC
+            if arr.ndim == 2:
+                # 灰度图：必须真的复制成 3 通道。用 arr[:, :, None] 补一维会得到
+                # (h, w, 1)，PIL 的 fromarray 不认（KeyError (1,1,1)）。
+                arr = np.repeat(arr[:, :, None], 3, axis=2)
+            out.append(Image.fromarray(arr.astype("uint8")).convert("RGBA"))
+    return out
+
+
 def _resolve_seq_len(prompt: str, requested: Optional[int]) -> int:
     """文本编码的最大序列长度：界面指定优先，否则按提示词长度估算。
 
@@ -225,6 +268,39 @@ def resolve_edit_model(explicit: Optional[str] = None) -> str:
     raise RuntimeError(
         "未找到 Qwen-Image-Edit 底座。请将 models/qwen-image-edit-2511 放到项目 "
         "models/ 目录下，或在设置里配置编辑底座路径。")
+
+
+def resolve_video_model(explicit: Optional[str] = None) -> str:
+    """解析 Wan2.2 TI2V-5B 视频底座路径，解析不到就抛带指引的错误。
+
+    顺序：显式参数 → 设置里的 videoModel → 设置里任何 wan 族 provider →
+    models/wan2.2-ti2v-5b。
+    """
+    if explicit:
+        hit = resolve_path(explicit)
+        if os.path.isdir(hit):
+            return hit
+    try:
+        from ..config import load_settings
+
+        s = load_settings()
+        direct = resolve_path(str((s.get("providers", {}).get("diffusers", {}) or {}).get("videoModel") or ""))
+        if direct and os.path.isdir(direct) and detect_family(direct) == "wan":
+            return direct
+        for cfg in (s.get("providers") or {}).values():
+            if not isinstance(cfg, dict):
+                continue
+            mid = resolve_path(str(cfg.get("model") or ""))
+            if mid and os.path.isdir(mid) and detect_family(mid) == "wan":
+                return mid
+    except Exception:
+        pass
+    default = resolve_path("models/wan2.2-ti2v-5b")
+    if os.path.isdir(default):
+        return default
+    raise RuntimeError(
+        "未找到 Wan2.2 TI2V-5B 视频底座。请将 models/wan2.2-ti2v-5b 放到项目 "
+        "models/ 目录下，或在设置里配置视频底座路径。")
 
 
 # torch 不在 requirements.txt 里：它是 2.9GB 的推理依赖，只有真要出图才需要，
@@ -277,7 +353,7 @@ def _torch_status() -> Dict[str, Any]:
 
 # 两个大族在 24GB 卡上的实测/估算占用（bf16 / fp8+offload）：
 # Z-Image 19.3GB、Qwen-Edit fp8 前向峰值 20.3GB。留 1GB 余量给 CUDA context。
-_NEED_GB = {"zimage": 20.5, "qwen_edit": 21.0}
+_NEED_GB = {"zimage": 20.5, "qwen_edit": 21.0, "wan": 19.0}
 
 
 def _vram_note(family: str) -> Optional[str]:
@@ -311,7 +387,7 @@ def _vram_note(family: str) -> Optional[str]:
 
 class DiffusersProvider(BaseProvider):
     id = "diffusers"
-    label = "本地底座（Z-Image / Qwen-Edit）"
+    label = "本地底座（Z-Image / Qwen-Edit / Wan 视频）"
 
     def _resolve_model(self) -> str:
         model = (self.cfg.get("model") or "").strip()
@@ -324,14 +400,16 @@ class DiffusersProvider(BaseProvider):
         if model_id in _CACHE:
             return _CACHE[model_id]
         family = detect_family(model_id)
-        if family not in ("zimage", "qwen_edit"):
+        if family not in ("zimage", "qwen_edit", "wan"):
             raise RuntimeError(
-                f"暂不支持的模型：{model_id}。当前版本只支持 Z-Image-Turbo（文生图）"
-                "与 Qwen-Image-Edit-2511（参考图编辑）。")
+                f"暂不支持的模型：{model_id}。当前版本支持 Z-Image-Turbo（文生图）、"
+                "Qwen-Image-Edit-2511（参考图编辑）与 Wan2.2 TI2V-5B（图生视频）。")
         # 单卡 24GB 只容一个大家族：切换前先把另一大族卸了，否则共存必 OOM
         _evict_other_families(family)
         if family == "zimage":
             return self._load_zimage(model_id)
+        if family == "wan":
+            return self._load_wan(model_id)
         return self._load_qwen_edit(model_id)
 
     def _load_zimage(self, model_id: str):
@@ -460,6 +538,174 @@ class DiffusersProvider(BaseProvider):
         print(f"[meowcute] transformer fp8 量化完成（{n} 个 Linear，"
               f"bf16 加载 {t_load:.0f}s + GPU 量化 {t_quant:.0f}s，缓存已写 "
               f"{cache_dir.name}/）", flush=True)
+        return t
+
+    # ---------- Wan2.2 TI2V-5B：图生视频（参考图 + 动作提示词 → 帧序列） ----------
+
+    def _load_wan(self, model_id: str):
+        """Wan2.2 TI2V-5B：5B DiT + umT5-xxl + Wan VAE，diffusers WanImageToVideoPipeline。
+
+        为什么用视频底座做精灵：逐帧编辑（Qwen-Edit 一帧一帧改姿势）每帧都是
+        独立推理，帧间没有运动连续性，快速动作会抖；视频底座一次生成整段动作，
+        肢体路径天然连贯，抽帧后就是现成的循环素材。
+
+        管线类必须用 I2V 版：仓库的 model_index.json 写的是 ``WanPipeline``（纯文生
+        视频，__call__ 不接受 image），但 TI2V-5B 的 transformer 是
+        ``in_channels=48``（16 噪声 + 32 图像 latent），只有 WanImageToVideoPipeline
+        会把参考图编码进第一帧的 latent 通道。照 model_index 加载会直接报
+        ``unexpected keyword argument 'image'``。
+
+        显存策略（照 Qwen-Edit 的作业）：
+        - transformer bf16 18.6GB → GPU 逐层 fp8（约 9.3GB），落盘缓存
+          transformer-fp8/，冷启动省掉 18GB 读取；
+        - umT5-xxl bf16 10.6GB → fp8（约 5.3GB），只在条件编码时用，
+          enable_model_cpu_offload 会让它按阶段换出；
+        - VAE 2.6GB 保持 bf16（解码质量敏感，且只在首尾用一次）。
+        合计常驻约 17GB，24GB 卡可行。
+        """
+        try:
+            import torch
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError(_TORCH_HINT) from e
+        try:
+            from diffusers import WanImageToVideoPipeline, WanTransformer3DModel
+        except Exception as e:
+            raise RuntimeError(
+                "Wan2.2 视频生成需要 diffusers ≥ 0.36（含 "
+                "WanImageToVideoPipeline / WanTransformer3DModel）。"
+                "请执行 pip install -U diffusers。\n"
+                f"原始错误：{e}"
+            ) from e
+        # ftfy 是 encode_prompt → prompt_clean 的硬依赖，但 diffusers 不默认带它。
+        # 缺了会在真正开始去噪时才炸（NameError 埋在 diffusers 内部，位置很难找），
+        # 所以在这里拦一次并说清楚装什么。
+        try:
+            import ftfy  # noqa: F401
+        except ImportError as e:
+            raise RuntimeError(
+                "缺 ftfy：Wan 的提示词编码器会调用 ftfy.fix_text 清洗文本。\n"
+                "请执行：pip install ftfy"
+            ) from e
+        torch.backends.cudnn.benchmark = True
+        if not torch.cuda.is_available():
+            raise RuntimeError("Wan2.2 是视频 DiT，需要 CUDA GPU；CPU 推理不可行。")
+
+        transformer = None
+        if os.environ.get("MEOWCUTE_QWEN_FP8", "1") != "0":
+            try:
+                transformer = self._load_component_fp8(
+                    model_id, "transformer", WanTransformer3DModel, "wan.transformer")
+            except Exception as e:
+                print(f"[meowcute] fp8 transformer 快速路径失败（{e}），退回完整加载",
+                      flush=True)
+                transformer = None
+
+        # WanImageToVideoPipeline 与 WanPipeline 的组件字段一致，可以直接复用
+        # 仓库里的 config/权重；不存在的 transformer_2/transformer_3 传 None。
+        if transformer is not None:
+            pipe = WanImageToVideoPipeline.from_pretrained(
+                model_id, torch_dtype=torch.bfloat16, transformer=transformer)
+        else:
+            pipe = WanImageToVideoPipeline.from_pretrained(
+                model_id, torch_dtype=torch.bfloat16)
+            if os.environ.get("MEOWCUTE_QWEN_FP8", "1") != "0":
+                self._quantize_fp8(pipe.transformer, "wan.transformer")
+        # umT5-xxl 10.6GB：fp8 后约 5.3GB，offload 会在编码完成后把它搬出显存
+        if os.environ.get("MEOWCUTE_QWEN_FP8", "1") != "0":
+            self._quantize_fp8(pipe.text_encoder, "wan.text_encoder")
+        pipe.enable_model_cpu_offload()
+        pipe.set_progress_bar_config(disable=True)
+        caps: Dict[str, Any] = {
+            "family": "wan",
+            "notes": ["Wan2.2 TI2V-5B：参考图 + 中文提示词 → 视频帧序列；"
+                      "fp8 + cpu offload"],
+        }
+        _CAPS[model_id] = caps
+        _CACHE[model_id] = pipe
+        return pipe
+
+    def _run_wan(self, model_id: str, prompt: str, negative: str,
+                 width: int, height: int, steps: Optional[int],
+                 seed: Optional[int], generator: Any,
+                 ref: Optional[Any], num_frames: int, fps: int, max_side: int,
+                 task_id: Optional[str] = None):
+        """图生视频：参考图 + 动作提示词 → 帧序列（PIL 列表）。
+
+        - num_frames 必须是 4k+1（Wan 时序 VAE 的要求），内部向下取整；
+        - 输入图按 16 对齐缩放到目标尺寸，长边超过 max_side 时先降（编辑成本
+          随像素数涨，视频尤其明显——帧数 × 分辨率双重放大）；
+        - guidance_scale=5.0 / steps=30 是 TI2V-5B 的官方推荐量级；步数可调，
+          但不低于 20（再低动作会跳变）。
+        """
+        import torch
+
+        if ref is None:
+            raise ValueError("Wan 图生视频需要一张参考图（ref）")
+        pipe = self._load(model_id)
+        use_steps = 30 if not steps else max(20, min(int(steps), 50))
+        from PIL import Image as _Image
+
+        src = ref.convert("RGB")
+        w = int(width or src.width) // 16 * 16
+        h = int(height or src.height) // 16 * 16
+        if max(w, h) > max_side:
+            scale = max_side / max(w, h)
+            w, h = max(16, int(w * scale) // 16 * 16), max(16, int(h * scale) // 16 * 16)
+        src = src.resize((w, h), _Image.LANCZOS)
+        # 4k+1：Wan 时序 VAE 把帧数压成 (n-1)/4+1 个潜帧，非 4k+1 会补齐或报错
+        frames = max(5, (int(num_frames) - 1) // 4 * 4 + 1)
+        out = pipe(
+            image=src,
+            prompt=prompt,
+            negative_prompt=negative or " ",
+            height=h,
+            width=w,
+            num_frames=frames,
+            num_inference_steps=use_steps,
+            guidance_scale=5.0,
+            generator=generator,
+            # Wan 的 I2V 管线默认 output_type="np"（返回 ndarray），不是 "pil"。
+            # 显式要 PIL：下游统一按 Image 处理，少一层 numpy 往返也少一处错位风险。
+            output_type="pil",
+            # 步进回调：30 步的视频生成是全场最长的等待，进度与取消都靠它
+            callback_on_step_end=progress_mod.make_step_callback(task_id, use_steps),
+        )
+        imgs = _frames_to_pil(out.frames)
+        return imgs, {
+            "steps": use_steps, "cfg": 5.0, "family": "wan",
+            "mode": "i2v", "frames": len(imgs), "fps": fps,
+            "seconds": round(len(imgs) / max(1, int(fps)), 2),
+            "size": [w, h],
+        }
+
+    def _load_component_fp8(self, model_id: str, subdir: str, cls, tag: str):
+        """任意 diffusers 组件的 fp8 加载（量化 + 落盘缓存），Qwen/Wan 共用。
+
+        与 _load_qwen_transformer_fp8 的区别只是组件目录和模型类可指定，
+        逻辑完全一样：命中缓存 mmap 直读，未命中 GPU 逐层量化后写缓存。
+        """
+        import time
+        from pathlib import Path
+
+        model_dir = Path(model_id)
+        cache_dir = model_dir / f"{subdir}-fp8"
+        if self._fp8_cache_valid(cache_dir, model_dir, subdir):
+            t0 = time.time()
+            t = self._load_fp8_cache(cache_dir, cls)
+            print(f"[meowcute] fp8 缓存命中：{cache_dir.name}/（{time.time() - t0:.0f}s）",
+                  flush=True)
+            return t
+
+        t0 = time.time()
+        t = cls.from_pretrained(str(model_dir / subdir), torch_dtype=torch.bfloat16)
+        t_load = time.time() - t0
+        n = self._quantize_transformer_gpu(t)
+        try:
+            self._save_fp8_cache(t, cache_dir, model_dir, subdir)
+        except Exception as e:
+            print(f"[meowcute] {tag} fp8 缓存落盘失败（{e}），不影响本次运行", flush=True)
+        print(f"[meowcute] {tag} fp8 量化完成（{n} 个 Linear，bf16 加载 {t_load:.0f}s，"
+              f"缓存已写 {cache_dir.name}/）", flush=True)
         return t
 
     @staticmethod
@@ -813,6 +1059,55 @@ class DiffusersProvider(BaseProvider):
             out_meta["requestedModel"] = requested
         return ProviderResult(images=images, meta=out_meta)
 
+    async def generate_video(
+        self,
+        prompt: str,
+        ref,
+        width: int = 0,
+        height: int = 0,
+        steps: Optional[int] = None,
+        seed: Optional[int] = None,
+        num_frames: int = 81,
+        fps: int = 24,
+        max_side: int = 832,
+        task_id: Optional[str] = None,
+    ) -> ProviderResult:
+        """图生视频：参考图 + 提示词 → 帧序列（ProviderResult.images = 帧）。
+
+        与 generate() 分开而不是加参数：视频的输入输出语义都不同（一张图进、
+        几十帧出、按时长而非张数描述），塞进同一个方法只会让调用方猜。
+        """
+        _require_torch()
+        model_id = self._resolve_model()
+        if detect_family(model_id) != "wan":
+            raise RuntimeError(
+                f"当前模型不是视频底座：{model_id}。"
+                "请先下载 Wan2.2 TI2V-5B 并把它配置为视频 provider 的 model。")
+        import torch
+
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(
+                device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(int(seed))
+        note = _vram_note("wan")
+        if note:
+            print(f"[meowcute] {note}", flush=True)
+        progress_mod.check_cancel(task_id)
+        async with _LOCK:
+            progress_mod.check_cancel(task_id)
+            images, meta = await asyncio.to_thread(
+                self._run_wan, model_id, prompt, self.cfg.get("negativePrompt", ""),
+                width, height, steps, seed, generator, ref,
+                int(num_frames), int(fps), int(max_side), task_id,
+            )
+        status = _torch_status()
+        out_meta = {"provider": "diffusers", "model": model_id,
+                    "device": status.get("device"), **meta,
+                    "caps": _CAPS.get(model_id)}
+        if note:
+            out_meta["vramWarning"] = note
+        return ProviderResult(images=images, meta=out_meta)
+
     async def test(self) -> Dict[str, Any]:
         st = _torch_status()
         if not st["installed"]:
@@ -826,12 +1121,19 @@ class DiffusersProvider(BaseProvider):
         model = self._resolve_model()
         family = detect_family(model)
         zh_tag = "（中文直喂）" if family in ("zimage", "qwen_edit") else "（不支持）"
+        message = (f"{st['device']} · {st['vramGB']}GB 显存（当前可用 "
+                   f"{st.get('freeGB', 0)}GB） · 模型 {model} · 族 {family}"
+                   + zh_tag
+                   + ("" if model not in _CACHE else " · 已加载"))
+        # 视频底座单独报一句：行走视频节点需要它，没配的话在这里就能看到
+        try:
+            vmodel = resolve_video_model()
+            message += f" · 视频底座 {vmodel}（{'已就绪' if os.path.isdir(vmodel) else '缺失'}）"
+        except Exception:
+            message += " · 视频底座未配置（行走视频不可用）"
         return {
             "ok": True,
-            "message": f"{st['device']} · {st['vramGB']}GB 显存（当前可用 "
-                       f"{st.get('freeGB', 0)}GB） · 模型 {model} · 族 {family}"
-                       + zh_tag
-                       + ("" if model not in _CACHE else " · 已加载"),
+            "message": message,
             "caps": _CAPS.get(model),
         }
 

@@ -239,6 +239,248 @@ export type ThreeViewMeta = {
   }[]
 }
 
+// --------------------------------------------------------------------------- #
+// 八方向行走（dir_walk 模板链：行走视频 → 序列帧 → 精灵整图 → 可操控预览）
+// --------------------------------------------------------------------------- #
+/** 方向 id：顺时针一圈，下 → 左下 → 左 → 左上 → 上 → 右上 → 右 → 右下。 */
+export type WalkDir =
+  | 'down' | 'down-left' | 'left' | 'up-left'
+  | 'up' | 'up-right' | 'right' | 'down-right'
+
+/** 行走视频参数（八方向第一步，对应后端 DEFAULT_WALKVIDEO）。 */
+export type WalkVideoOptions = {
+  /** 使用开关：关掉时透传上游正视图 */
+  enabled: boolean
+  /** eight=八方向（5 实拍 + 3 镜像）/ four=四方向 / single=仅正面 */
+  dirMode: 'eight' | 'four' | 'single'
+  action: string
+  /**
+   * 现成视频来源：{方向: 项目内视频文件名}。填了的方向跳过「立绘推导 +
+   * Wan 生成」，直接用文件里的帧；没填的照常生成。用来换参数重跑下游、
+   * 替换不满意的方向、或完全用外部素材。
+   */
+  sources?: Partial<Record<WalkDir, string>>
+  styleId: string | null
+  steps: number | null
+  seed: number | null
+  width: number
+  height: number
+  /** Wan 帧数（后端对齐 4k+1） */
+  numFrames: number
+  fps: number
+  maxSide: number
+  maxSeqLen: number | null
+}
+
+/** 项目内可选用的视频资产（GET /api/projects/{id}/videos）。 */
+export type VideoAsset = {
+  file: string
+  url: string
+  /** generated=以前生成的行走视频 / upload=用户上传 */
+  origin: 'generated' | 'upload'
+  /** 生成视频带的方向（walk-down-… 解析得出），上传的没有 */
+  dir: WalkDir | null
+  bytes: number
+  mtime: number
+}
+
+/** 序列帧参数（八方向第二步，对应后端 DEFAULT_SEQUENCE）。 */
+export type SequenceOptions = {
+  enabled: boolean
+  /** 每方向抽多少帧 */
+  framesPerDir: number
+  /** 抽出来的循环按几帧/秒播放 */
+  fps: number
+  matte: boolean
+  tolerance: number
+}
+
+/** 精灵整图参数（八方向第三步，对应后端 DEFAULT_SPRITESHEET）。 */
+export type SpriteSheetOptions = {
+  enabled: boolean
+  /** 单元格边长 */
+  size: number
+  /** 每行帧数，0 = 一行排完 */
+  cols: number
+  /** 共享缩放：整段循环用同一缩放系数，角色不忽大忽小 */
+  sharedScale: boolean
+  anchor: 'bottom' | 'center' | 'top'
+}
+
+/** 可操控预览参数（八方向第四步，纯前端渲染，对应后端 DEFAULT_PLAY）。 */
+export type PlayOptions = {
+  enabled: boolean
+  fps: number
+  zoom: number
+}
+
+/** 行走视频的一个方向产物。 */
+export type WalkDirection = {
+  dir: WalkDir
+  label: string
+  gif: {
+    assetId: string
+    url: string
+    width: number
+    height: number
+    frames: number
+    fps: number
+  }
+  count: number
+  seed: number | null
+  mirrored: boolean
+  mirroredFrom: WalkDir | null
+}
+
+/** 行走视频节点的产出元数据。 */
+export type WalkMeta = {
+  dirMode: string
+  dirModeLabel: string
+  action: string
+  realDirections: number
+  mirroredDirections: number
+  /** 用现成视频的方向数（跳过推导 + Wan） */
+  existingDirections: number
+  fps: number
+  numFrames: number
+  size: [number, number]
+  maxSide: number
+  seconds: number
+  directions: WalkDirection[]
+}
+
+/** 序列帧的一个方向产物。 */
+export type SequenceDirection = {
+  dir: WalkDir
+  label: string
+  count: number
+  sourceFrames: number
+  dropped: number
+  frames: { assetId: string; url: string }[]
+  strip: { assetId: string; url: string; width: number; height: number }
+  bgRemovedAvg: number
+}
+
+/** 序列帧节点的产出元数据。 */
+export type SequenceMeta = {
+  framesPerDir: number
+  fps: number
+  matte: boolean
+  tolerance: number
+  counts: number[]
+  dropped: number
+  seconds: number
+  directions: SequenceDirection[]
+}
+
+/** 精灵整图的一个方向产物。 */
+export type SheetDirection = {
+  dir: WalkDir
+  label: string
+  sheet: { assetId: string; url: string; width: number; height: number }
+  cols: number
+  rows: number
+  frameSize: { w: number; h: number }
+  frames: { i: number; x: number; y: number; w: number; h: number }[]
+  count: number
+  warnings: string[]
+  checks: {
+    cellsMatchFrames: boolean
+    reason?: string
+    mismatchAt?: number
+    cells?: number
+  }
+  normalize?: {
+    size: [number, number]
+    frames: number
+    scaleRange: number[]
+    sharedScale: boolean
+    anchor: string
+  }
+}
+
+/** 精灵整图节点的产出元数据。 */
+export type SheetMeta = {
+  size: number
+  sharedScale: boolean
+  anchor: string
+  overviewSize: [number, number]
+  warnings: string[]
+  checksOk: boolean
+  seconds: number
+  overview: { assetId: string; url: string; width: number; height: number }
+  directions: SheetDirection[]
+}
+
+/** 可操控预览节点的播放载荷（由上游精灵整图的元数据组装）。 */
+export type PlayMeta = {
+  fps: number
+  zoom: number
+  seconds: number
+  directions: {
+    dir: WalkDir
+    label: string
+    url: string
+    cols: number
+    rows: number
+    frameSize: { w: number; h: number }
+    frames: { i: number; x: number; y: number; w: number; h: number }[]
+  }[]
+}
+
+/** 行走视频节点：正视图 → 八方向立绘 + Wan 行走视频（每方向一个 GIF）。 */
+export type WalkVideoNode = {
+  id: string
+  type: 'walkvideo'
+  x: number
+  y: number
+  walkvideo: WalkVideoOptions
+  /** 主图（第一个方向的 GIF），供缩略图与 outputOf 用 */
+  result?: ResultImage | null
+  /** 全部产出（按方向顺序的 GIF） */
+  images?: ResultImage[]
+  meta?: WalkMeta | null
+  createdAt?: number
+}
+
+/** 序列帧节点：每方向视频 → 抽帧/去重/抠图 → 透明底帧。 */
+export type SequenceNode = {
+  id: string
+  type: 'sequence'
+  x: number
+  y: number
+  sequence: SequenceOptions
+  result?: ResultImage | null
+  images?: ResultImage[]
+  meta?: SequenceMeta | null
+  createdAt?: number
+}
+
+/** 精灵整图节点：每方向透明帧 → 共享缩放规整 → 横排精灵表 + 总览。 */
+export type SpriteSheetNode = {
+  id: string
+  type: 'spritesheet'
+  x: number
+  y: number
+  spritesheet: SpriteSheetOptions
+  result?: ResultImage | null
+  images?: ResultImage[]
+  meta?: SheetMeta | null
+  createdAt?: number
+}
+
+/** 可操控预览节点：八方向精灵表 → 方向键操控的行走播放器（纯前端）。 */
+export type PlayNode = {
+  id: string
+  type: 'play'
+  x: number
+  y: number
+  play: PlayOptions
+  result?: ResultImage | null
+  meta?: PlayMeta | null
+  createdAt?: number
+}
+
 export type ResultImage = {
   assetId: string
   url: string
@@ -275,6 +517,8 @@ export type ResultImage = {
   }
   /** 这张图是否是三视图拼板 */
   threeview?: ThreeViewMeta
+  /** 这张图属于哪个方向（八方向行走链） */
+  walkDir?: WalkDir
 }
 
 export type ResultMeta = {
@@ -291,6 +535,14 @@ export type ResultMeta = {
   palette?: string
   /** 结果图走过的抠图路径（u2net / grabcut / key） */
   matteMethod?: string
+  /** 行走视频节点的产出（八方向链） */
+  walk?: WalkMeta
+  /** 序列帧节点的产出（八方向链） */
+  sequence?: SequenceMeta
+  /** 精灵整图节点的产出（八方向链） */
+  sheet?: SheetMeta
+  /** 可操控预览节点的播放载荷（八方向链） */
+  play?: PlayMeta
 }
 
 export type ResultNode = {
@@ -308,6 +560,7 @@ export type ResultNode = {
 
 export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode | MatteNode
   | ViewGenNode | ThreeViewNode
+  | WalkVideoNode | SequenceNode | SpriteSheetNode | PlayNode
 export type Edge = { from: string; to: string }
 
 export type Project = {
@@ -374,6 +627,10 @@ export type GenerateResult = {
   negative: string
   breakdown: { label: string; text: string }[]
   meta: ResultMeta
+  /** 八方向链的任务产出：行走视频 / 序列帧 / 精灵整图的结构化数据 */
+  walk?: WalkMeta
+  sequence?: SequenceMeta
+  sheet?: SheetMeta
   error?: string
 }
 

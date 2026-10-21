@@ -422,8 +422,14 @@ button { cursor: pointer; }
 .node.matte { border-color: rgba(91, 87, 235, 0.6); }
 .node.viewgen { border-color: rgba(255, 213, 0, 0.55); }
 .node.threeview { border-color: rgba(0, 208, 255, 0.55); }
-/* 扣背景 / 视角 / 拼板节点被关掉时变成虚线灰框：一眼能看出它现在不参与流程 */
-.node.matte.off, .node.viewgen.off, .node.threeview.off {
+/* 八方向行走链：四步一个色系家族（青绿系），关掉时统一虚线灰框 */
+.node.walkvideo { border-color: rgba(255, 138, 76, 0.55); }
+.node.sequence { border-color: rgba(138, 226, 120, 0.55); }
+.node.spritesheet { border-color: rgba(64, 200, 180, 0.55); }
+.node.play { border-color: rgba(255, 102, 178, 0.55); }
+/* 扣背景 / 视角 / 拼板 / 八方向节点被关掉时变成虚线灰框：一眼能看出它现在不参与流程 */
+.node.matte.off, .node.viewgen.off, .node.threeview.off,
+.node.walkvideo.off, .node.sequence.off, .node.spritesheet.off, .node.play.off {
   border-style: dashed; opacity: 0.72;
 }
 .node.selected { box-shadow: 0 0 0 2px var(--white), 8px 8px 0 rgba(0, 0, 0, 0.55); }
@@ -440,6 +446,10 @@ button { cursor: pointer; }
 .node.matte .node-kind { color: var(--purple); }
 .node.viewgen .node-kind { color: var(--yellow); }
 .node.threeview .node-kind { color: var(--cyan); }
+.node.walkvideo .node-kind { color: #ff8a4c; }
+.node.sequence .node-kind { color: #8ae278; }
+.node.spritesheet .node-kind { color: #40c8b4; }
+.node.play .node-kind { color: #ff66b2; }
 .node-title { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-idx { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .node-x { background: transparent; border: 0; color: var(--muted); font-size: 14px; padding: 0 4px; }
@@ -653,6 +663,10 @@ button { cursor: pointer; }
 .ctx-dot.d-view { background: var(--yellow); }
 .ctx-dot.d-threeview { background: var(--cyan); }
 .ctx-dot.d-result { background: var(--pink); }
+.ctx-dot.d-walk { background: #ff8a4c; }
+.ctx-dot.d-sequence { background: #8ae278; }
+.ctx-dot.d-sheet { background: #40c8b4; }
+.ctx-dot.d-play { background: #ff66b2; }
 
 /* --- 分类次级菜单：一级只列分类，悬停展开具体节点 ---
    节点类型会越来越多，一次性平铺会变成一个长到用不了的列表。 */
@@ -749,6 +763,123 @@ button { cursor: pointer; }
   background: transparent; cursor: pointer; flex: none;
 }
 .tv-color .input { width: 78px; font-family: var(--mono); }
+
+/* --- 八方向行走链：每方向一格的小格子（GIF / 序列帧条 / 精灵表） --- */
+.walk-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.walk-cell { display: flex; flex-direction: column; gap: 3px; }
+.walk-cell-t {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 10px; color: var(--muted);
+}
+.walk-count { font-family: var(--mono); color: var(--muted); }
+.walk-mirror {
+  font-family: var(--chip); font-size: 9px; color: var(--cyan);
+  border: 1px solid rgba(0, 208, 255, 0.45); padding: 0 3px; margin-left: 4px;
+}
+.walk-gif, .walk-strip, .walk-sheet {
+  width: 100%; padding: 0; border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.3); cursor: zoom-in; display: block;
+}
+.walk-gif { aspect-ratio: 3 / 4; }
+.walk-strip { aspect-ratio: 16 / 5; }
+.walk-sheet { aspect-ratio: 16 / 3; }
+.walk-gif img, .walk-strip img, .walk-sheet img {
+  width: 100%; height: 100%; object-fit: contain; display: block;
+  image-rendering: pixelated;
+}
+.walk-gif:hover, .walk-strip:hover, .walk-sheet:hover { border-color: var(--green); }
+
+/* --- 行走视频节点：视频来源面板（每方向 Wan 生成 / 现成视频） --- */
+.walk-src {
+  margin-top: 8px; border: 1px solid var(--line); padding: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.walk-src-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; color: var(--muted); margin-bottom: 6px;
+}
+.walk-src-count { font-family: var(--mono); font-size: 10px; color: var(--cyan); }
+.walk-src-row {
+  position: relative; display: flex; align-items: center; gap: 5px;
+  padding: 3px 0; border-top: 1px dashed var(--line);
+}
+.walk-src-row:first-of-type { border-top: 0; }
+.walk-src-dir {
+  flex: none; width: 34px; font-size: 11px; color: var(--fg);
+}
+.walk-src-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 10px; color: var(--muted);
+}
+.walk-src-wan { color: var(--muted); font-style: italic; }
+.walk-src-thumb {
+  flex: none; width: 30px; height: 30px; padding: 0; overflow: hidden;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); cursor: zoom-in;
+}
+.walk-src-thumb img, .walk-src-thumb video {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.walk-src-clear { color: var(--muted); }
+.walk-src-clear:hover { color: var(--pink); border-color: var(--pink); }
+.walk-src-picker {
+  position: absolute; right: 0; top: 100%; z-index: 20; width: 250px;
+  max-height: 220px; overflow: auto; padding: 6px;
+  background: var(--panel, #1b1e2c); border: 1px solid var(--line-strong);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.walk-src-picker-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 10px; color: var(--muted); margin-bottom: 4px;
+}
+.walk-src-item {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px;
+  border: 1px solid transparent; background: transparent; cursor: pointer;
+  text-align: left; color: var(--fg);
+}
+.walk-src-item:hover { border-color: var(--green); background: rgba(255, 255, 255, 0.04); }
+.walk-src-item img, .walk-src-item video {
+  flex: none; width: 34px; height: 26px; object-fit: cover; display: block;
+  background: rgba(0, 0, 0, 0.3); image-rendering: pixelated;
+}
+.walk-src-item span {
+  min-width: 0; font-size: 10px; display: flex; flex-direction: column;
+}
+.walk-src-item i {
+  font-style: normal; font-size: 9px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.walk-pill-src {
+  color: var(--orange, #ff8a4c);
+  border-color: rgba(255, 138, 76, 0.45);
+}
+.btn-xs {
+  padding: 1px 6px; font-size: 10px; line-height: 18px;
+}
+
+/* --- 可操控预览节点：画布 + 方向键盘 + 播放条 --- */
+.play-wrap { display: flex; flex-direction: column; gap: 8px; outline: none; }
+.play-wrap:focus-visible .play-stage { border-color: var(--pink); }
+.play-stage {
+  position: relative; display: grid; place-items: center;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.35);
+  min-height: 120px; padding: 6px;
+}
+.play-canvas { max-width: 100%; image-rendering: pixelated; display: block; }
+.play-dir-tag {
+  position: absolute; left: 6px; top: 6px; font-family: var(--chip); font-size: 10px;
+  color: var(--white); background: rgba(0, 0, 0, 0.6); padding: 2px 6px;
+}
+.play-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.play-key {
+  padding: 5px 0; font-size: 11px; color: var(--muted);
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.25); cursor: pointer;
+}
+.play-key:hover { color: var(--white); border-color: var(--line-strong); }
+.play-key.on { color: var(--bg); background: var(--pink); border-color: var(--pink); font-weight: 600; }
+.play-key.miss { opacity: 0.35; }
+.play-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.play-frame { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.play-hint { font-size: 10px; color: var(--muted); }
 
 /* 连线中：可接收的输入端口高亮，源头端口点亮 */
 .canvas-root.linking .port.inl {

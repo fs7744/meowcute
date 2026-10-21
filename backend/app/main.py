@@ -12,6 +12,9 @@
 - /api/matte                                     扣除背景（u2net → GrabCut → 颜色键）
 - /api/threeview/derive                          三视图：由正视图接力生成侧/背视图（任务制）
 - /api/threeview/compose                         三视图：正/侧/背拼成横向板
+- /api/walkvideo                                 八方向行走：方向立绘 + Wan 行走视频（任务制）
+- /api/sequence                                  八方向行走：视频 → 抽帧去重抠图的序列帧（任务制）
+- /api/spritesheet                               八方向行走：序列帧 → 每方向精灵表 + 总览（任务制）
 
 生成是「任务制」：POST /api/generate 立即返回 taskId，前端订阅 SSE 看进度，
 完成事件里带结果（同时留档 10 分钟供 /api/tasks/{id} 兜底查询）。
@@ -43,7 +46,10 @@ from . import custom_templates as ctpl
 from .config import DATA_DIR, ROOT, load_settings, save_settings, scan_models
 from .pipelines import matte as matte_mod
 from .pipelines import refine as refine_mod
+from .pipelines import sequence as sequence_mod
+from .pipelines import spritesheet as spritesheet_mod
 from .pipelines import threeview as threeview_mod
+from .pipelines import walkvideo as walkvideo_mod
 from .providers.diffusers_local import DiffusersProvider
 from .styles import (
     BACKGROUND_PRESETS, background_phrase, build_prompt, detect_material,
@@ -342,8 +348,45 @@ async def project_asset(pid: str, kind: str, filename: str):
     path = storage.asset_path(pid, kind, filename)
     if path is None:
         raise HTTPException(404, "资产不存在")
-    return FileResponse(str(path), media_type="image/png",
+    low = filename.lower()
+    if low.endswith(".gif"):
+        media = "image/gif"
+    elif low.endswith(storage.VIDEO_EXTS):
+        media = storage.VIDEO_MIME.get(Path(low).suffix, "application/octet-stream")
+    else:
+        media = "image/png"
+    return FileResponse(str(path), media_type=media,
                         headers={"Cache-Control": "public, max-age=31536000"})
+
+
+@app.get("/api/projects/{pid}/videos")
+async def list_project_videos(pid: str) -> Dict[str, Any]:
+    """项目内可用视频列表：历史生成的 walk-*.gif + 上传的 vidsrc-*。"""
+    if projects_mod.load_project(pid) is None:
+        raise HTTPException(404, "项目不存在")
+    return {"videos": storage.list_videos(pid)}
+
+
+@app.post("/api/projects/{pid}/videos/upload")
+async def upload_project_video(pid: str, file: UploadFile = File(...)) -> Dict[str, Any]:
+    """上传一段现成视频（mp4/mov/webm/gif…），存进项目供行走视频节点选用。"""
+    if projects_mod.load_project(pid) is None:
+        raise HTTPException(404, "项目不存在")
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in storage.VIDEO_EXTS:
+        raise HTTPException(400, "只支持 " + " / ".join(storage.VIDEO_EXTS) + " 格式")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "文件是空的")
+    if len(raw) > storage.MAX_VIDEO_BYTES:
+        raise HTTPException(400, "视频不能超过 100MB")
+    tmp = storage.assets_dir(pid) / f".upload-{uuid.uuid4().hex[:8]}{suffix}"
+    tmp.write_bytes(raw)
+    try:
+        info = storage.save_video(pid, tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {"ok": True, "video": info}
 
 
 @app.post("/api/projects/{pid}/refs")
@@ -934,6 +977,284 @@ async def threeview_compose(payload: ComposePayload) -> Dict[str, Any]:
         "width": strip.width, "height": strip.height,
         "threeview": meta,
     }}
+
+
+# --------------------------------------------------------------------------- #
+# 八方向行走：行走视频 / 序列帧 / 精灵整图
+# --------------------------------------------------------------------------- #
+class WalkVideoSource(BaseModel):
+    """行走视频节点的一路现成视频来源：方向 → 项目内视频文件。"""
+    dir: str
+    file: str = ""                              # images/ 下的文件名
+
+
+class WalkVideoPayload(BaseModel):
+    """行走视频节点：正视图 → 八方向立绘 + Wan 行走视频。"""
+    projectId: str
+    sourceKind: str = "images"
+    sourceFile: Optional[str] = None
+    origAssetId: str = ""
+    dirMode: str = "eight"                     # eight | four | single
+    action: str = "行走"
+    styleId: Optional[str] = None
+    steps: Optional[int] = None
+    seed: Optional[int] = None
+    width: int = 384
+    height: int = 512
+    numFrames: int = 81                        # Wan 帧数（内部对齐 4k+1）
+    fps: int = 24
+    maxSide: int = 512
+    maxSeqLen: Optional[int] = None
+    # 现成视频来源：这些方向跳过立绘推导 + Wan，直接用文件里的帧
+    sources: List[WalkVideoSource] = Field(default_factory=list)
+
+
+async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
+    t0 = time.time()
+    try:
+        if projects_mod.load_project(payload.projectId) is None:
+            raise RuntimeError("项目不存在")
+        src = ThreeViewSource(kind=payload.sourceKind,
+                              file=payload.origAssetId or payload.sourceFile or "")
+        base = _load_source(payload.projectId, src)
+        if base is None:
+            raise RuntimeError("参考图不存在：请先跑上游的「生成图」或「选择图片」节点")
+
+        provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
+
+        # 现成视频来源：先把帧读出来（在跑任何模型之前，读不出来立刻报错，
+        # 而不是等 Wan 加载完 17GB 显存才说文件坏了）
+        src_frames: Dict[str, Dict[str, Any]] = {}
+        for s in payload.sources:
+            if not s.file:
+                continue
+            frames, fps_src, vmeta = storage.load_video_frames(
+                payload.projectId, payload.sourceKind, s.file)
+            if not frames:
+                raise RuntimeError(
+                    f"现成视频读不出来：{s.file}"
+                    f"（{vmeta.get('error') or '文件不存在或格式不支持'}）")
+            src_frames[s.dir] = {"frames": frames, "fps": fps_src,
+                                 "file": s.file}
+
+        directions, meta = await walkvideo_mod.run_walk(
+            base,
+            dir_mode=payload.dirMode, action=payload.action,
+            steps=payload.steps, seed=payload.seed,
+            width=payload.width, height=payload.height,
+            num_frames=payload.numFrames, fps=payload.fps,
+            max_side=payload.maxSide, max_seq_len=payload.maxSeqLen,
+            provider_cfg=provider_cfg, task_id=task_id,
+            sources=src_frames or None)
+
+        # 每方向存一个动画 GIF（视频中间产物）+ 首帧缩略图由前端 <img> 直出
+        out_dirs = []
+        images = []
+        for d in directions:
+            gif = storage.save_gif(payload.projectId, d["frames"],
+                                   prefix=f"walk-{d['dir']}", fps=d.get("fps") or payload.fps)
+            images.append({"assetId": gif["id"], "url": gif["url"],
+                           "width": gif["width"], "height": gif["height"],
+                           "walkDir": d["dir"]})
+            out_dirs.append({
+                "dir": d["dir"], "label": d["label"], "gif": gif,
+                "count": len(d["frames"]), "fps": d.get("fps"),
+                "seed": d.get("seed"), "mirrored": d.get("mirrored", False),
+                "mirroredFrom": d.get("mirroredFrom"),
+                "derive": d.get("derive"), "walk": d.get("walk"),
+            })
+
+        task_results[task_id] = {
+            "taskId": task_id,
+            "images": images,
+            "walk": {**meta, "directions": out_dirs,
+                     "seconds": round(time.time() - t0, 1)},
+        }
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/walkvideo")
+async def walkvideo_create(payload: WalkVideoPayload) -> Dict[str, Any]:
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备中…")
+    asyncio.create_task(_run_walk_video(task_id, payload))
+    return {"taskId": task_id}
+
+
+class SequenceDirection(BaseModel):
+    """序列帧的一路输入：某个方向的行走视频 GIF。"""
+    dir: str
+    gif: str = ""                              # images/ 下的文件名
+
+
+class SequencePayload(BaseModel):
+    projectId: str
+    directions: List[SequenceDirection] = Field(default_factory=list)
+    framesPerDir: int = 8
+    fps: int = 8                                # 抽出来的循环按几帧/秒播放
+    matte: bool = True
+    tolerance: int = 40
+
+
+async def _run_sequence(task_id: str, payload: SequencePayload) -> None:
+    t0 = time.time()
+    try:
+        if projects_mod.load_project(payload.projectId) is None:
+            raise RuntimeError("项目不存在")
+        if not payload.directions:
+            raise RuntimeError("没有输入方向：请先跑上游的「行走视频」节点")
+
+        src_dirs = []
+        for d in payload.directions:
+            frames, _durations, _meta = storage.load_gif(payload.projectId, "images", d.gif)
+            if not frames:
+                raise RuntimeError(f"方向 {d.dir} 的视频不存在或读不出来：{d.gif or '（未指定）'}")
+            src_dirs.append({"dir": d.dir, "label": walkvideo_mod.DIR_LABELS.get(d.dir, d.dir),
+                             "frames": frames, "fps": payload.fps})
+
+        directions, meta = await sequence_mod.run_sequence(
+            src_dirs,
+            frames_per_dir=payload.framesPerDir,
+            matte=payload.matte, tolerance=payload.tolerance,
+            task_id=task_id)
+
+        out_dirs = []
+        images = []
+        for d in directions:
+            # 透明帧逐个存档（精灵整图与引擎都能直接用）
+            frame_infos = []
+            for i, f in enumerate(d["frames"]):
+                info = storage.save_image(payload.projectId, f, kind="images",
+                                          prefix=f"seq-{d['dir']}", seq=i)
+                frame_infos.append(info)
+            strip = storage.save_image(payload.projectId, d["strip"], kind="images",
+                                       prefix=f"seqstrip-{d['dir']}")
+            images.append({"assetId": strip["id"], "url": strip["url"],
+                           "width": strip["width"], "height": strip["height"],
+                           "walkDir": d["dir"]})
+            out_dirs.append({
+                "dir": d["dir"], "label": d.get("label"),
+                "count": d["count"], "sourceFrames": d.get("sourceFrames"),
+                "dropped": d.get("dropped"),
+                "frames": [{"assetId": f["id"], "url": f["url"]} for f in frame_infos],
+                "strip": strip,
+                "bgRemovedAvg": d.get("bgRemovedAvg"),
+            })
+
+        task_results[task_id] = {
+            "taskId": task_id,
+            "images": images,
+            "sequence": {**meta, "directions": out_dirs,
+                         "seconds": round(time.time() - t0, 1)},
+        }
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/sequence")
+async def sequence_create(payload: SequencePayload) -> Dict[str, Any]:
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备中…")
+    asyncio.create_task(_run_sequence(task_id, payload))
+    return {"taskId": task_id}
+
+
+class SheetDirection(BaseModel):
+    """精灵整图的一路输入：某个方向的序列帧文件。"""
+    dir: str
+    frames: List[str] = Field(default_factory=list)   # images/ 下的文件名
+
+
+class SheetPayload(BaseModel):
+    projectId: str
+    directions: List[SheetDirection] = Field(default_factory=list)
+    size: int = 128                              # 单元格边长
+    cols: int = 0                                # 每行帧数，0 = 一行排完
+    sharedScale: bool = True
+    anchor: str = "bottom"
+
+
+async def _run_sheets(task_id: str, payload: SheetPayload) -> None:
+    t0 = time.time()
+    try:
+        if projects_mod.load_project(payload.projectId) is None:
+            raise RuntimeError("项目不存在")
+        if not payload.directions:
+            raise RuntimeError("没有输入方向：请先跑上游的「序列帧」节点")
+
+        src_dirs = []
+        for d in payload.directions:
+            frames = []
+            for fn in d.frames:
+                img = storage.load_image(payload.projectId, "images", fn)
+                if img is not None:
+                    frames.append(img)
+            if not frames:
+                raise RuntimeError(f"方向 {d.dir} 没有序列帧")
+            src_dirs.append({"dir": d.dir, "frames": frames})
+
+        directions, meta = await spritesheet_mod.run_sheets(
+            src_dirs, size=payload.size, cols=payload.cols,
+            shared_scale=payload.sharedScale, anchor=payload.anchor,
+            task_id=task_id)
+
+        out_dirs = []
+        images = []
+        for d in directions:
+            sheet = storage.save_image(payload.projectId, d["sheet"], kind="images",
+                                       prefix=f"sheet-{d['dir']}")
+            images.append({"assetId": sheet["id"], "url": sheet["url"],
+                           "width": sheet["width"], "height": sheet["height"],
+                           "walkDir": d["dir"]})
+            out_dirs.append({
+                "dir": d["dir"], "label": d.get("label"),
+                "sheet": sheet,
+                "cols": d["index"]["grid"]["cols"],
+                "rows": d["index"]["grid"]["rows"],
+                "frameSize": d["index"]["frame_size"],
+                "frames": d["index"]["frames"],
+                "count": d["count"],
+                "warnings": d.get("warnings"),
+                "checks": d.get("checks"),
+                "normalize": d.get("normalize"),
+            })
+        ov = spritesheet_mod.overview({d["dir"]: d["sheet"] for d in directions})
+        ov_info = storage.save_image(payload.projectId, ov, kind="images", prefix="sheet-all")
+        images.insert(0, {"assetId": ov_info["id"], "url": ov_info["url"],
+                          "width": ov.width, "height": ov.height})
+
+        task_results[task_id] = {
+            "taskId": task_id,
+            "images": images,
+            "sheet": {**meta, "overview": ov_info, "directions": out_dirs,
+                      "seconds": round(time.time() - t0, 1)},
+        }
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/spritesheet")
+async def spritesheet_create(payload: SheetPayload) -> Dict[str, Any]:
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备中…")
+    asyncio.create_task(_run_sheets(task_id, payload))
+    return {"taskId": task_id}
 
 
 # --------------------------------------------------------------------------- #

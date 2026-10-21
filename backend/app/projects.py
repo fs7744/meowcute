@@ -43,7 +43,8 @@ def _lock(pid: str) -> threading.Lock:
         return _LOCKS[pid]
 
 
-ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen", "threeview")
+ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen",
+                 "threeview", "walkvideo", "sequence", "spritesheet", "play")
 
 # 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
 # 默认关掉等于把开关藏起来。
@@ -79,6 +80,55 @@ DEFAULT_THREEVIEW = {
     "gap": 12,
     "baseline": 0.93,
     "cell": None,
+}
+
+# 行走视频节点（八方向第一步）：正视图 → 各方向立绘 + Wan 行走视频。
+# dirMode=eight 时左侧 5 个方向真实生成、右侧 3 个方向镜像，见 walkvideo 模块。
+# sources={方向: 项目内视频文件}：该方向用现成视频，跳过推导 + Wan。
+DEFAULT_WALKVIDEO = {
+    "enabled": True,
+    "dirMode": "eight",                     # eight | four | single
+    "action": "行走",
+    "sources": {},
+    "styleId": None,
+    "steps": None,
+    "seed": None,
+    "width": 384,
+    "height": 512,
+    "numFrames": 81,                        # Wan 帧数（内部对齐 4k+1）
+    "fps": 24,
+    "maxSide": 512,
+    "maxSeqLen": None,
+}
+
+# walkvideo.sources 的合法方向键（顺时针一圈）
+_WALK_DIRS = ("down", "down-left", "left", "up-left", "up",
+              "up-right", "right", "down-right")
+
+# 序列帧节点（八方向第二步）：每方向视频 → 抽帧 / 去重 / 抠图 → 透明底帧。
+DEFAULT_SEQUENCE = {
+    "enabled": True,
+    "framesPerDir": 8,
+    "fps": 8,                               # 抽出来的循环按几帧/秒播放
+    "matte": True,
+    "tolerance": 40,
+}
+
+# 精灵整图节点（八方向第三步）：每方向透明帧 → 共享缩放规整 → 横排精灵表。
+DEFAULT_SPRITESHEET = {
+    "enabled": True,
+    "size": 128,
+    "cols": 0,                              # 每行帧数，0 = 一行排完
+    "sharedScale": True,
+    "anchor": "bottom",
+}
+
+# 可操控预览节点（八方向第四步）：八方向精灵表 → 方向键操控的行走播放器。
+# 纯前端渲染，不调后端——它的产物就是播放器本身。
+DEFAULT_PLAY = {
+    "enabled": True,
+    "fps": 8,
+    "zoom": 2,
 }
 
 
@@ -161,6 +211,22 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                 n["result"] = None
                 n["threeview"] = {**DEFAULT_THREEVIEW,
                                   **(n.get("threeview") if isinstance(n.get("threeview"), dict) else {})}
+            elif n["type"] == "walkvideo":
+                n["result"] = None
+                n["walkvideo"] = {**DEFAULT_WALKVIDEO,
+                                  **(n.get("walkvideo") if isinstance(n.get("walkvideo"), dict) else {})}
+            elif n["type"] == "sequence":
+                n["result"] = None
+                n["sequence"] = {**DEFAULT_SEQUENCE,
+                                 **(n.get("sequence") if isinstance(n.get("sequence"), dict) else {})}
+            elif n["type"] == "spritesheet":
+                n["result"] = None
+                n["spritesheet"] = {**DEFAULT_SPRITESHEET,
+                                    **(n.get("spritesheet") if isinstance(n.get("spritesheet"), dict) else {})}
+            elif n["type"] == "play":
+                n["result"] = None
+                n["play"] = {**DEFAULT_PLAY,
+                             **(n.get("play") if isinstance(n.get("play"), dict) else {})}
             else:
                 n.update({"images": [], "prompt": "", "negative": "", "meta": {}, "genId": None})
             n["createdAt"] = _now()
@@ -282,6 +348,37 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             item.update({
                 "threeview": _clean_threeview(n.get("threeview")),
                 "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "walkvideo":
+            item.update({
+                "walkvideo": _clean_walkvideo(n.get("walkvideo")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "sequence":
+            item.update({
+                "sequence": _clean_sequence(n.get("sequence")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "spritesheet":
+            item.update({
+                "spritesheet": _clean_spritesheet(n.get("spritesheet")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "play":
+            item.update({
+                "play": _clean_play(n.get("play")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
         else:
@@ -429,6 +526,103 @@ def _clean_threeview(t: Any) -> Dict[str, Any]:
         "gap": _i(t.get("gap"), 12, 0, 64),
         "baseline": round(min(0.99, max(0.5, baseline)), 3),
         "cell": cell,
+    }
+
+
+def _clean_walkvideo(w: Any) -> Dict[str, Any]:
+    """行走视频参数：方向模式白名单，帧数夹在 Wan 的 4k+1 可行区间。"""
+    w = w if isinstance(w, dict) else {}
+
+    def _i(val, d, lo, hi):
+        try:
+            return max(lo, min(int(val), hi))
+        except Exception:
+            return d
+
+    mode = str(w.get("dirMode") or "eight")[:12]
+    if mode not in ("eight", "four", "single"):
+        mode = "eight"
+
+    # 现成视频来源：{方向: 文件名}，白名单方向 + 文件名形状（防路径穿越）
+    srcs: Dict[str, str] = {}
+    raw_srcs = w.get("sources") if isinstance(w.get("sources"), dict) else {}
+    for d, f in (raw_srcs or {}).items():
+        d = str(d)[:12]
+        f = str(f or "")[:120]
+        if d in _WALK_DIRS and f and "/" not in f and "\\" not in f and ".." not in f:
+            srcs[d] = f
+    return {
+        "enabled": bool(w.get("enabled", True)),
+        "dirMode": mode,
+        "action": str(w.get("action") or "行走")[:20] or "行走",
+        "sources": srcs,
+        "styleId": str(w.get("styleId") or "")[:40] or None,
+        "steps": (_i(w.get("steps"), 0, 4, 60) or None) if w.get("steps") else None,
+        "seed": (_i(w.get("seed"), 0, 0, 2**31 - 1)) if w.get("seed") not in (None, "") else None,
+        "width": _i(w.get("width"), 384, 128, 1024),
+        "height": _i(w.get("height"), 512, 128, 1024),
+        "numFrames": _i(w.get("numFrames"), 81, 5, 193),
+        "fps": _i(w.get("fps"), 24, 8, 30),
+        "maxSide": _i(w.get("maxSide"), 512, 256, 1024),
+        "maxSeqLen": (_i(w.get("maxSeqLen"), 0, 256, 1536) or None) if w.get("maxSeqLen") else None,
+    }
+
+
+def _clean_sequence(s: Any) -> Dict[str, Any]:
+    """序列帧参数：每方向帧数 2-24，容差夹在 10-120。"""
+    s = s if isinstance(s, dict) else {}
+
+    def _i(val, d, lo, hi):
+        try:
+            return max(lo, min(int(val), hi))
+        except Exception:
+            return d
+
+    return {
+        "enabled": bool(s.get("enabled", True)),
+        "framesPerDir": _i(s.get("framesPerDir"), 8, 2, 24),
+        "fps": _i(s.get("fps"), 8, 2, 30),
+        "matte": bool(s.get("matte", True)),
+        "tolerance": _i(s.get("tolerance"), 40, 10, 120),
+    }
+
+
+def _clean_spritesheet(s: Any) -> Dict[str, Any]:
+    """精灵整图参数：单元格 32-512，锚点只认 bottom/center/top。"""
+    s = s if isinstance(s, dict) else {}
+
+    def _i(val, d, lo, hi):
+        try:
+            return max(lo, min(int(val), hi))
+        except Exception:
+            return d
+
+    anchor = str(s.get("anchor") or "bottom")[:8]
+    if anchor not in ("bottom", "center", "top"):
+        anchor = "bottom"
+    return {
+        "enabled": bool(s.get("enabled", True)),
+        "size": _i(s.get("size"), 128, 32, 512),
+        "cols": _i(s.get("cols"), 0, 0, 32),
+        "sharedScale": bool(s.get("sharedScale", True)),
+        "anchor": anchor,
+    }
+
+
+def _clean_play(p: Any) -> Dict[str, Any]:
+    """可操控预览参数：播放帧率与显示倍率。"""
+    p = p if isinstance(p, dict) else {}
+
+    def _i(val, d, lo, hi):
+        try:
+            return max(lo, min(int(val), hi))
+        except Exception:
+            return d
+
+    return {
+        "enabled": bool(p.get("enabled", True)),
+        "fps": _i(p.get("fps"), 8, 2, 30),
+        "zoom": _i(p.get("zoom"), 3, 1, 8),
     }
 
 
