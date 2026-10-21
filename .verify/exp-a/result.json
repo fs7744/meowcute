@@ -1,0 +1,29 @@
+[
+  {
+    "tag": "base40",
+    "seconds": 122.1,
+    "peakGB": 19.84,
+    "sysVRAM": 1.78125,
+    "steps": 40,
+    "trueCfg": 4.0,
+    "path": "D:\\code\\pixelforge\\.verify\\exp-a\\left-base40.png"
+  },
+  {
+    "tag": "light8",
+    "seconds": 108.1,
+    "peakGB": 20.83,
+    "sysVRAM": 1.794921875,
+    "steps": 8,
+    "trueCfg": 1.0,
+    "path": "D:\\code\\pixelforge\\.verify\\exp-a\\left-light8.png"
+  },
+  {
+    "tag": "light4",
+    "seconds": 97.2,
+    "peakGB": 20.83,
+    "sysVRAM": 1.79296875,
+    "steps": 4,
+    "trueCfg": 1.0,
+    "path": "D:\\code\\pixelforge\\.verify\\exp-a\\left-light4.png"
+  }
+]
