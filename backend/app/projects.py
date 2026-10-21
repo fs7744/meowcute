@@ -43,7 +43,7 @@ def _lock(pid: str) -> threading.Lock:
         return _LOCKS[pid]
 
 
-ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte")
+ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen", "threeview")
 
 # 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
 # 默认关掉等于把开关藏起来。
@@ -57,6 +57,28 @@ DEFAULT_MATTE = {
     "trim": False,
     "edge": 0,
     "bottomTrim": 0.0,
+}
+
+# 视角生成节点（三视图的侧/背视图）：enabled=False 时透传上游正视图。
+# view 固定 side | back——同一个组件、同一个接口，靠这个字段区分。
+DEFAULT_VIEWGEN = {
+    "enabled": True,
+    "view": "side",
+    "styleId": None,
+    "steps": None,
+    "seed": None,
+    "width": 512,
+    "height": 768,
+    "maxSeqLen": None,
+}
+
+# 三视图拼板节点：正/侧/背三路输入合成一张横向板。
+DEFAULT_THREEVIEW = {
+    "enabled": True,
+    "bg": "1B4332",
+    "gap": 12,
+    "baseline": 0.93,
+    "cell": None,
 }
 
 
@@ -131,6 +153,14 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                 n["result"] = None
                 n["matte"] = {**DEFAULT_MATTE,
                               **(n.get("matte") if isinstance(n.get("matte"), dict) else {})}
+            elif n["type"] == "viewgen":
+                n["result"] = None
+                n["viewgen"] = {**DEFAULT_VIEWGEN,
+                                **(n.get("viewgen") if isinstance(n.get("viewgen"), dict) else {})}
+            elif n["type"] == "threeview":
+                n["result"] = None
+                n["threeview"] = {**DEFAULT_THREEVIEW,
+                                  **(n.get("threeview") if isinstance(n.get("threeview"), dict) else {})}
             else:
                 n.update({"images": [], "prompt": "", "negative": "", "meta": {}, "genId": None})
             n["createdAt"] = _now()
@@ -242,6 +272,18 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "result": n.get("result") if isinstance(n.get("result"), dict) else None,
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
+        elif n["type"] == "viewgen":
+            item.update({
+                "viewgen": _clean_viewgen(n.get("viewgen")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "threeview":
+            item.update({
+                "threeview": _clean_threeview(n.get("threeview")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
         else:
             item.update({
                 "genId": str(n.get("genId") or "") or None,
@@ -330,6 +372,63 @@ def _clean_matte(m: Any) -> Dict[str, Any]:
         "trim": bool(m.get("trim")),
         "edge": _i(m.get("edge"), 0, -3, 3),
         "bottomTrim": round(max(0.0, min(bottom_trim, 0.3)), 3),
+    }
+
+
+def _clean_viewgen(v: Any) -> Dict[str, Any]:
+    """视角生成参数：view 只认 side/back，尺寸走 8 的倍数约束。"""
+    v = v if isinstance(v, dict) else {}
+
+    def _i(val, d, lo, hi):
+        try:
+            return max(lo, min(int(val), hi))
+        except Exception:
+            return d
+
+    view = str(v.get("view") or "side")[:8]
+    if view not in ("side", "back"):
+        view = "side"
+    style_id = str(v.get("styleId") or "")[:40] or None
+    return {
+        "enabled": bool(v.get("enabled", True)),
+        "view": view,
+        "styleId": style_id,
+        "steps": (_i(v.get("steps"), 0, 4, 60) or None) if v.get("steps") else None,
+        "seed": (_i(v.get("seed"), 0, 0, 2**31 - 1)) if v.get("seed") not in (None, "") else None,
+        "width": _i(v.get("width"), 512, 128, 1536),
+        "height": _i(v.get("height"), 768, 128, 1536),
+        "maxSeqLen": (_i(v.get("maxSeqLen"), 0, 256, 1536) or None) if v.get("maxSeqLen") else None,
+    }
+
+
+def _clean_threeview(t: Any) -> Dict[str, Any]:
+    """三视图拼板参数：底板色只认 6 位十六进制，基线夹在 0.5-0.99。"""
+    t = t if isinstance(t, dict) else {}
+
+    def _i(val, d, lo, hi):
+        try:
+            return max(lo, min(int(val), hi))
+        except Exception:
+            return d
+
+    bg = str(t.get("bg") or "1B4332").lstrip("#")[:6]
+    if len(bg) != 6 or any(c not in "0123456789abcdefABCDEF" for c in bg):
+        bg = "1B4332"
+    try:
+        baseline = float(t.get("baseline") or 0.93)
+    except Exception:
+        baseline = 0.93
+    cell = t.get("cell")
+    if not (isinstance(cell, (list, tuple)) and len(cell) == 2):
+        cell = None
+    else:
+        cell = [_i(cell[0], 0, 64, 2048), _i(cell[1], 0, 64, 2048)]
+    return {
+        "enabled": bool(t.get("enabled", True)),
+        "bg": bg,
+        "gap": _i(t.get("gap"), 12, 0, 64),
+        "baseline": round(min(0.99, max(0.5, baseline)), 3),
+        "cell": cell,
     }
 
 

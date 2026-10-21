@@ -301,6 +301,57 @@ def drop_bg_islands(cut: Image.Image, tol: float = 70.0) -> Image.Image:
     return Image.fromarray(out, "RGBA")
 
 
+def clean_edge_spill(cut: Image.Image, bg: Tuple[int, int, int], depth: int = 2) -> Tuple[Image.Image, int]:
+    """边缘溢色清洗：外圈 depth 像素里「比离自身内侧颜色更接近底色」的，取内侧色重绘。
+
+    为什么需要它：AI 出图的描边外圈常带一圈「黑 + 底色」的抗锯齿混色，
+    抠图后底色变透明，这圈混色就留在 alpha 边缘上——拼板时三张图底色不同，
+    接缝处会看到一圈异色描边（实测亮绿底 #24A455 的边缘环里 44% 像素偏绿）。
+
+    判据是「与内侧颜色比更接近底色」，不是「与底色距离小于阈值」：纯黑描边
+    离内侧颜色距离为 0，永远不会被洗掉；抗锯齿混色必然命中。细结构上残留的
+    偏底色像素再从最近的干净邻居取色。只改 RGB，不动 alpha 形状——所以不会
+    啃掉胡须、触角这类 1px 结构。
+    """
+    import numpy as np
+
+    arr = np.asarray(cut).copy()
+    if arr.shape[2] < 4:
+        return cut, 0
+    kept = arr[:, :, 3] > 8
+    h, w = kept.shape
+    if not kept.any():
+        return cut, 0
+    bgv = np.array(bg, dtype=np.int32)
+
+    recolored = 0
+    # 由外向内逐层：每层只向内一层取色，避免把污染色传遍整个边缘带
+    for _ in range(max(0, int(depth))):
+        inner = np.zeros_like(kept)
+        for dy, dx in _NEIGHBOURS:
+            inner |= _neighbour_shift(kept, dy, dx)
+        ring = kept & ~inner          # 当前最外圈前景
+        if not ring.any():
+            break
+        # 内侧代表色：把内圈前景的中位色取出来（逐像素太重，取环内圈整体中位）
+        inner_px = arr[inner][:, :3].astype(np.int32)
+        if not len(inner_px):
+            break
+        rep = np.median(inner_px, axis=0)
+        d_bg = np.abs(arr[ring][:, :3].astype(np.int32) - bgv).sum(axis=1)
+        d_in = np.abs(arr[ring][:, :3].astype(np.int32) - rep).sum(axis=1)
+        hit = d_bg < d_in
+        if hit.any():
+            ys, xs = np.nonzero(ring)
+            idx = np.nonzero(hit)[0]
+            arr[ys[idx], xs[idx], :3] = rep.astype(np.uint8)
+            recolored += int(len(idx))
+        kept = inner                     # 下一轮处理内一圈
+    if not recolored:
+        return cut, 0
+    return Image.fromarray(arr, "RGBA"), recolored
+
+
 # --------------------------------------------------------------------------- #
 # 路径 1：u2net 深度抠图
 # --------------------------------------------------------------------------- #

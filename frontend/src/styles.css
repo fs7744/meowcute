@@ -420,8 +420,12 @@ button { cursor: pointer; }
 .node.refine { border-color: rgba(255, 213, 0, 0.5); }
 .node.input { border-color: rgba(0, 208, 255, 0.5); }
 .node.matte { border-color: rgba(91, 87, 235, 0.6); }
-/* 扣背景节点被关掉时变成虚线灰框：一眼能看出它现在不参与流程 */
-.node.matte.off { border-style: dashed; opacity: 0.72; }
+.node.viewgen { border-color: rgba(255, 213, 0, 0.55); }
+.node.threeview { border-color: rgba(0, 208, 255, 0.55); }
+/* 扣背景 / 视角 / 拼板节点被关掉时变成虚线灰框：一眼能看出它现在不参与流程 */
+.node.matte.off, .node.viewgen.off, .node.threeview.off {
+  border-style: dashed; opacity: 0.72;
+}
 .node.selected { box-shadow: 0 0 0 2px var(--white), 8px 8px 0 rgba(0, 0, 0, 0.55); }
 .node-head {
   display: flex; align-items: center; gap: 8px; padding: 8px 10px;
@@ -434,6 +438,8 @@ button { cursor: pointer; }
 .node.refine .node-kind { color: var(--yellow); }
 .node.input .node-kind { color: var(--cyan); }
 .node.matte .node-kind { color: var(--purple); }
+.node.viewgen .node-kind { color: var(--yellow); }
+.node.threeview .node-kind { color: var(--cyan); }
 .node-title { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-idx { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .node-x { background: transparent; border: 0; color: var(--muted); font-size: 14px; padding: 0 4px; }
@@ -644,6 +650,8 @@ button { cursor: pointer; }
 .ctx-dot.d-gen { background: var(--green); }
 .ctx-dot.d-refine { background: var(--yellow); }
 .ctx-dot.d-matte { background: var(--purple); }
+.ctx-dot.d-view { background: var(--yellow); }
+.ctx-dot.d-threeview { background: var(--cyan); }
 .ctx-dot.d-result { background: var(--pink); }
 
 /* --- 分类次级菜单：一级只列分类，悬停展开具体节点 ---
@@ -718,6 +726,29 @@ button { cursor: pointer; }
 }
 .matte-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .matte-thumb:hover { border-color: var(--purple); }
+/* 拼板结果是横向长图，缩略图跟着放宽 */
+.matte-thumb.wide { width: 100%; height: 88px; }
+
+/* 三视图拼板节点的三路输入槽位 */
+.tv-slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.tv-slot {
+  position: relative; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3);
+  aspect-ratio: 3 / 4; display: grid; place-items: center; overflow: hidden;
+}
+.tv-slot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.tv-slot.empty { border-style: dashed; border-color: var(--pink); }
+.tv-slot-x { font-family: var(--chip); font-size: 11px; color: var(--pink); }
+.tv-slot-t {
+  position: absolute; left: 0; right: 0; bottom: 0; text-align: center;
+  font-size: 10px; padding: 2px 0; color: var(--white);
+  background: rgba(0, 0, 0, 0.62);
+}
+.tv-color { display: flex; gap: 6px; align-items: center; }
+.tv-color input[type="color"] {
+  width: 34px; height: 28px; padding: 0; border: 1px solid var(--line-strong);
+  background: transparent; cursor: pointer; flex: none;
+}
+.tv-color .input { width: 78px; font-family: var(--mono); }
 
 /* 连线中：可接收的输入端口高亮，源头端口点亮 */
 .canvas-root.linking .port.inl {

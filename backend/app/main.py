@@ -10,6 +10,8 @@
 - /api/tasks/{id}/stream|/cancel                 进度与取消
 - /api/pixel/refine                              对已有原图重新精修
 - /api/matte                                     扣除背景（u2net → GrabCut → 颜色键）
+- /api/threeview/derive                          三视图：由正视图接力生成侧/背视图（任务制）
+- /api/threeview/compose                         三视图：正/侧/背拼成横向板
 
 生成是「任务制」：POST /api/generate 立即返回 taskId，前端订阅 SSE 看进度，
 完成事件里带结果（同时留档 10 分钟供 /api/tasks/{id} 兜底查询）。
@@ -41,6 +43,7 @@ from . import custom_templates as ctpl
 from .config import DATA_DIR, ROOT, load_settings, save_settings, scan_models
 from .pipelines import matte as matte_mod
 from .pipelines import refine as refine_mod
+from .pipelines import threeview as threeview_mod
 from .providers.diffusers_local import DiffusersProvider
 from .styles import (
     BACKGROUND_PRESETS, background_phrase, build_prompt, detect_material,
@@ -799,6 +802,137 @@ async def matte_existing(payload: MattePayload) -> Dict[str, Any]:
         "assetId": info["id"], "url": info["url"],
         "width": out.width, "height": out.height,
         "matte": meta,
+    }}
+
+
+# --------------------------------------------------------------------------- #
+# 角色三视图
+# --------------------------------------------------------------------------- #
+
+
+class ViewDerivePayload(BaseModel):
+    """由正视图接力生成侧/背视图。参考图就是上游那张正视图。"""
+    projectId: str
+    # 源图位置：images/ 下的产出（生成卡），或 refs/ 下上传的正视图
+    sourceKind: str = "images"
+    sourceFile: Optional[str] = None
+    origAssetId: str = ""
+    view: str = "side"                      # side | back
+    styleId: Optional[str] = None
+    steps: Optional[int] = None
+    seed: Optional[int] = None
+    width: int = 512
+    height: int = 768
+    maxSeqLen: Optional[int] = None
+
+
+class ThreeViewSource(BaseModel):
+    """拼板的一路输入：正/侧/背各一路，顺序即板上顺序。"""
+    kind: str = "images"                    # images | refs
+    file: str = ""                          # images 下是 assetId，refs 下是文件名
+
+
+class ComposePayload(BaseModel):
+    projectId: str
+    sources: List[ThreeViewSource] = Field(default_factory=list)
+    bg: str = "1B4332"                      # 底板色（暗绿）
+    gap: int = 12
+    baseline: float = 0.93                  # 主体底部对齐到画布高度的比例
+    cell: Optional[List[int]] = None        # 单格尺寸，空则取三张最大值
+
+
+def _load_source(project_id: str, src: ThreeViewSource) -> Optional[Image.Image]:
+    if src.kind == "refs" and src.file:
+        return storage.load_image(project_id, "refs", src.file)
+    if src.file:
+        return storage.load_image(project_id, "images", f"{src.file}.png")
+    return None
+
+
+async def _run_view_derive(task_id: str, payload: ViewDerivePayload) -> None:
+    t0 = time.time()
+    try:
+        if projects_mod.load_project(payload.projectId) is None:
+            raise RuntimeError("项目不存在")
+        if payload.view not in ("side", "back"):
+            raise RuntimeError(f"未知视角：{payload.view}")
+
+        src = ThreeViewSource(kind=payload.sourceKind,
+                              file=payload.origAssetId or payload.sourceFile or "")
+        base = _load_source(payload.projectId, src)
+        if base is None:
+            raise RuntimeError("正视图不存在：请先跑上游的「生成图」或「选择图片」节点")
+
+        provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
+        out, meta = await threeview_mod.derive_view(
+            payload.view, base,
+            style_id=payload.styleId,
+            steps=payload.steps, seed=payload.seed,
+            width=payload.width, height=payload.height,
+            max_seq_len=payload.maxSeqLen,
+            provider_cfg=provider_cfg, task_id=task_id)
+
+        info = storage.save_image(payload.projectId, out.convert("RGBA"),
+                                  kind="images", prefix=f"v{payload.view[0]}")
+        meta = dict(meta, seconds=round(time.time() - t0, 1))
+        task_results[task_id] = {
+            "taskId": task_id,
+            "image": {
+                "assetId": info["id"], "url": info["url"],
+                "width": out.width, "height": out.height,
+            },
+            "view": payload.view,
+            "meta": meta,
+        }
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/threeview/derive")
+async def threeview_derive(payload: ViewDerivePayload) -> Dict[str, Any]:
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备中…")
+    asyncio.create_task(_run_view_derive(task_id, payload))
+    return {"taskId": task_id}
+
+
+@app.post("/api/threeview/compose")
+async def threeview_compose(payload: ComposePayload) -> Dict[str, Any]:
+    if len(payload.sources) != 3:
+        raise HTTPException(400, f"三视图拼板需要 3 张图（正/侧/背），收到 {len(payload.sources)} 张")
+    imgs: List[Image.Image] = []
+    for i, src in enumerate(payload.sources):
+        img = _load_source(payload.projectId, src)
+        if img is None:
+            raise HTTPException(
+                404, f"第 {i + 1} 张图不存在：{src.file or '（未指定）'}")
+        imgs.append(img)
+
+    try:
+        bg_hex = (payload.bg or "1B4332").lstrip("#")
+        bg = tuple(int(bg_hex[j:j + 2], 16) for j in (0, 2, 4))
+    except Exception:
+        raise HTTPException(400, "底板色格式应为 6 位十六进制，如 1B4332")
+
+    cell = None
+    if payload.cell and len(payload.cell) == 2:
+        cell = (int(payload.cell[0]), int(payload.cell[1]))
+
+    strip, meta = await asyncio.to_thread(
+        threeview_mod.compose_three_view, imgs,
+        cell=cell, bg=bg, gap=max(0, int(payload.gap)),
+        baseline=min(0.99, max(0.5, float(payload.baseline))))
+    info = storage.save_image(payload.projectId, strip.convert("RGBA"),
+                              kind="images", prefix="tv")
+    return {"ok": True, "image": {
+        "assetId": info["id"], "url": info["url"],
+        "width": strip.width, "height": strip.height,
+        "threeview": meta,
     }}
 
 

@@ -154,6 +154,29 @@ export const api = {
     available: boolean; primary: string; note: string
     u2net: boolean; cv2: boolean; u2netError: string | null
   }>),
+
+  /** 三视图：由正视图接力生成侧/背视图（任务制，跑编辑底座）。 */
+  threeviewDerive: (payload: {
+    projectId: string
+    origAssetId?: string
+    sourceKind?: 'images' | 'refs'; sourceFile?: string
+    view: 'side' | 'back'
+    styleId?: string | null
+    steps?: number | null
+    seed?: number | null
+    width?: number; height?: number
+    maxSeqLen?: number | null
+  }) =>
+    fetch('/api/threeview/derive', jsonInit(payload)).then(j<{ taskId: string }>),
+
+  /** 三视图：正/侧/背三张拼成一张横向板（确定性后处理，立即返回）。 */
+  threeviewCompose: (payload: {
+    projectId: string
+    sources: { kind: 'images' | 'refs'; file: string }[]
+    bg?: string; gap?: number; baseline?: number
+    cell?: [number, number] | null
+  }) =>
+    fetch('/api/threeview/compose', jsonInit(payload)).then(j<{ ok: boolean; image: ResultImage }>),
 }
 
 /** 订阅任务 SSE：progress 回调每次进度，done 回调最终结果。返回取消订阅函数。 */

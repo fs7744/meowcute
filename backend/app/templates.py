@@ -260,17 +260,92 @@ TEMPLATES: List[Dict[str, Any]] = [
         "id": "char_three_view",
         "name": "角色三视图",
         "tagline": "正 / 侧 / 背三视图自动拼板",
-        "status": "planned",
+        "status": "available",
         "accent": "#FFD500",
         "icon": "views",
         "description": (
-            "正视图唯一需要文生图；侧 / 背由编辑底座从正视推导，保证同一角色。"
-            "分步可单独重跑，重跑上游自动作废下游。"
+            "正视图由「生成图」或「选择图片」产出；侧 / 背由编辑底座从正视推导，"
+            "保证是同一个角色；最后按共同基线拼成一张横向三视图板。"
+            "「三张、不重叠、同一角色」由结构保证：每张图只有一个角色的约束 + "
+            "编辑底座的外观保持指令 + 拼板是确定性像素操作，不靠模型自觉。"
         ),
-        "highlights": ["三视图坐标系一致", "单步重跑", "拼板导出"],
-        "inputs": [], "steps": [], "outputs": [],
-        "defaults": {},
-        "notes": ["规划中：依赖编辑底座的多视角推导与拼板管线。"],
+        "highlights": [
+            "一张图里画三个视角在蒸馏模型上基本不可控，这里改成三张独立生成再拼板",
+            "侧 / 背走指令接力：只转视角，造型 / 配色 / 画风零改动",
+            "指令不点名任何具体服装与颜色——点名会变成「给角色加一件」的生成指令",
+            "拼板前每张先抠底色 + 补封闭孔洞 + 洗边缘溢色，接缝看不到异色描边",
+            "主体底部对齐共同基线、水平居中：模型出图高低不齐，对齐后才可用",
+        ],
+        "inputs": [
+            {"key": "image", "label": "正视图", "required": True,
+             "hint": "「生成图」节点写角色描述；或换「选择图片」上传已有的正视图"},
+            {"key": "style", "label": "游戏画风", "required": False,
+             "hint": "只作用于正视图；侧 / 背靠编辑指令继承画风"},
+            {"key": "viewgen", "label": "视角生成", "required": False,
+             "hint": "侧 / 背视图的尺寸、步数与种子；开关在节点上"},
+            {"key": "threeview", "label": "拼板参数", "required": False,
+             "hint": "底板色 / 间距 / 基线；三张图按正 → 侧 → 背排"},
+        ],
+        "steps": [
+            {"n": 1, "title": "正视图", "detail": "生成图节点 txt2img 自由创作，或选择图片上传"},
+            {"n": 2, "title": "生成侧视图", "detail": "编辑底座指令接力：转成侧面，外观不变"},
+            {"n": 3, "title": "生成背面视图", "detail": "同链路转 180 度；脸部不可见，不添装备"},
+            {"n": 4, "title": "三视图拼板", "detail": "逐张抠底 → 统一暗绿底板 → 基线 / 居中对齐"},
+        ],
+        "outputs": [
+            {"label": "横向三视图板", "detail": "正 / 侧 / 背等宽并排，底部对齐同一基线"},
+            {"label": "单视角图", "detail": "侧 / 背视图单独落盘，可单独取用"},
+            {"label": "拼板指标", "detail": "每张的抠图方法、包围盒与对齐偏移"},
+        ],
+        "defaults": {
+            "styleId": "pixel_16bit",
+            "width": 512,
+            "height": 768,
+            "n": 1,
+            "background": "gray",
+            "maxSeqLen": None,
+        },
+        "notes": [
+            "画布是一条直线：生成图 / 选择图片 → 侧视图 → 背视图 → 拼板。",
+            "视角节点永远以「正视图」为参考——链条中间隔着别的视角节点也会自动找到最上游那张。",
+            "拼板节点把整条链上的正 / 侧 / 背都收进来；缺哪张会在节点上报出来。",
+        ],
+        # 内置节点图：正视图 → 侧视图 → 背视图 → 拼板。
+        # 线性链条就是用户描述的工作流；视角节点与拼板节点都会沿链回溯，
+        # 所以侧 / 背都以正视图为参考，拼板能一次收齐三张。
+        "graph": {
+            "nodes": [
+                {"id": "gen1", "type": "generate", "x": 80, "y": 220,
+                 "prompt": "", "styleId": "pixel_16bit", "refs": [],
+                 "params": {"width": 512, "height": 768, "n": 1, "steps": None,
+                            "seed": None, "background": "gray", "maxSeqLen": None},
+                 "pixel": {"enabled": False, "gridSnap": True, "colors": 16,
+                           "palette": "auto", "gridSize": None, "targetSize": None,
+                           "transparentBg": False}},
+                {"id": "sd1", "type": "viewgen", "x": 620, "y": 60,
+                 "viewgen": {"enabled": True, "view": "side", "styleId": None,
+                             "steps": None, "seed": None,
+                             "width": 512, "height": 768, "maxSeqLen": None},
+                 "result": None},
+                {"id": "bk1", "type": "viewgen", "x": 620, "y": 520,
+                 "viewgen": {"enabled": True, "view": "back", "styleId": None,
+                             "steps": None, "seed": None,
+                             "width": 512, "height": 768, "maxSeqLen": None},
+                 "result": None},
+                {"id": "tv1", "type": "threeview", "x": 1180, "y": 290,
+                 "threeview": {"enabled": True, "bg": "1B4332", "gap": 12,
+                               "baseline": 0.93, "cell": None},
+                 "result": None},
+                {"id": "rs1", "type": "result", "x": 1740, "y": 290,
+                 "images": [], "prompt": "", "negative": "", "meta": {}},
+            ],
+            "edges": [
+                {"from": "gen1", "to": "sd1"},
+                {"from": "sd1", "to": "bk1"},
+                {"from": "bk1", "to": "tv1"},
+                {"from": "tv1", "to": "rs1"},
+            ],
+        },
     },
     {
         "id": "scene_layers",

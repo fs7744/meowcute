@@ -8,11 +8,14 @@ import ProjectFiles from '../components/ProjectFiles'
 import PromptModal from '../components/PromptModal'
 import RefineNode from '../components/RefineNode'
 import ResultNode from '../components/ResultNode'
+import ThreeViewNode from '../components/ThreeViewNode'
+import ViewGenNode from '../components/ViewGenNode'
 import type {
   BackgroundOption, CanvasNode, GenNode as GenNodeType, GenerateResult,
   InputNode as InputNodeType, MatteNode as MatteNodeType, Project, PromptExample,
   PromptPreview, RefineNode as RefineNodeType, ResultImage, ResultMeta,
   ResultNode as ResultNodeType, Style, TaskProgress, Template,
+  ThreeViewNode as ThreeViewNodeType, ViewGenNode as ViewGenNodeType,
 } from '../types'
 
 type Props = {
@@ -29,8 +32,11 @@ const RES_W = 420
 const INPUT_W = 340
 const REFINE_W = 360
 const MATTE_W = 340
+const VIEWGEN_W = 360
+const THREEVIEW_W = 380
 const NODE_W: Record<string, number> = {
   generate: GEN_W, result: RES_W, input: INPUT_W, refine: REFINE_W, matte: MATTE_W,
+  viewgen: VIEWGEN_W, threeview: THREEVIEW_W,
 }
 
 /** 哪些类型的节点可以作为某个节点的上游（决定自定义工作流是否合法）。 */
@@ -38,14 +44,21 @@ const UPSTREAM_RULES: Record<string, string[]> = {
   generate: ['input'],
   refine: ['input', 'generate', 'refine', 'matte', 'result'],
   matte: ['input', 'generate', 'refine', 'matte', 'result'],
-  result: ['generate', 'refine', 'matte'],
+  // 视角生成只认「能给出正视图」的来源；result 也在列：用户可能先把正视图
+  // 落到结果卡再回来接，那种图一样是正视图
+  viewgen: ['input', 'generate', 'matte', 'refine', 'result'],
+  // 拼板允许多条入边（正/侧/背各一路），所以不在 SINGLE_INPUT 里
+  threeview: ['input', 'generate', 'matte', 'refine', 'viewgen', 'result'],
+  result: ['generate', 'refine', 'matte', 'viewgen', 'threeview'],
 }
 
 const UPSTREAM_HINT: Record<string, string> = {
   generate: '选择图片',
   refine: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
   matte: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
-  result: '生成图 / 像素精修 / 扣除背景',
+  viewgen: '选择图片 / 生成图 / 扣除背景 / 像素精修 / 图片结果',
+  threeview: '生成图 / 侧视图 / 背视图 / 扣除背景 / 图片结果',
+  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 三视图拼板',
 }
 
 function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): boolean {
@@ -54,8 +67,9 @@ function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): b
   return !!allowed && allowed.includes(from.type)
 }
 
-/** 只能接收单条入边的类型：新连线替换旧入边，避免多源歧义。 */
-const SINGLE_INPUT = new Set(['refine', 'matte', 'result'])
+/** 只能接收单条入边的类型：新连线替换旧入边，避免多源歧义。
+ *  三视图拼板不在列：它要收正/侧/背三路。 */
+const SINGLE_INPUT = new Set(['refine', 'matte', 'result', 'viewgen'])
 
 /** 右键「添加节点」的目录：分类 → 具体节点。
  *  节点类型只会越来越多，平铺成一条长列表很快就用不了了。 */
@@ -63,7 +77,7 @@ const NODE_CATALOG: {
   id: string
   label: string
   hint: string
-  items: { type: CanvasNode['type']; label: string; hint: string; dot: string }[]
+  items: { type: CanvasNode['type']; label: string; hint: string; dot: string; preset?: string }[]
 }[] = [
   {
     id: 'input', label: '输入', hint: '素材入口：已有的图、参考图',
@@ -80,12 +94,23 @@ const NODE_CATALOG: {
     ],
   },
   {
+    id: 'view', label: '视角', hint: '从一张正视图推出其它角度',
+    items: [
+      { type: 'viewgen', label: '生成侧视图', dot: 'd-view', preset: 'side',
+        hint: '编辑底座指令接力：转成侧面，造型以正视图为准' },
+      { type: 'viewgen', label: '生成背视图', dot: 'd-view', preset: 'back',
+        hint: '同链路转 180°：脸部不可见，不新增衣物配件' },
+    ],
+  },
+  {
     id: 'post', label: '后处理', hint: '不跑模型，纯确定性图像处理',
     items: [
       { type: 'refine', label: '像素精修', dot: 'd-refine',
         hint: '网格对齐 + 调色板量化，输出原生像素尺寸' },
       { type: 'matte', label: '扣除背景', dot: 'd-matte',
         hint: 'u2net / GrabCut 抠图，输出透明底 PNG' },
+      { type: 'threeview', label: '三视图拼板', dot: 'd-threeview',
+        hint: '正/侧/背三张按共同基线拼成横向板' },
     ],
   },
   {
@@ -100,6 +125,7 @@ const NODE_CATALOG: {
 const NODE_LABEL: Record<string, string> = {
   input: '选择图片', generate: '生成图', refine: '像素精修',
   matte: '扣除背景', result: '图片结果',
+  viewgen: '生成视角', threeview: '三视图拼板',
 }
 const nodeLabel = (t: string) => NODE_LABEL[t] || t
 
@@ -458,13 +484,49 @@ export default function Canvas({ projectId, onBack }: Props) {
     setSelected(node.id)
   }
 
-  /** 右键菜单的统一入口：按类型分发到对应的添加函数。 */
-  const addNodeAt = (type: CanvasNode['type'], at: { x: number; y: number }) => {
+  /** 右键菜单的统一入口：按类型分发到对应的添加函数。
+   *  preset 给同类型节点的不同口味用（侧视图 / 背视图都是 viewgen）。 */
+  const addNodeAt = (
+    type: CanvasNode['type'], at: { x: number; y: number }, preset?: string,
+  ) => {
     if (type === 'input') addInputNode(at)
     else if (type === 'generate') addGenNode(at)
     else if (type === 'refine') addRefineNode(at)
     else if (type === 'matte') addMatteNode(at)
+    else if (type === 'viewgen') addViewGenNode(at, preset === 'back' ? 'back' : 'side')
+    else if (type === 'threeview') addThreeViewNode(at)
     else addEmptyResultNode(at)
+  }
+
+  const addViewGenNode = (at: { x: number; y: number }, view: 'side' | 'back' = 'side') => {
+    if (!project) return
+    const spot = { x: Math.round(at.x), y: Math.round(at.y) }
+    const node: ViewGenNodeType = {
+      id: newId('vg'), type: 'viewgen', x: spot.x, y: spot.y,
+      viewgen: {
+        enabled: true, view, styleId: null,
+        steps: null, seed: null, width: 512, height: 768, maxSeqLen: null,
+      },
+      result: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addThreeViewNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(THREEVIEW_W, 400)
+    const node: ThreeViewNodeType = {
+      id: newId('tv'), type: 'threeview', x: spot.x, y: spot.y,
+      threeview: {
+        enabled: true, bg: '1B4332', gap: 12, baseline: 0.93, cell: null,
+      },
+      result: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
   }
 
   const addEmptyResultNode = (at?: { x: number; y: number }) => {
@@ -680,33 +742,293 @@ export default function Canvas({ projectId, onBack }: Props) {
     return out
   }
 
-  /** 单张生成卡直接点「生成」时，自动把下游的扣背景节点跑掉。
-   *  模板里放了默认开启的抠图节点，用户点一次生成就该直接拿到透明底图，
-   *  而不是必须再点「运行工作流」。关掉的节点按透传处理。 */
-  const autoMatte = async (gen: GenNodeType, images: ResultImage[]) => {
-    const chain = matteChain(gen.id)
-    if (!chain.length) return { images, fromId: gen.id }
-    let cur = images
-    let fromId = gen.id
-    for (const node of chain) {
-      if (!node.matte?.enabled) {
-        // 透传：图片原样交给下游，但下游结果卡仍要拿到图
-        pushDownstreamResult(node.id, cur, {})
-        fromId = node.id
-        continue
-      }
-      setMatting((s) => ({ ...s, [node.id]: true }))
-      try {
-        const out: ResultImage[] = []
-        for (const im of cur) out.push(await executeMatte(node, im))
-        applyMatteResult(node, out)
-        cur = out
-        fromId = node.id
-      } finally {
-        setMatting((s) => ({ ...s, [node.id]: false }))
+  // ---------- 角色三视图 ----------
+  /** 节点的产出图，外加它在磁盘上的位置（images/ 产出还是 refs/ 上传）。
+   *  runtime 给定时优先用它——一键工作流里上游刚跑完，React 状态还没刷新。 */
+  const outputOf = (
+    id: string, runtime?: Map<string, ResultImage[]>,
+  ): { images: ResultImage[]; kind: 'images' | 'refs'; file: string } | null => {
+    const p = projectRef.current
+    const n = p?.nodes.find((x) => x.id === id)
+    if (!n) return null
+    if (runtime) {
+      const r = runtime.get(id)
+      if (r?.length) return { images: r, kind: 'images', file: '' }
+    }
+    if (n.type === 'generate') {
+      return n.lastImages?.length ? { images: n.lastImages, kind: 'images', file: '' } : null
+    }
+    if (n.type === 'result') {
+      return n.images?.length ? { images: n.images, kind: 'images', file: '' } : null
+    }
+    if (n.type === 'input') {
+      const r0 = n.refs?.[0]
+      if (!r0) return null
+      return {
+        images: [{ assetId: r0.id, url: r0.url, width: r0.width, height: r0.height,
+                   origAssetId: r0.id, origUrl: r0.url }],
+        kind: 'refs', file: r0.file,
       }
     }
-    return { images: cur, fromId }
+    return n.result ? { images: [n.result], kind: 'images', file: '' } : null
+  }
+
+  /** 视角生成节点的参考图：沿链条回溯到最上游的「正视图」。
+   *  中间隔着视角节点要穿过去——「生成图 → 侧视图 → 背视图」这条直线里，
+   *  背视图不能拿侧视图当参考；精修 / 抠图这类透传节点取它们的结果。 */
+  const resolveFrontOutput = (node: CanvasNode, runtime?: Map<string, ResultImage[]>) => {
+    const p = projectRef.current
+    if (!p) throw new Error('项目未加载')
+    const seen = new Set<string>([node.id])
+    const queue = [node.id]
+    while (queue.length) {
+      const id = queue.shift() as string
+      for (const e of p.edges.filter((x) => x.to === id)) {
+        if (seen.has(e.from)) continue
+        seen.add(e.from)
+        const src = p.nodes.find((n) => n.id === e.from)
+        if (!src) continue
+        if (src.type !== 'viewgen') {
+          const out = outputOf(src.id, runtime)
+          if (out?.images.length) return out
+        }
+        queue.push(src.id)
+      }
+    }
+    throw new Error('找不到正视图：请把「生成图」或「选择图片」连到链条最上游，并确认它已经跑出结果。')
+  }
+
+  /** 节点的视角角色：视角节点看自己的 view，生成/选图就是正视图，
+   *  其余（精修/抠图/结果）透传——角色由它自己的上游决定。
+   *  path 只做环检测，不能跨分支共享，否则菱形连线会误判。 */
+  const roleOf = (
+    id: string, path: Set<string> = new Set(),
+  ): 'front' | 'side' | 'back' | null => {
+    if (path.has(id)) return null
+    const p = projectRef.current
+    const n = p?.nodes.find((x) => x.id === id)
+    if (!n) return null
+    if (n.type === 'viewgen') return n.viewgen?.view === 'back' ? 'back' : 'side'
+    if (n.type === 'generate' || n.type === 'input') return 'front'
+    const next = new Set(path)
+    next.add(id)
+    for (const e of (p?.edges || []).filter((x) => x.to === id)) {
+      const r = roleOf(e.from, next)
+      if (r) return r
+    }
+    return null
+  }
+
+  /** 收齐正/侧/背三路输入：先看连进来的入边，缺的沿链条回溯补。
+   *  「生成图 → 侧视图 → 背视图 → 拼板」这条直线不用额外连线也能收齐三张。
+   *  同时记下每张是从哪个节点收的，UI 上给个来源说明。 */
+  const collectThreeViewOutputs = (
+    node: ThreeViewNodeType, runtime?: Map<string, ResultImage[]>,
+  ) => {
+    const p = projectRef.current
+    type Hit = { images: ResultImage[]; kind: 'images' | 'refs'; file: string; from: string }
+    const found: Partial<Record<'front' | 'side' | 'back', Hit>> = {}
+    if (!p) return found
+    const seen = new Set<string>([node.id])
+    const queue = [node.id]
+    while (queue.length) {
+      const id = queue.shift() as string
+      for (const e of p.edges.filter((x) => x.to === id)) {
+        if (seen.has(e.from)) continue
+        seen.add(e.from)
+        const src = p.nodes.find((n) => n.id === e.from)
+        if (!src) continue
+        const role = roleOf(src.id)
+        if (role && !found[role]) {
+          const out = outputOf(src.id, runtime)
+          if (out?.images.length) {
+            found[role] = { ...out, from: nodeLabel(src.type) }
+          }
+        }
+        queue.push(src.id)
+      }
+    }
+    return found
+  }
+
+  /** 跑一个后端任务并等结果（SSE 进度 + 完成后回调），供视角生成用。 */
+  const awaitTask = <T,>(taskId: string, nodeId: string): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      let settled = false
+      const close = subscribeTask(
+        taskId,
+        (p) => setTasks((t) => ({
+          ...t, [nodeId]: { ...(t[nodeId] || { taskId, error: null }), progress: p },
+        })),
+        (result, prog) => {
+          if (settled) return
+          settled = true
+          close()
+          setTasks((t) => ({
+            ...t,
+            [nodeId]: { taskId, progress: prog, error: prog.error || result?.error || null },
+          }))
+          if (result && !result.error) resolve(result as unknown as T)
+          else reject(new Error(prog.error || result?.error || '任务失败'))
+        },
+      )
+      closers.current[nodeId] = close
+    })
+
+  const executeViewDerive = async (
+    node: ViewGenNodeType, runtime?: Map<string, ResultImage[]>,
+  ): Promise<ResultImage> => {
+    if (!project) throw new Error('项目未加载')
+    const src = resolveFrontOutput(node, runtime)
+    const im = src.images[0]
+    const { taskId } = await api.threeviewDerive({
+      projectId: project.id,
+      origAssetId: src.kind === 'images' ? im.assetId : '',
+      sourceKind: src.kind, sourceFile: src.kind === 'refs' ? src.file : undefined,
+      view: node.viewgen?.view === 'back' ? 'back' : 'side',
+      styleId: node.viewgen?.styleId ?? null,
+      steps: node.viewgen?.steps ?? null,
+      seed: node.viewgen?.seed ?? null,
+      width: node.viewgen?.width ?? 512,
+      height: node.viewgen?.height ?? 768,
+      maxSeqLen: node.viewgen?.maxSeqLen ?? null,
+    })
+    activeTaskRef.current = taskId
+    setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+    const r: any = await awaitTask<any>(taskId, node.id)
+    if (activeTaskRef.current === taskId) activeTaskRef.current = null
+    const out: any = r.image
+    return {
+      assetId: out.assetId, url: out.url, width: out.width, height: out.height,
+      origAssetId: im.assetId, origUrl: im.url, origSize: [im.width, im.height],
+      view: r.view,
+      viewMeta: r.meta,
+    }
+  }
+
+  const applyViewGenResult = (node: ViewGenNodeType, result: ResultImage) => {
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => n.id === node.id
+        ? ({ ...n, result } as CanvasNode) : n),
+    } : p)
+    pushDownstreamResult(node.id, [result], {})
+    // 链条末端（没有下游）才补一张结果卡：中间节点补卡会让三视图链上多出废卡
+    if (!projectRef.current?.edges.some((e) => e.from === node.id)) {
+      ensureResultCard(node, [result], {})
+    }
+  }
+
+  const runViewDerive = async (node: ViewGenNodeType) => {
+    if (!node.viewgen?.enabled) return
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const result = await executeViewDerive(node)
+      applyViewGenResult(node, result)
+    } catch (e: any) {
+      alert(`生成视角失败：${e.message || e}`)
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    }
+  }
+
+  const executeCompose = async (
+    node: ThreeViewNodeType, runtime?: Map<string, ResultImage[]>,
+  ): Promise<ResultImage> => {
+    if (!project) throw new Error('项目未加载')
+    const found = collectThreeViewOutputs(node, runtime)
+    const order: ('front' | 'side' | 'back')[] = ['front', 'side', 'back']
+    const missing = order.filter((k) => !found[k])
+    if (missing.length) {
+      const cn: Record<string, string> = { front: '正视图', side: '侧视图', back: '背视图' }
+      throw new Error(`三视图拼板还缺：${missing.map((m) => cn[m]).join('、')}。`
+        + '把对应节点的输出连到本节点左侧，或保证链条上能回溯到它。')
+    }
+    const t = node.threeview
+    const r = await api.threeviewCompose({
+      projectId: project.id,
+      sources: order.map((k) => {
+        const s = found[k]!
+        return { kind: s.kind, file: s.kind === 'images' ? s.images[0].assetId : s.file }
+      }),
+      bg: t?.bg || '1B4332',
+      gap: t?.gap ?? 12,
+      baseline: t?.baseline ?? 0.93,
+      cell: t?.cell ?? null,
+    })
+    const im: any = r.image
+    const first = found.front!.images[0]
+    return {
+      assetId: im.assetId, url: im.url, width: im.width, height: im.height,
+      origAssetId: first.assetId, origUrl: first.url,
+      origSize: [first.width, first.height],
+      threeview: im.threeview,
+    }
+  }
+
+  const applyComposeResult = (node: ThreeViewNodeType, result: ResultImage) => {
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => n.id === node.id
+        ? ({ ...n, result } as CanvasNode) : n),
+    } : p)
+    pushDownstreamResult(node.id, [result], {})
+    if (!projectRef.current?.edges.some((e) => e.from === node.id)) {
+      ensureResultCard(node, [result], {})
+    }
+  }
+
+  /** 给某个节点的产出确保有一张结果卡：已经连了就填，没连就新建一张挂在右边。 */
+  const ensureResultCard = (
+    node: CanvasNode, images: ResultImage[], meta: ResultMeta = {},
+  ) => {
+    setProject((p) => {
+      if (!p || !images.length) return p
+      const nodes = [...p.nodes]
+      for (const e of p.edges.filter((x) => x.from === node.id)) {
+        const i = nodes.findIndex((n) => n.id === e.to && n.type === 'result')
+        if (i < 0) continue
+        const t = nodes[i] as ResultNodeType
+        nodes[i] = { ...t, images, meta: { ...(t.meta || {}), ...meta } }
+        return { ...p, nodes }
+      }
+      const w = NODE_W[node.type] || 360
+      const res: ResultNodeType = {
+        id: newId('res'), type: 'result',
+        x: node.x + w + 96, y: node.y,
+        genId: null, images, prompt: '', negative: '', meta,
+        createdAt: Date.now() / 1000,
+      }
+      return { ...p, nodes: [...nodes, res], edges: [...p.edges, { from: node.id, to: res.id }] }
+    })
+  }
+
+  const runCompose = async (node: ThreeViewNodeType) => {
+    if (!node.threeview?.enabled) return
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const result = await executeCompose(node)
+      applyComposeResult(node, result)
+    } catch (e: any) {
+      alert(`三视图拼板失败：${e.message || e}`)
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    }
+  }
+
+  /** 拼板节点要显示的三路输入（缺的也会列出来，让用户知道缺谁）。 */
+  const threeViewSlots = (node: ThreeViewNodeType) => {
+    const found = collectThreeViewOutputs(node)
+    const cn: Record<string, string> = { front: '正视图', side: '侧视图', back: '背视图' }
+    return (['front', 'side', 'back'] as const).map((k) => ({
+      view: k, label: cn[k],
+      image: found[k]?.images[0] ?? null,
+      from: found[k]?.from ?? '',
+    }))
   }
 
   const deleteNode = (id: string) => {
@@ -856,17 +1178,83 @@ export default function Canvas({ projectId, onBack }: Props) {
     })
   }
 
+  /** 点生成卡上的「生成」时，把下游链条一并跑完（抠图 → 视角 → 拼板）。
+   *  模板里预置了默认开启的链路，点一次生成就该直接拿到最终产物，
+   *  而不是必须再点「运行工作流」。关掉的节点按透传处理，不断链。 */
+  const autoDownstream = async (gen: GenNodeType, images: ResultImage[]) => {
+    const p = projectRef.current
+    if (!p) return { images, fromId: gen.id }
+    const runtime = new Map<string, ResultImage[]>([[gen.id, images]])
+    let cur = images
+    let fromId = gen.id
+    const seen = new Set<string>([gen.id])
+    for (;;) {
+      const next = p.nodes.find((n): n is MatteNodeType | ViewGenNodeType | ThreeViewNodeType =>
+        !seen.has(n.id)
+        && p.edges.some((e) => e.from === fromId && e.to === n.id)
+        && (n.type === 'matte' || n.type === 'viewgen' || n.type === 'threeview'))
+      if (!next) break
+      seen.add(next.id)
+      if (next.type === 'matte') {
+        if (!next.matte?.enabled) { fromId = next.id; continue }
+        setMatting((s) => ({ ...s, [next.id]: true }))
+        try {
+          const out: ResultImage[] = []
+          for (const im of cur) out.push(await executeMatte(next, im))
+          applyMatteResult(next, out)
+          cur = out
+          runtime.set(next.id, out)
+          fromId = next.id
+        } finally {
+          setMatting((s) => ({ ...s, [next.id]: false }))
+        }
+      } else if (next.type === 'viewgen') {
+        if (!next.viewgen?.enabled) {
+          runtime.set(next.id, cur)
+          pushDownstreamResult(next.id, cur, {})
+          fromId = next.id
+          continue
+        }
+        try {
+          const r = await executeViewDerive(next, runtime)
+          applyViewGenResult(next, r)
+          cur = [r]
+          runtime.set(next.id, cur)
+          fromId = next.id
+        } catch (e: any) {
+          throw new Error(`生成视角失败：${e.message || e}`)
+        }
+      } else {
+        if (!next.threeview?.enabled) {
+          runtime.set(next.id, cur)
+          fromId = next.id
+          continue
+        }
+        try {
+          const r = await executeCompose(next, runtime)
+          applyComposeResult(next, r)
+          cur = [r]
+          runtime.set(next.id, cur)
+          fromId = next.id
+        } catch (e: any) {
+          throw new Error(`三视图拼板失败：${e.message || e}`)
+        }
+      }
+    }
+    return { images: cur, fromId }
+  }
+
   const generate = async (node: GenNodeType) => {
     try {
       const result = await executeGenerate(node)
-      // 模板默认带一个开启的扣背景节点：点一次生成就直接出透明底图
-      const chain = matteChain(node.id)
-      const run = chain.length ? await autoMatte(node, result.images) : null
+      // 模板默认带的链路（扣背景 / 视角 / 拼板）跟着一起跑完
+      const hasDownstream = !!projectRef.current?.edges.some((e) => e.from === node.id)
+      const run = hasDownstream ? await autoDownstream(node, result.images) : null
       addResultNode(node, run?.images ?? result.images, result.prompt, result.negative,
                     result.meta, {
                       fromId: run?.fromId ?? node.id,
                       lastImages: result.images,
-                      deferCreate: chain.length > 0,
+                      deferCreate: hasDownstream,
                     })
     } catch (e: any) {
       setTasks((t) => ({
@@ -882,17 +1270,19 @@ export default function Canvas({ projectId, onBack }: Props) {
     if (tid) api.cancelTask(tid).catch(() => undefined)
   }
 
-  /** 一键运行：按连线拓扑顺序跑完所有生成/精修/扣背景节点，结果自动落到结果卡。 */
+  /** 一键运行：按连线拓扑顺序跑完所有生成/精修/扣背景/视角节点，结果自动落到结果卡。 */
   const runWorkflow = async () => {
     if (!project || wf.running) return
     type RunnerNode = GenNodeType | RefineNodeType | MatteNodeType
-    // 关掉的扣背景节点也算一步：它只是透传，不参与执行，但要负责把图交给下游结果卡
+      | ViewGenNodeType | ThreeViewNodeType
+    // 关掉的后处理节点也算一步：它只是透传，不参与执行，但要负责把图交给下游结果卡
     const isRunner = (n: CanvasNode): n is RunnerNode =>
       n.type === 'generate' || n.type === 'refine' || n.type === 'matte'
+      || n.type === 'viewgen' || n.type === 'threeview'
     const byId = new Map(project.nodes.map((n) => [n.id, n]))
     const executable = project.nodes.filter(isRunner)
     if (!executable.length) {
-      alert('画布上没有可执行的节点：先添加「生成图」「像素精修」或「扣除背景」并连好线。')
+      alert('画布上没有可执行的节点：先添加「生成图」「像素精修」「扣除背景」或「视角生成」并连好线。')
       return
     }
     // 拓扑序：先跑上游，再跑下游（有环也不会死循环，seen 兜底）
@@ -914,24 +1304,67 @@ export default function Canvas({ projectId, onBack }: Props) {
       for (let i = 0; i < order.length; i++) {
         if (abortRef.current) throw new Error('已停止')
         const n = order[i]
-        const kind = n.type === 'generate' ? '生成' : n.type === 'refine' ? '精修'
-          : n.matte?.enabled ? '扣背景' : '跳过扣背景'
+        const kind = n.type === 'generate' ? '生成'
+          : n.type === 'refine' ? '精修'
+          : n.type === 'matte' ? (n.matte?.enabled ? '扣背景' : '跳过扣背景')
+          : n.type === 'viewgen' ? (n.viewgen?.enabled
+            ? (n.viewgen?.view === 'back' ? '背视图' : '侧视图') : '跳过视角')
+          : (n.threeview?.enabled ? '三视图拼板' : '跳过拼板')
         setWf({
           running: true, done: i, total: order.length, error: null,
           label: `${kind} ${i + 1}/${order.length}`,
         })
+        // 视角与拼板节点的输入不一定是直接上游：视角要最上游的正视图，
+        // 拼板要正/侧/背三张。两者都沿链条回溯，runtime 优先。
+        if (n.type === 'viewgen') {
+          if (!n.viewgen?.enabled) {
+            // 透传：把正视图原样交给下游，别把链路断在这里
+            const front = resolveFrontOutput(n, runtime)
+            runtime.set(n.id, front.images)
+            pushDownstreamResult(n.id, front.images, {})
+            continue
+          }
+          try {
+            const result = await executeViewDerive(n, runtime)
+            applyViewGenResult(n, result)
+            runtime.set(n.id, [result])
+          } catch (e: any) {
+            throw new Error(`第 ${i + 1} 步（${kind}）：${e.message || e}`)
+          }
+          continue
+        }
+        if (n.type === 'threeview') {
+          if (!n.threeview?.enabled) {
+            const up = collectThreeViewOutputs(n, runtime)
+            runtime.set(n.id, up.back?.images || up.front?.images || [])
+            continue
+          }
+          try {
+            const result = await executeCompose(n, runtime)
+            applyComposeResult(n, result)
+            runtime.set(n.id, [result])
+          } catch (e: any) {
+            throw new Error(`第 ${i + 1} 步（三视图拼板）：${e.message || e}`)
+          }
+          continue
+        }
         const inEdge = project.edges.find((e) => e.to === n.id)
         const upstream = inEdge ? runtime.get(inEdge.from) : undefined
         if (n.type === 'generate') {
           if (!n.prompt.trim()) throw new Error(`第 ${i + 1} 步：生成节点的提示词为空`)
           const r = await executeGenerate(n)
+          // 下游还有后处理节点（抠图/精修/视角/拼板）时，结果卡由链条末端建，
+          // 否则三视图链上会先在生成卡旁边多出一张只放原图的废卡
+          const down = project.edges.filter((e) => e.from === n.id)
+            .map((e) => byId.get(e.to))
+            .filter((x): x is RunnerNode => !!x && x.type !== 'result')
           const chain = matteChain(n.id)
           addResultNode(n, r.images, r.prompt, r.negative, r.meta, {
             lastImages: r.images,
             // 结果卡挂在这条链的末端（跑了抠图就挂到抠图卡上），
             // 否则会多建一张空卡；提示词先落到卡上，抠图之后只覆盖图片
             fromId: chain.length ? chain[chain.length - 1].id : n.id,
-            deferCreate: chain.length > 0,
+            deferCreate: chain.length > 0 || down.length > 0,
           })
           runtime.set(n.id, r.images)
         } else if (n.type === 'refine') {
@@ -1085,6 +1518,14 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is MatteNodeType => n.type === 'matte'),
     [project?.nodes],
   )
+  const viewGenNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is ViewGenNodeType => n.type === 'viewgen'),
+    [project?.nodes],
+  )
+  const threeViewNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is ThreeViewNodeType => n.type === 'threeview'),
+    [project?.nodes],
+  )
 
   /** 某个节点的入边来自哪一类上游（节点卡上显示「输入：xxx」）。 */
   const upstreamLabel = useCallback((id: string): string | null => {
@@ -1092,6 +1533,27 @@ export default function Canvas({ projectId, onBack }: Props) {
     const s = e ? project?.nodes.find((x) => x.id === e.from) : null
     return s ? nodeLabel(s.type) : null
   }, [project?.edges, project?.nodes])
+
+  /** 视角节点的参考来自哪一类上游：沿链条回溯到最上游那张正视图，
+   *  所以中间隔着别的视角节点时，标签显示的还是正视图的来源。 */
+  const frontLabel = useCallback((id: string): string | null => {
+    const p = project
+    if (!p) return null
+    const seen = new Set<string>([id])
+    const queue = [id]
+    while (queue.length) {
+      const cur = queue.shift() as string
+      for (const e of p.edges.filter((x) => x.to === cur)) {
+        if (seen.has(e.from)) continue
+        seen.add(e.from)
+        const src = p.nodes.find((x) => x.id === e.from)
+        if (!src) continue
+        if (src.type !== 'viewgen') return nodeLabel(src.type)
+        queue.push(src.id)
+      }
+    }
+    return null
+  }, [project])
 
   const edges = useMemo(() => {
     if (!project) return []
@@ -1283,6 +1745,46 @@ export default function Canvas({ projectId, onBack }: Props) {
             />
           ))}
 
+          {viewGenNodes.map((n, i) => (
+            <ViewGenNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              sourceLabel={frontLabel(n.id)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runViewDerive(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({
+                src: url, title,
+                pixelSize: n.result ? [n.result.width, n.result.height] : undefined,
+              })}
+            />
+          ))}
+
+          {threeViewNodes.map((n, i) => (
+            <ThreeViewNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              slots={threeViewSlots(n)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runCompose(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({
+                src: url, title,
+                pixelSize: n.result ? [n.result.width, n.result.height] : undefined,
+              })}
+            />
+          ))}
+
           {resultNodes.map((n, i) => (
             <ResultNode
               key={n.id}
@@ -1385,9 +1887,9 @@ export default function Canvas({ projectId, onBack }: Props) {
               <div className="ctx-sub">
                 <div className="ctx-subhint">{cat.hint}</div>
                 {cat.items.map((it) => (
-                  <button key={it.type}
+                  <button key={it.type + (it.preset || '')}
                     onClick={() => {
-                      addNodeAt(it.type, { x: ctxMenu.wx, y: ctxMenu.wy })
+                      addNodeAt(it.type, { x: ctxMenu.wx, y: ctxMenu.wy }, it.preset)
                       setCtxMenu(null)
                       setCtxOpen(null)
                     }}>
