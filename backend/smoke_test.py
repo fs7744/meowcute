@@ -440,6 +440,33 @@ def main() -> int:
           str([d.get("frameSize") for d in sheet_meta.get("directions", [])]))
     check("逐格自检通过", sheet_meta.get("checksOk") is True, str(sheet_meta.get("warnings")))
     check("共享缩放在 meta 里", sheet_meta.get("sharedScale") is True)
+    check("给出全方向统一缩放系数", (sheet_meta.get("globalScale") or 0) > 0,
+          str(sheet_meta.get("globalScale")))
+
+    # 全方向统一缩放：两个方向角色体型差一倍，缩放系数必须一样，
+    # 否则播放器里一转身角色就变大变小
+    import asyncio as _asyncio
+    from backend.app.pipelines import spritesheet as sheet_mod
+
+    def body_frames(h: int):
+        out = []
+        for i in range(3):
+            img = Image.new("RGBA", (h * 2, h * 2), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            w = h // 2
+            d.rectangle([h - w // 2, h, h + w // 2, h + h], fill=(240, 200, 160, 255))
+            out.append(img)
+        return out
+
+    _dirs, _meta = _asyncio.run(sheet_mod.run_sheets(
+        [{"dir": "down", "frames": body_frames(180)},
+         {"dir": "left", "frames": body_frames(90)}],
+        size=128, shared_scale=True, anchor="bottom"))
+    _scales = [d["normalize"]["scaleRange"][0] for d in _dirs]
+    check("体型不同的方向缩放系数一致", abs(_scales[0] - _scales[1]) < 1e-6,
+          f"{_scales}")
+    check("统一缩放等于两方向上界", abs(_scales[0] - _meta["globalScale"]) < 1e-2,
+          f"{_scales[0]} vs {_meta['globalScale']}")
     # 总览与两张表都能通过资产端点读出来
     ov_url = sheet_meta["overview"]["url"]
     r = client.get(ov_url)

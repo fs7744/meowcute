@@ -330,6 +330,8 @@ export type WalkDirection = {
   seed: number | null
   mirrored: boolean
   mirroredFrom: WalkDir | null
+  /** existing = 这一段来自现成视频（跳过了推导 + Wan） */
+  walk?: { mode?: string; file?: string | null; model?: string | null }
 }
 
 /** 行走视频节点的产出元数据。 */
@@ -403,6 +405,8 @@ export type SheetDirection = {
 export type SheetMeta = {
   size: number
   sharedScale: boolean
+  /** 全方向统一缩放系数（sharedScale 开启时给出） */
+  globalScale?: number | null
   anchor: string
   overviewSize: [number, number]
   warnings: string[]

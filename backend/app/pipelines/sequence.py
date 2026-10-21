@@ -199,6 +199,9 @@ async def run_sequence(
     out: List[Dict[str, Any]] = []
     done = 0
     for d in directions:
+        # 纯 CPU 循环也要能取消：每抠完一帧就能被打断（8 方向 × 8 帧，
+        # 中途取消不必等剩下几十帧跑完）
+        progress_mod.check_cancel(task_id)
         frames = list(d.get("frames") or [])
         if not frames:
             raise RuntimeError(f"{DIR_LABELS.get(d.get('dir'), d.get('dir'))}方向没有视频帧")
@@ -209,6 +212,7 @@ async def run_sequence(
         prepared: List[Image.Image] = []
         removed: List[float] = []
         for f in picked:
+            progress_mod.check_cancel(task_id)
             cut, m = prepare_frame(f, matte=matte, tolerance=tolerance)
             prepared.append(cut)
             removed.append(float(m.get("removedRatio", 0)))

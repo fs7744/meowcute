@@ -885,7 +885,9 @@ export default function Canvas({ projectId, onBack }: Props) {
     // 八方向链的四个节点：多图产出 + 结构化 meta
     if (n.type === 'walkvideo' || n.type === 'sequence' || n.type === 'spritesheet') {
       const images = (n.images?.length ? n.images : (n.result ? [n.result] : []))
-      if (!images.length) return null
+      // 有 meta 就算有产出：存成模板 / 重新加载后 images 会被清空，
+      // 但方向与帧索引都在 meta 里——可操控预览节点只靠 meta 就能播。
+      if (!images.length && !n.meta) return null
       return { images, kind: 'images', file: '', meta: n.meta ?? undefined }
     }
     return n.result ? { images: [n.result], kind: 'images', file: '' } : null
@@ -1156,6 +1158,7 @@ export default function Canvas({ projectId, onBack }: Props) {
   const resolveChainInput = (
     node: CanvasNode, runtime?: Map<string, ResultImage[]>,
     metaRuntime?: Map<string, any>,
+    opts?: { requireImages?: boolean },
   ) => {
     const p = projectRef.current
     const inEdge = p?.edges.find((e) => e.to === node.id)
@@ -1163,15 +1166,17 @@ export default function Canvas({ projectId, onBack }: Props) {
       throw new Error(`「${nodeLabel(node.type)}」没有上游：把上一步连到左侧端口`)
     }
     const out = outputOf(inEdge.from, runtime)
-    if (!out?.images.length) {
+    // 可操控预览只吃元数据（精灵表 URL + 帧索引），上游图片被清空也照样能播；
+    // 其余链路节点确实要图，缺图就是没跑过上游。
+    if (opts?.requireImages !== false && !out?.images.length) {
       throw new Error('上游还没有产出：先跑上一步的节点')
     }
     const src = p?.nodes.find((n) => n.id === inEdge.from)
     return {
-      out,
+      out: out ?? { images: [], kind: 'images' as const, file: '', meta: null },
       fromId: inEdge.from,
       label: src ? nodeLabel(src.type) : '',
-      meta: metaRuntime?.get(inEdge.from) ?? out.meta,
+      meta: metaRuntime?.get(inEdge.from) ?? out?.meta ?? (src as any)?.meta,
     }
   }
 
@@ -1394,7 +1399,7 @@ export default function Canvas({ projectId, onBack }: Props) {
     node: PlayNodeType, runtime?: Map<string, ResultImage[]>,
     metaRuntime?: Map<string, any>,
   ): Promise<{ images: ResultImage[]; meta: any }> => {
-    const up = resolveChainInput(node, runtime, metaRuntime)
+    const up = resolveChainInput(node, runtime, metaRuntime, { requireImages: false })
     const sheetMeta: any = up.meta || {}
     const dirs: any[] = sheetMeta.directions || []
     if (!dirs.length) {

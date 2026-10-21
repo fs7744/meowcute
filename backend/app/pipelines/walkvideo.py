@@ -288,7 +288,10 @@ async def run_walk(
                if k in dirs and v and v.get("frames")}
     real_dirs = [d for d in dirs if not DIR_MIRROR_OF.get(d)]
     gen_dirs = [d for d in real_dirs if d not in src_map]
-    total_steps = len(gen_dirs) * 2
+    src_real = [d for d in real_dirs if d in src_map]
+    # 进度按「现成视频算 1 步、生成方向算 2 步」累计，和下面 done 的增量对齐；
+    # 只按 gen_dirs 算会让全现成时出现 1/0、混合时进度超过 100%
+    total_steps = len(src_real) + len(gen_dirs) * 2
     done = 0
     t0 = time.time()
 
@@ -393,8 +396,12 @@ def normalize_source_frames(frames: List[Image.Image], *, width: int,
         f = f.convert("RGBA")
         scale = max(tw / max(1, f.width), th / max(1, f.height))
         if abs(scale - 1) > 1e-3:
+            # 放大用 NEAREST（像素图不插值，保持硬边）；缩小用 LANCZOS——
+            # 把 1080p 手机视频直接 NEAREST 抽到 384 会大面积丢线（锯齿 + 断笔），
+            # 而缩小的抗锯齿代价最终会被精灵表的硬边裁切吃掉
+            resample = Image.NEAREST if scale > 1 else Image.LANCZOS
             f = f.resize((max(1, round(f.width * scale)),
-                          max(1, round(f.height * scale))), Image.NEAREST)
+                          max(1, round(f.height * scale))), resample)
         x = max(0, (f.width - tw) // 2)
         y = max(0, (f.height - th) // 2)
         out.append(f.crop((x, y, x + tw, y + th)))

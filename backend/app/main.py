@@ -369,23 +369,19 @@ async def list_project_videos(pid: str) -> Dict[str, Any]:
 
 @app.post("/api/projects/{pid}/videos/upload")
 async def upload_project_video(pid: str, file: UploadFile = File(...)) -> Dict[str, Any]:
-    """上传一段现成视频（mp4/mov/webm/gif…），存进项目供行走视频节点选用。"""
+    """上传一段现成视频（mp4/mov/webm/gif…），存进项目供行走视频节点选用。
+
+    分块落盘（storage.save_video_stream），100MB 的视频不会整包进内存。
+    """
     if projects_mod.load_project(pid) is None:
         raise HTTPException(404, "项目不存在")
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in storage.VIDEO_EXTS:
         raise HTTPException(400, "只支持 " + " / ".join(storage.VIDEO_EXTS) + " 格式")
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(400, "文件是空的")
-    if len(raw) > storage.MAX_VIDEO_BYTES:
-        raise HTTPException(400, "视频不能超过 100MB")
-    tmp = storage.assets_dir(pid) / f".upload-{uuid.uuid4().hex[:8]}{suffix}"
-    tmp.write_bytes(raw)
     try:
-        info = storage.save_video(pid, tmp)
-    finally:
-        tmp.unlink(missing_ok=True)
+        info = storage.save_video_stream(pid, file.file, suffix)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {"ok": True, "video": info}
 
 
@@ -1024,9 +1020,11 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
 
         # 现成视频来源：先把帧读出来（在跑任何模型之前，读不出来立刻报错，
         # 而不是等 Wan 加载完 17GB 显存才说文件坏了）
+        allowed = set(walkvideo_mod.directions_of(payload.dirMode))
         src_frames: Dict[str, Dict[str, Any]] = {}
         for s in payload.sources:
-            if not s.file:
+            if not s.file or s.dir not in allowed:
+                # 换了方向模式后残留的来源不必解码（8 方向 → 仅正面时省掉 4 次解码）
                 continue
             frames, fps_src, vmeta = storage.load_video_frames(
                 payload.projectId, payload.sourceKind, s.file)

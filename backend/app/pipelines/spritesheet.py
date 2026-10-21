@@ -7,7 +7,8 @@
 
 1. **共享缩放（shared_scale）**：先量所有帧的最大包围盒，再统一按它算缩放
    系数。逐帧各自撑满画布会让「腿抬起来」的帧包围盒更高、被放大，角色在
-   整段循环里忽大忽小——一播就露馅。
+   整段循环里忽大忽小——一播就露馅。缩放系数在**所有方向之间也统一**：
+   正面矮胖、侧面瘦高，各方向各自撑满会让转身时角色变形。
 2. **透明区 RGB 清零**：alpha_composite 前把全透明像素的 RGB 置 0。透明区
    携带底色时，引擎做双线性采样或预乘 alpha 会渲出一层色晕，图集单元格
    之间也会互相串色。
@@ -72,14 +73,22 @@ def normalize_frames(
     size: int = 128,
     anchor: str = "bottom",
     pad: int = 2,
+    scale: Optional[float] = None,
 ) -> Tuple[List[Image.Image], Dict[str, Any]]:
-    """把一摞透明帧规整成同尺寸精灵帧（裁空白 → 缩放 → 锚点对齐）。"""
+    """把一摞透明帧规整成同尺寸精灵帧（裁空白 → 缩放 → 锚点对齐）。
+
+    scale：外部给定的统一缩放（run_sheets 算的**全方向**系数）。给了就用它，
+    不再按本方向的包围盒各自撑满——八个方向如果各算各的，转身时角色会忽大
+    忽小（正面矮胖、侧面瘦高，各自撑满单元格就变形了）。
+    """
     if not frames:
         return [], {"size": [size, size], "frames": 0}
     prepared = [trim_alpha(f) for f in frames]
     inner = max(1, size - pad * 2)
 
-    if shared_scale:
+    if scale:
+        common = float(scale)
+    elif shared_scale:
         max_w = max((t.width for t, _ in prepared), default=1)
         max_h = max((t.height for t, _ in prepared), default=1)
         common = min(inner / max(1, max_w), inner / max(1, max_h))
@@ -229,7 +238,22 @@ async def run_sheets(
     total = len(directions)
     out: List[Dict[str, Any]] = []
     done = 0
+
+    # 全方向统一缩放：先量所有方向所有帧的最大包围盒，算一个系数。逐方向
+    # 各自撑满的话，转身时角色会忽大忽小——这是精灵表最容易被一眼看出的毛病。
+    global_scale: Optional[float] = None
+    if shared_scale:
+        max_w = max_h = 1
+        for d in directions:
+            for f in (d.get("frames") or []):
+                t, _ = trim_alpha(f)
+                max_w = max(max_w, t.width)
+                max_h = max(max_h, t.height)
+        inner = max(1, int(size) - 4)          # 与 normalize_frames 的 pad=2 一致
+        global_scale = min(inner / max(1, max_w), inner / max(1, max_h))
+
     for d in directions:
+        progress_mod.check_cancel(task_id)
         frames = list(d.get("frames") or [])
         if not frames:
             raise RuntimeError(f"{DIR_LABELS.get(d.get('dir'), d.get('dir'))}方向没有序列帧")
@@ -237,7 +261,8 @@ async def run_sheets(
         progress_mod.report(task_id, done, total,
                             f"{d.get('label') or DIR_LABELS.get(d.get('dir'), '')}：拼板中…")
         norm, nmeta = normalize_frames(
-            frames, shared_scale=shared_scale, size=int(size), anchor=anchor)
+            frames, shared_scale=shared_scale, size=int(size), anchor=anchor,
+            scale=global_scale)
         norm = [zero_transparent_rgb(f) for f in norm]
         sheet, index = compose_sheet(norm, n_cols)
         warnings = frame_warnings(norm)
@@ -261,6 +286,7 @@ async def run_sheets(
     meta = {
         "size": int(size),
         "sharedScale": bool(shared_scale),
+        "globalScale": round(global_scale, 4) if global_scale else None,
         "anchor": anchor,
         "directions": len(out),
         "overviewSize": list(ov.size),

@@ -852,6 +852,10 @@ button { cursor: pointer; }
   color: var(--orange, #ff8a4c);
   border-color: rgba(255, 138, 76, 0.45);
 }
+.walk-src-badge {
+  color: var(--orange, #ff8a4c);
+  border-color: rgba(255, 138, 76, 0.45);
+}
 .btn-xs {
   padding: 1px 6px; font-size: 10px; line-height: 18px;
 }

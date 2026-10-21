@@ -146,6 +146,9 @@ def load_gif(pid: str, kind: str, filename: str
 
     与 load_image 分开：那个会把动画压成第一帧（convert("RGBA") 只取当前
     帧）。序列帧节点重跑时要的是整段视频。
+
+    帧和时长在**同一次遍历**里取：81 帧 384×512 的 GIF 解码一次约 0.3s，
+    原来分开开两次文件是把这段开销翻倍，而序列帧节点每次重跑都要读一遍。
     """
     p = asset_path(pid, kind, filename)
     if p is None or not filename.lower().endswith(".gif"):
@@ -153,19 +156,21 @@ def load_gif(pid: str, kind: str, filename: str
     try:
         from PIL import ImageSequence
 
-        img = Image.open(p)
-        frames = [f.convert("RGBA") for f in ImageSequence.Iterator(img)]
-        durations = [max(1, int(f.info.get("duration", 100)))
-                     for f in ImageSequence.Iterator(Image.open(p))]
-        meta = {"frames": len(frames), "size": [img.width, img.height],
-                "loop": img.info.get("loop", 0)}
+        frames: List[Image.Image] = []
+        durations: List[int] = []
+        with Image.open(p) as img:
+            for f in ImageSequence.Iterator(img):
+                frames.append(f.convert("RGBA"))
+                durations.append(max(1, int(f.info.get("duration", 100))))
+            meta = {"frames": len(frames), "size": [img.width, img.height],
+                    "loop": img.info.get("loop", 0)}
         return frames, durations, meta
     except Exception:
         return [], [], {}
 
 
 def load_video_frames(pid: str, kind: str, filename: str,
-                      max_frames: int = 600
+                      max_frames: int = 600, max_side: int = 1024
                       ) -> Tuple[List[Image.Image], float, Dict[str, Any]]:
     """读一个视频文件的全部帧（RGBA）+ 帧率。
 
@@ -175,6 +180,9 @@ def load_video_frames(pid: str, kind: str, filename: str,
 
     行走循环一般 24~60fps、几秒长，max_frames 600 足够；超长视频截断而不是
     报错——序列帧节点后面本来就会抽稀。
+
+    max_side：解码时就限制长边。手机拍的 1080×1920 视频按 RGBA 存 600 帧
+    要 5GB 内存——节点最终只用 384×512，先缩再存，内存和后续抠图都省。
     """
     p = asset_path(pid, kind, filename)
     if p is None:
@@ -194,39 +202,63 @@ def load_video_frames(pid: str, kind: str, filename: str,
             return [], 0.0, {}
         fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
         frames: List[Image.Image] = []
+        scaled = False
         while len(frames) < max_frames:
             ok, frame = cap.read()
             if not ok:
                 break
             # cv2 是 BGR；alpha 通道没有，直接转 RGB
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frames.append(Image.fromarray(rgb).convert("RGBA"))
+            img = Image.fromarray(rgb)
+            if max_side and max(img.size) > max_side:
+                # 解码即缩：避免整段 1080p 帧堆在内存里（见 docstring）
+                img.thumbnail((max_side, max_side), Image.LANCZOS)
+                scaled = True
+            frames.append(img.convert("RGBA"))
         cap.release()
         if not frames:
             return [], 0.0, {}
         return frames, round(float(fps), 3), {"frames": len(frames),
-                                              "source": "opencv"}
+                                              "source": "opencv",
+                                              "preScaled": scaled}
     except ImportError:
         return [], 0.0, {"error": "缺 opencv-python：读取 mp4 等视频需要它（pip install opencv-python）"}
     except Exception as e:
         return [], 0.0, {"error": f"视频解码失败：{e}"}
 
 
-def save_video(pid: str, src: Path, kind: str = "images",
-               prefix: str = "vidsrc") -> Dict[str, Any]:
-    """把上传的视频原样存进项目（不转码：GIF 保持 PIL 可读，其余交给
-    load_video_frames 的 OpenCV 路径解码）。"""
+def save_video_stream(pid: str, src, suffix: str, kind: str = "images",
+                      prefix: str = "vidsrc") -> Dict[str, Any]:
+    """把上传流直接写进项目（分块，不整包读进内存）。
+
+    100MB 上限的视频如果先 read() 再 write_bytes()，内存和磁盘各要过两遍；
+    直接按 1MB 分块落盘，峰值内存只有一块。
+    """
     ensure_dirs()
     d = assets_dir(pid, kind)
     aid = asset_stem(prefix)
-    path = d / f"{aid}{src.suffix.lower()}"
-    path.write_bytes(src.read_bytes())
-    raw = path.read_bytes()
+    path = d / f"{aid}{suffix.lower()}"
+    total = 0
+    try:
+        with open(path, "wb") as out:
+            while True:
+                chunk = src.read(1 << 20)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_VIDEO_BYTES:
+                    raise ValueError("视频不能超过 100MB")
+                out.write(chunk)
+        if total == 0:
+            raise ValueError("文件是空的")
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
     return {
         "id": aid,
         "file": path.name,
         "url": f"/api/projects/{pid}/{kind}/{path.name}",
-        "bytes": len(raw),
+        "bytes": total,
     }
 
 

@@ -111,6 +111,11 @@ export default function SpriteSheetNode({
           <div className="result-meta" style={{ borderTop: 0, marginTop: 8 }}>
             <span className="meta-pill">{meta.directions.length} 个方向</span>
             <span className="meta-pill">单元格 {meta.size}px</span>
+            {meta.globalScale ? (
+              <span className="meta-pill" title="全方向统一缩放系数：保证转身时角色大小不变">
+                统一缩放 {meta.globalScale.toFixed(2)}×
+              </span>
+            ) : null}
             <span className={`meta-pill ${meta.checksOk ? 'good' : 'bad'}`}>
               {meta.checksOk ? '逐格自检通过' : '自检未通过'}
             </span>

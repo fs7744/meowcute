@@ -75,6 +75,19 @@ export default function WalkVideoNode({
   const [uploadFor, setUploadFor] = useState<WalkDir | null>(null)
   const [busy, setBusy] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const srcRef = useRef<HTMLDivElement>(null)
+
+  // 点面板外面收起选择器：下拉开着却不消失，点别处还要再点一次很烦
+  useEffect(() => {
+    if (!picking) return
+    const onDown = (e: MouseEvent) => {
+      if (srcRef.current && !srcRef.current.contains(e.target as Node)) {
+        setPicking(null)
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [picking])
 
   const refreshVideos = async () => {
     try {
@@ -87,7 +100,9 @@ export default function WalkVideoNode({
 
   const openPicker = async (d: WalkDir) => {
     setPicking(picking === d ? null : d)
-    if (videos === null) await refreshVideos()
+    // 每次打开都拉最新列表：刚跑完的方向会多出新的 walk-*.gif，
+    // 缓存一次很容易让人以为「没有可选的视频」
+    if (picking !== d) await refreshVideos()
   }
 
   const setSource = (d: WalkDir, file: string | null) => {
@@ -175,7 +190,7 @@ export default function WalkVideoNode({
         </label>
 
         {/* ---- 视频来源：每个方向可选 Wan 生成或现成视频 ---- */}
-        <div className="walk-src">
+        <div className="walk-src" ref={srcRef}>
           <div className="walk-src-head">
             <span>视频来源</span>
             <span className="walk-src-count">
@@ -310,6 +325,9 @@ export default function WalkVideoNode({
                 <div className="walk-cell-t">
                   {d.label}
                   {d.mirrored ? <span className="walk-mirror" title={`镜像自${d.mirroredFrom}`}>镜</span> : null}
+                  {d.walk?.mode === 'existing'
+                    ? <span className="walk-mirror walk-src-badge" title={`现成视频：${d.walk.file}`}>现成</span>
+                    : null}
                 </div>
               </div>
             ))}
