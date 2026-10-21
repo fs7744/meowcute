@@ -758,6 +758,7 @@ class DiffusersProvider(BaseProvider):
         逻辑完全一样：命中缓存 mmap 直读，未命中 GPU 逐层量化后写缓存。
         """
         import time
+        import torch
         from pathlib import Path
 
         model_dir = Path(model_id)

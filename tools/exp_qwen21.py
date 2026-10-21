@@ -29,8 +29,8 @@ from backend.app.providers.diffusers_local import (  # noqa: E402
     DiffusersProvider, _enable_offload, _release_vram,
 )
 
-PID = "p-8595c050a48d"
-BASE = "out-20261021-085505-1-8dac.png"
+PID = "p-e1fd855eb0f5"
+BASE = "out-20261021-212829-1-4f76.png"
 MODEL_DIR = ROOT / "models" / "qwen-image-2.1"
 OUT_DIR = ROOT / ".verify" / "exp-b"
 
