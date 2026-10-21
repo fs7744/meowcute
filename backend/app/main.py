@@ -1033,6 +1033,18 @@ class WalkVideoSource(BaseModel):
     file: str = ""                              # images/ 下的文件名
 
 
+class WalkViewAsset(BaseModel):
+    """三视图锚点：角色（正/侧/背）→ 项目内图片文件。"""
+    role: str                                   # front | side | back
+    file: str = ""
+
+
+class WalkDirImage(BaseModel):
+    """用户为某个方向直接指定的立绘图（跳过推导，但仍会跑 Wan）。"""
+    dir: str
+    file: str = ""
+
+
 def _clamp(v: Any, lo: int, hi: int, default: int) -> int:
     """接口入参兜底：界面上的输入框有上下限，直接调 API 的没有。
 
@@ -1064,6 +1076,12 @@ class WalkVideoPayload(BaseModel):
     maxSeqLen: Optional[int] = None
     # 现成视频来源：这些方向跳过立绘推导 + Wan，直接用文件里的帧
     sources: List[WalkVideoSource] = Field(default_factory=list)
+    # 三视图锚点：有了它们，正/侧/背三个方向零推导，斜向只转 45 度
+    viewAssets: List[WalkViewAsset] = Field(default_factory=list)
+    # 用户为每个方向指定的立绘图
+    dirImages: List[WalkDirImage] = Field(default_factory=list)
+    # 像素保真：像素素材用最近邻缩放，别被视频底座糊掉
+    pixelArt: bool = False
 
 
 async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
@@ -1096,20 +1114,46 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
             src_frames[s.dir] = {"frames": frames, "fps": fps_src,
                                  "file": s.file}
 
+        w_w = _clamp(payload.width, 128, 1024, 384)
+        w_h = _clamp(payload.height, 128, 1024, 512)
+
+        # 三视图锚点：每个方向从离它最近的锚点推导（一致性 + 少推导两次）
+        view_anchors: Dict[str, Any] = {}
+        for va in payload.viewAssets:
+            if va.role not in ("front", "side", "back") or not va.file:
+                continue
+            img = storage.load_image(payload.projectId, payload.sourceKind, va.file)
+            if img is not None:
+                view_anchors[va.role] = img.convert("RGB")
+        # 用户直接指定的方向立绘：规整到节点尺寸，跳过推导
+        dir_images: Dict[str, Any] = {}
+        for di in payload.dirImages:
+            if not di.file:
+                continue
+            img = storage.load_image(payload.projectId, payload.sourceKind, di.file)
+            if img is None:
+                raise RuntimeError(f"指定立绘读不出来：{di.file}")
+            frames = walkvideo_mod.normalize_source_frames(
+                [img.convert("RGBA")], width=w_w, height=w_h)
+            if frames:
+                dir_images[di.dir] = frames[0].convert("RGB")
+
         directions, meta = await walkvideo_mod.run_walk(
             base,
             dir_mode=payload.dirMode, action=payload.action,
             steps=(_clamp(payload.steps, 4, 60, 30) if payload.steps else None),
             seed=payload.seed,
-            width=_clamp(payload.width, 128, 1024, 384),
-            height=_clamp(payload.height, 128, 1024, 512),
+            width=w_w, height=w_h,
             num_frames=_clamp(payload.numFrames, 5, 193, 81),
             fps=_clamp(payload.fps, 8, 30, 24),
             max_side=_clamp(payload.maxSide, 256, 1024, 512),
             max_seq_len=(_clamp(payload.maxSeqLen, 256, 1536, 512)
                          if payload.maxSeqLen else None),
             provider_cfg=provider_cfg, task_id=task_id,
-            sources=src_frames or None)
+            sources=src_frames or None,
+            view_anchors=view_anchors or None,
+            dir_images=dir_images or None,
+            pixel_art=payload.pixelArt)
 
         # 显存账：峰值取各方向最大值（每段视频都单独清零过峰值统计），
         # 收尾值是卸载后的——这两个数能直接回答「这条链到底吃多少显存」
@@ -1130,8 +1174,16 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
             images.append({"assetId": gif["id"], "url": gif["url"],
                            "width": gif["width"], "height": gif["height"],
                            "walkDir": d["dir"]})
+            # 立绘图单独存一份：节点上要能预览、用户要能看清哪一步走形了
+            view_info = None
+            if d.get("view") is not None:
+                vi = storage.save_image(payload.projectId, d["view"].convert("RGBA"),
+                                        kind="images", prefix=f"wv-{d['dir']}")
+                view_info = {"assetId": vi["id"], "url": vi["url"],
+                             "width": vi["width"], "height": vi["height"]}
             out_dirs.append({
                 "dir": d["dir"], "label": d["label"], "gif": gif,
+                "view": view_info,
                 "count": len(d["frames"]), "fps": d.get("fps"),
                 "seed": d.get("seed"), "mirrored": d.get("mirrored", False),
                 "mirroredFrom": d.get("mirroredFrom"),

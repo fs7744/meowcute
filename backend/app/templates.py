@@ -351,19 +351,23 @@ TEMPLATES: List[Dict[str, Any]] = [
     {
         "id": "dir_walk",
         "name": "八方向行走",
-        "tagline": "一张角色图 → 八方向行走视频 → 精灵表 → 可操控预览",
+        "tagline": "一张角色图 → 三视图 → 八方向行走视频 → 精灵表 → 可操控预览",
         "status": "available",
         "accent": "#FF8A4C",
         "icon": "walk",
         "description": (
-            "一张正视图出发：先为每个方向推导立绘（编辑底座指令接力，外观不变），"
-            "再用 Wan2.2 图生视频底座生成各方向的原地行走视频，抽帧抠图后拼成"
+            "先出正 / 侧 / 背三视图，再以它们为锚点做八方向：正面、正左、背面三个"
+            "方向直接取用三视图（零推导），左前 / 左后只从最近的锚点转 45 度，"
+            "而不是一律从正视图硬转 90 / 180 度——旋转幅度越小，角色越不容易走形。"
+            "每个方向再用 Wan2.2 图生视频底座生成原地行走视频，抽帧抠图后拼成"
             "每方向一张横排精灵表，最后变成能用方向键操控的行走播放器。"
             "为什么用视频底座而不是逐帧编辑：逐帧每帧独立推理，帧间没有运动"
             "连续性，行走循环会抖；视频底座一次生成整段动作，肢体路径天然连贯。"
         ),
         "highlights": [
+            "三视图当锚点：三个方向零推导，斜向只转 45 度，推导次数由 4 降到 2",
             "八方向 = 左半边 5 个方向真实生成 + 右半边 3 个整段帧镜像，视频时间省一半",
+            "每个真实方向的立绘图都会存下来，可放大查看，也可以自己指定一张替换",
             "方向指令只描述「转到哪个朝向」，不点名服装 / 配色——点名会变成「给角色加一件」",
             "Wan 提示词钉住「原地」：角色位置 / 大小 / 朝向始终不变，没有镜头运动",
             "序列帧等距取样 + 相邻去重：同姿势的帧放两颗，循环会卡一下",
@@ -387,10 +391,12 @@ TEMPLATES: List[Dict[str, Any]] = [
         ],
         "steps": [
             {"n": 1, "title": "正视图", "detail": "生成图节点 txt2img 自由创作，或选择图片上传"},
-            {"n": 2, "title": "行走视频", "detail": "各方向立绘编辑接力 + Wan 原地行走视频；右侧三个方向镜像自左侧"},
-            {"n": 3, "title": "序列帧", "detail": "每方向等距抽帧 + 相邻去重 + 抠图 → 一小摞透明底帧"},
-            {"n": 4, "title": "精灵整图", "detail": "共享缩放规整 → 每方向一张横排精灵表 + 八方向总览"},
-            {"n": 5, "title": "可操控预览", "detail": "方向键 / 按钮切换八个方向播放行走循环"},
+            {"n": 2, "title": "侧视图", "detail": "编辑底座从正视图接力：只转朝向，造型以参考图为准"},
+            {"n": 3, "title": "背视图", "detail": "从侧视图继续接力；背面不出现脸，手持物跟随身体"},
+            {"n": 4, "title": "行走视频", "detail": "以三视图为锚点：正/侧/背直接用，斜向转 45 度；再跑 Wan 原地行走"},
+            {"n": 5, "title": "序列帧", "detail": "每方向等距抽帧 + 相邻去重 + 抠图 → 一小摞透明底帧"},
+            {"n": 6, "title": "精灵整图", "detail": "共享缩放规整 → 每方向一张横排精灵表 + 八方向总览"},
+            {"n": 7, "title": "可操控预览", "detail": "方向键 / 按钮切换八个方向播放行走循环"},
         ],
         "outputs": [
             {"label": "八方向精灵表", "detail": "每方向一张横排循环表 + 一张八方向总览"},
@@ -424,11 +430,22 @@ TEMPLATES: List[Dict[str, Any]] = [
                  "pixel": {"enabled": False, "gridSnap": True, "colors": 16,
                            "palette": "auto", "gridSize": None, "targetSize": None,
                            "transparentBg": False}},
-                {"id": "wk1", "type": "walkvideo", "x": 620, "y": 180,
+                {"id": "sd1", "type": "viewgen", "x": 620, "y": 180,
+                 "viewgen": {"enabled": True, "view": "side", "styleId": None,
+                             "steps": None, "seed": None, "width": 512,
+                             "height": 768, "maxSeqLen": None},
+                 "result": None},
+                {"id": "bk1", "type": "viewgen", "x": 1160, "y": 180,
+                 "viewgen": {"enabled": True, "view": "back", "styleId": None,
+                             "steps": None, "seed": None, "width": 512,
+                             "height": 768, "maxSeqLen": None},
+                 "result": None},
+                {"id": "wk1", "type": "walkvideo", "x": 1700, "y": 180,
                  "walkvideo": {"enabled": True, "dirMode": "eight", "action": "行走",
                                "styleId": None, "steps": None, "seed": None,
                                "width": 384, "height": 512, "numFrames": 81,
-                               "fps": 24, "maxSide": 512, "maxSeqLen": None},
+                               "fps": 24, "maxSide": 512, "maxSeqLen": None,
+                               "pixelArt": False},
                  "result": None},
                 {"id": "sq1", "type": "sequence", "x": 1160, "y": 180,
                  "sequence": {"enabled": True, "framesPerDir": 8, "fps": 8,
@@ -445,7 +462,9 @@ TEMPLATES: List[Dict[str, Any]] = [
                  "images": [], "prompt": "", "negative": "", "meta": {}},
             ],
             "edges": [
-                {"from": "gen1", "to": "wk1"},
+                {"from": "gen1", "to": "sd1"},
+                {"from": "sd1", "to": "bk1"},
+                {"from": "bk1", "to": "wk1"},
                 {"from": "wk1", "to": "sq1"},
                 {"from": "sq1", "to": "sh1"},
                 {"from": "sh1", "to": "pl1"},

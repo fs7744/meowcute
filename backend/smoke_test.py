@@ -375,10 +375,40 @@ def main() -> int:
     wpid = r.json()["project"]["id"]
     check("八方向模板建项目", r.status_code == 200 and wpid)
     wnodes = r.json()["project"]["nodes"]
-    check("模板链五个节点齐",
-          [n["type"] for n in wnodes] == ["generate", "walkvideo", "sequence",
+    # 八方向链的前置是三视图：正/侧/背出完再进行走视频，这样正、正左、背面
+    # 三个方向零推导，斜向只转 45 度
+    check("模板链含三视图",
+          [n["type"] for n in wnodes] == ["generate", "viewgen", "viewgen",
+                                          "walkvideo", "sequence",
                                           "spritesheet", "play", "result"],
           str([n["type"] for n in wnodes]))
+    check("三视图是侧 + 背",
+          [n.get("viewgen", {}).get("view") for n in wnodes
+           if n["type"] == "viewgen"] == ["side", "back"],
+          str([n.get("viewgen", {}).get("view") for n in wnodes
+               if n["type"] == "viewgen"]))
+
+    # 锚点选择：有三视图时正/侧/背零推导，斜向只转 45 度
+    from backend.app.pipelines.walkvideo import anchor_for as _af
+    from backend.app.pipelines.walkvideo import direction_instruction as _di
+
+    with3 = {"front", "side", "back"}
+    plan3 = {d: _af(d, with3) for d in ("down", "down-left", "left", "up-left", "up")}
+    check("三视图：正/侧/背零推导",
+          plan3["down"] == ("front", 0) and plan3["left"] == ("side", 0)
+          and plan3["up"] == ("back", 0), str(plan3))
+    check("三视图：斜向只转 45 度",
+          abs(plan3["down-left"][1]) == 45 and abs(plan3["up-left"][1]) == 45,
+          str(plan3))
+    check("左后从背面锚点推导（保住背面细节）",
+          plan3["up-left"][0] == "back", str(plan3["up-left"]))
+    check("只有正视图时退回老链路",
+          _af("left", {"front"}) == ("front", 90)
+          and _af("up", {"front"})[1] == -180,
+          str(_af("up", {"front"})))
+    ins = _di("up-left", "back")
+    check("背面锚点的左后指令说到背后与画面左侧",
+          "从背后观察" in ins and "画面左侧" in ins, ins[:60])
 
     # 合成两个方向的「行走视频」：纯色底 + 一个逐帧移动的小人，各 24 帧
     # （帧必须逐帧不同：PIL 写 GIF 会合并连续相同的帧，那是它的优化不是 bug）

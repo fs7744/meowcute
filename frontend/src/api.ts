@@ -193,6 +193,12 @@ export const api = {
     numFrames?: number; fps?: number; maxSide?: number
     maxSeqLen?: number | null
     sources?: { dir: string; file: string }[]
+    /** 三视图锚点：有了它们，正/侧/背零推导，斜向只转 45 度 */
+    viewAssets?: { role: string; file: string }[]
+    /** 每个方向直接指定的立绘图（跳过推导，仍会跑 Wan） */
+    dirImages?: { dir: string; file: string }[]
+    /** 像素保真：像素素材用最近邻缩放 */
+    pixelArt?: boolean
   }) =>
     fetch('/api/walkvideo', jsonInit(payload)).then(j<{ taskId: string }>),
 

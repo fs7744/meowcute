@@ -72,7 +72,45 @@ DIR_MODE_LABELS: Dict[str, str] = {
 }
 
 
-def direction_instruction(direction: str) -> str:
+# 朝向角度（度）：正面=0，逆时针（向左转）为正
+DIR_ANGLE = {
+    "down": 0,          # 正面
+    "down-left": 45,    # 左前 45°
+    "left": 90,         # 正左
+    "up-left": 135,     # 左后 45°
+    "up": 180,          # 背面
+    "up-right": 225,    # 右后 45°
+    "right": 270,       # 正右
+    "down-right": 315,  # 右前 45°
+}
+ANCHOR_ANGLE = {"front": 0, "side": 90, "back": 180}
+
+
+def anchor_for(direction: str, have: Optional[set] = None) -> Tuple[str, int]:
+    """给一个目标朝向挑最省事的锚点：返回 (锚点角色, 与锚点的角度差)。
+
+    角度差 0 = 这张锚点图本身就是该朝向，直接用、不用推导；
+    45° 只需微调，比从正视图硬转 90/180 度稳得多（后者最容易长出部件、
+    丢装备、画风漂）。这正是「先出三视图再进行走视频」的价值：五个真实
+    方向里有三个是零推导，剩下两个也只转 45 度。
+    """
+    target = DIR_ANGLE[direction]
+    pool = [r for r in ("front", "side", "back")
+            if have is None or r in have] or ["front"]
+    # 并列时按「朝向同一侧」优先：左后/右后这种带背面特征的方向，应该从背面
+    # 锚点转 45 度，而不是从侧面锚点转 45 度——背面的发型、背包、披风只有
+    # 背面图里有。少了这条，up-left 会挑中 side，背面细节就丢了。
+    prefer = "back" if 90 < target < 270 else "front"
+    best = None
+    for role in pool:
+        d = (target - ANCHOR_ANGLE[role] + 180) % 360 - 180   # 归一到 -180..180
+        score = abs(d) + (0.0 if role == prefer else 0.5)
+        if best is None or score < best[2]:
+            best = (role, int(d), score)
+    return (best[0], best[1]) if best else ("front", target)
+
+
+def direction_instruction(direction: str, anchor: str = "front") -> str:
     """编辑底座的中文指令：只转朝向，外观/服装/配色/画风零改动。
 
     与 threeview._view_instruction 同源：不写「保持不变」（编辑器会把整条
@@ -84,68 +122,86 @@ def direction_instruction(direction: str) -> str:
         "不新增也不删除任何部件。背景保持纯色不变，角色全身站立、身体居中，"
         "画面中仍然只有一个角色，不要添加文字和水印。"
     )
-    if direction == "down":
-        return "保持画面中的角色正面全身立绘不变。" + keep
-    if direction == "left":
+    _role, delta = anchor_for(direction, {anchor})
+    ad = abs(delta)
+    # 用「最终朝向偏画面哪一侧」来描述，而不是用旋转方向。
+    # 旋转方向在中文里是有歧义的（「向左转」可能是角色自身的左、也可能是
+    # 画面左），而「身体侧向画面左侧」是编辑底座唯一不会误解的说法。
+    lean = "左" if 0 < DIR_ANGLE[direction] < 180 else "右"
+    # 目标朝向带背面特征时（左后/正后/右后）要显式交代「脸不可见」，
+    # 否则编辑器会画出一张转过去的脸
+    backish = 90 < DIR_ANGLE[direction] < 270
+
+    if ad == 0:
+        # 锚点图本身就是这个朝向（三视图直接命中），不做任何旋转
         return (
-            "把画面中的角色转换成左侧视角：角色整体向左旋转90度，"
-            "展现完整的侧面轮廓，全身站立。侧面的造型全部来自参考图中这个角色本身，"
-            "身体的各个部位按它本来的样子推演，参考图里没有的东西不要出现。" + keep
+            "保持画面中的角色当前朝向与全身站立姿势不变：造型、配色、体型比例和"
+            "画风与参考图完全一致。" + keep
         )
-    if direction == "right":
+
+    take_from_ref = (
+        "旋转后的造型全部来自参考图中这个角色本身，身体的各个部位按它本来的样子"
+        "推演，参考图里没有的东西不要出现。"
+    )
+
+    if ad == 45:
+        if backish:
+            return (
+                f"把画面中的角色向画面{lean}侧旋转约45度：从背后观察，"
+                f"身体侧向画面{lean}侧，脸部、眼睛和鼻子完全不可见，全身站立。"
+                "背面的造型全部来自参考图中这个角色本身，参考图里没有的东西不要出现。"
+                + keep
+            )
         return (
-            "把画面中的角色转换成右侧视角：角色整体向右旋转90度，"
-            "展现完整的侧面轮廓，全身站立。侧面的造型全部来自参考图中这个角色本身，"
-            "身体的各个部位按它本来的样子推演，参考图里没有的东西不要出现。" + keep
+            f"把画面中的角色向画面{lean}侧旋转约45度：四分之三侧面视角，"
+            f"身体侧向画面{lean}侧，脸部保留一部分正面特征，全身站立。"
+            + take_from_ref + keep
         )
-    if direction == "up":
+
+    if ad == 90:
         return (
-            "把画面中的角色转换成背面视角：角色整体旋转180度，背对观众站立，"
-            "从正背后观察。脸部、眼睛和鼻子完全不可见；头部的造型按参考图中这个角色"
-            "的原样自然延续到背面。背面只呈现角色自己已有的造型，参考图里没有的衣物、"
-            "配件和装饰一件都不要出现。角色手里原本拿着东西就随身体一起转到背面，"
-            "仍然握在同一只手里；原本空着手就保持空手，不要凭空添一件道具。" + keep
+            f"把画面中的角色转换成{lean}侧视角：角色整体转向画面{lean}侧，"
+            "展现完整的侧面轮廓，全身站立。" + take_from_ref + keep
         )
-    if direction == "down-left":
+
+    if ad == 135:
+        # 只有手上没有背面锚点、又要出左后/右后时才会走到这
         return (
-            "把画面中的角色向左旋转约45度：四分之三侧面视角，身体侧向画面左侧，"
-            "脸部保留一部分正面特征，全身站立。侧面的造型全部来自参考图中这个角色本身，"
-            "身体的各个部位按它本来的样子推演，参考图里没有的东西不要出现。" + keep
+            f"把画面中的角色转换成背面视角后再向画面{lean}侧旋转约45度：从背后观察，"
+            f"身体侧向画面{lean}侧，脸部、眼睛和鼻子完全不可见，全身站立。"
+            "背面的造型全部来自参考图中这个角色本身，参考图里没有的东西不要出现。"
+            + keep
         )
-    if direction == "down-right":
-        return (
-            "把画面中的角色向右旋转约45度：四分之三侧面视角，身体侧向画面右侧，"
-            "脸部保留一部分正面特征，全身站立。侧面的造型全部来自参考图中这个角色本身，"
-            "身体的各个部位按它本来的样子推演，参考图里没有的东西不要出现。" + keep
-        )
-    if direction == "up-left":
-        return (
-            "把画面中的角色转换成背面视角后再向左旋转约45度：从背后观察，"
-            "身体侧向画面左侧，脸部、眼睛和鼻子完全不可见，全身站立。"
-            "背面的造型全部来自参考图中这个角色本身，参考图里没有的东西不要出现。" + keep
-        )
-    if direction == "up-right":
-        return (
-            "把画面中的角色转换成背面视角后再向右旋转约45度：从背后观察，"
-            "身体侧向画面右侧，脸部、眼睛和鼻子完全不可见，全身站立。"
-            "背面的造型全部来自参考图中这个角色本身，参考图里没有的东西不要出现。" + keep
-        )
-    raise ValueError(f"未知方向：{direction}")
+
+    # ad == 180：整体转到背面
+    return (
+        "把画面中的角色转换成背面视角：角色整体旋转180度，背对观众站立，"
+        "从正背后观察。脸部、眼睛和鼻子完全不可见；头部的造型按参考图中这个角色"
+        "的原样自然延续到背面。背面只呈现角色自己已有的造型，参考图里没有的衣物、"
+        "配件和装饰一件都不要出现。角色手里原本拿着东西就随身体一起转到背面，"
+        "仍然握在同一只手里；原本空着手就保持空手，不要凭空添一件道具。" + keep
+    )
 
 
 def walk_prompt(action: str = "行走") -> str:
-    """Wan 图生视频的动作提示词（移植自归档项目 video 步骤的实测版本）。
+    """Wan 图生视频的动作提示词。
 
-    关键约束是「原地」：角色位置、大小、朝向始终不变，没有位移、没有镜头
-    运动——抽帧拼精灵表时，角色在画布里的位置必须是稳的，否则每帧都要
-    重新对锚点。动作本身写具体（双脚交替蹬地、手臂与腿反向摆动、衣摆晃动），
-    两字词的「行走」对视频底座的反应不够明确。
+    这里踩过坑：早先写的是「角色位置、大小、朝向始终不变，**没有位移**，
+    没有镜头运动、没有起停」——视频底座把「没有位移」理解成「别动」，
+    结果出的是一张几乎不动的图（用户反馈「没有正常行走」）。
+
+    正确做法是**分开说**：步态该有的动作明确点名要（蹬地、屈膝、脚掌离地、
+    手臂反向摆动、重心起伏），该禁的只禁整体平移、转身、镜头运动和起停。
+    精灵表要求的是「角色站在画面同一处」，不等于「角色一动不动」。
     """
     act = (action or "行走").strip() or "行走"
     return (
-        f"画面中的角色在原地{act}，双脚交替蹬地迈步，手臂与腿反向摆动，"
-        "发饰和衣摆随步伐轻微晃动；角色位置、大小、朝向始终不变，"
-        "没有位移、没有镜头运动、没有起停；背景保持纯色。"
+        f"画面中的角色在原地{act}：双脚交替蹬地迈步，膝盖随步伐弯曲，"
+        "脚掌有明确的离地与落地动作；手臂与腿反向自然摆动；身体随重心"
+        "轻微上下起伏，发饰和衣摆随步伐轻微晃动。动作连贯循环，"
+        "一只脚落地时另一只脚抬起。"
+        "角色的站立位置固定在画面中央、朝向与大小始终不变，"
+        "不整体平移、不转身、不突然静止；镜头完全静止，背景保持纯色。"
     )
 
 
@@ -155,6 +211,48 @@ def directions_of(dir_mode: str) -> List[str]:
     return [d for d in DIR_ORDER if d in dirs]
 
 
+def _silhouette(img: Image.Image):
+    """按四角底色抠出剪影掩码（96×96 布尔矩阵）。纯色背景下足够准。"""
+    import numpy as np
+
+    a = np.asarray(img.convert("RGB").resize((96, 96)), dtype=np.int16)
+    return (np.abs(a - a[0, 0]).sum(axis=2) > 45)
+
+
+def motion_stats(frames: List[Image.Image]) -> Dict[str, float]:
+    """量这段视频「动没动」和「稳不稳」，两项都要，缺一不可。
+
+    为什么不用像素差：视频底座吐一帧糊的，整帧一亮，像素差就飙到 31，可角色
+    一步没走——那个数会把「闪烁」误判成「动作好」。改成比**剪影**：
+
+    - motion：相邻帧剪影的 1-IoU（0~100）。只反映形体变化，对整体明暗免疫。
+      真在走实测 5~20；几乎不动 <3。
+    - instability：剪影面积的最大波动（百分比）。画面被冲淡/重影时剪影会暴涨
+      （实测稳定 20~27%，崩坏时 15~100%），这是「闪烁糊了」的量化指标。
+    """
+    import numpy as np
+
+    if len(frames) < 2:
+        return {"motion": 0.0, "instability": 0.0}
+    masks = [_silhouette(f) for f in frames]
+    areas = np.array([m.sum() / 96 / 96 for m in masks], dtype=np.float32)
+    # 中位数为 0 说明整段都没抠出主体（极短/极糊的片段）：这时比值会炸成 inf，
+    # 序列化成 JSON 会变 null。直接给 0，让上层按「没有信息」处理。
+    med = float(np.median(areas))
+    if med <= 1e-4:
+        return {"motion": 0.0, "instability": 0.0}
+    ious = []
+    for i in range(len(masks) - 1):
+        a, b = masks[i], masks[i + 1]
+        union = np.logical_or(a, b).sum()
+        ious.append(100.0 * (1.0 - np.logical_and(a, b).sum() / max(1, union)))
+    instab = 100.0 * (float(areas.max()) - float(areas.min())) / med
+    return {
+        "motion": round(float(np.mean(ious)) if ious else 0.0, 2),
+        "instability": round(min(999.0, instab), 1),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # 单步执行
 # --------------------------------------------------------------------------- #
@@ -162,6 +260,7 @@ async def derive_direction(
     base: Image.Image,
     direction: str,
     *,
+    anchor: str = "front",
     steps: Optional[int] = None,
     seed: Optional[int] = None,
     width: int = 512,
@@ -170,7 +269,11 @@ async def derive_direction(
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
 ) -> Tuple[Image.Image, Dict[str, Any]]:
-    """由正视图接力生成指定方向的立绘（编辑底座指令接力）。
+    """从锚点图接力生成指定方向的立绘（编辑底座指令接力）。
+
+    anchor 是这张参考图本身的朝向（front/side/back）。有了三视图之后，
+    多数方向的角度差只有 0 或 45 度——比从正视图硬转 90/180 度稳得多：
+    旋转幅度越小，编辑器越不容易改动服装、配件和画风。
 
     走 Qwen-Image-Edit-2511：外观保持最好，且不需要重新描述角色。
     provider 带 refs 时会自动路由到编辑底座。
@@ -179,12 +282,14 @@ async def derive_direction(
 
     if direction not in DIR_ORDER:
         raise ValueError(f"未知方向：{direction}")
-    if direction == "down":
-        # 正面就是参考图本身，再跑一次编辑只会引入无谓的漂移
-        return base.convert("RGB"), {"direction": direction, "mode": "passthrough"}
+    _role, delta = anchor_for(direction, {anchor})
+    if delta == 0:
+        # 锚点图本身就是这个朝向（三视图命中），再跑一次编辑只会引入无谓的漂移
+        return base.convert("RGB"), {"direction": direction, "mode": "passthrough",
+                                     "anchor": anchor}
 
     provider = DiffusersProvider(provider_cfg or {})
-    instruction = direction_instruction(direction)
+    instruction = direction_instruction(direction, anchor)
     progress_mod.report(task_id, 0, 0, f"{DIR_LABELS[direction]}立绘（编辑底座接力）…")
 
     t = time.time()
@@ -198,6 +303,7 @@ async def derive_direction(
     rmeta = dict(result.meta or {})
     return result.images[0].convert("RGB"), {
         "direction": direction, "label": DIR_LABELS[direction], "mode": "edit",
+        "anchor": anchor, "rotation": delta,
         "instruction": instruction,
         "steps": rmeta.get("steps"), "seed": seed,
         "model": rmeta.get("model"),
@@ -219,6 +325,7 @@ async def generate_walk(
     max_side: int = 512,
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
+    pixel_art: bool = False,
 ) -> Tuple[List[Image.Image], Dict[str, Any]]:
     """Wan2.2 TI2V-5B：方向立绘 + 动作提示词 → 行走视频帧序列。
 
@@ -235,12 +342,19 @@ async def generate_walk(
     prompt = walk_prompt(action)
 
     t = time.time()
+    # 试过给参考图加一圈边距防止肢体顶到边缘，实测**反而更差**（别再加回来）：
+    # 12% 边距时角色周围空太多，Wan 在空区脑补横向色带（像地平线）；6% 时后段
+    # 直接编出绿色色带和紫色房间背景。剪影面积从稳定的 20~27% 抖到 15~100%。
+    # 结论：宁可让肢体偶尔贴边，也不要给它空白去发挥。
     result = await provider.generate_video(
         prompt, view,
         width=width, height=height,
         steps=steps, seed=seed,
         num_frames=num_frames, fps=fps, max_side=max_side,
-        task_id=task_id,
+        task_id=task_id, pixel_art=pixel_art,
+        # 负向词直接对准用户反馈的两个现象：糊掉（涂抹/重影/低清）与闪烁。
+        # 视频底座对负向词是有反应的，写上比留着空串强。
+        negative="模糊, 重影, 涂抹, 低清, 噪点, 闪烁, 变形, 静止不动, 镜头晃动",
     )
     rmeta = dict(result.meta or {})
     out = {
@@ -270,6 +384,9 @@ async def run_walk(
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
     sources: Optional[Dict[str, Dict[str, Any]]] = None,
+    view_anchors: Optional[Dict[str, Image.Image]] = None,
+    dir_images: Optional[Dict[str, Image.Image]] = None,
+    pixel_art: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """跑完一个方向集合，返回每方向的帧序列。
 
@@ -282,11 +399,26 @@ async def run_walk(
     立绘 + Wan 生成」两步；没给来源的方向照常走 Wan。一个模型都不加载也是
     合法的（全部有来源时），用来快速换参数重跑下游的序列帧/精灵整图。
 
+    view_anchors: {"front"/"side"/"back": PIL}——三视图锚点。这是角色一致性的
+    关键：每个方向从**离它最近的锚点**推导，而不是一律从正视图转。有侧/背
+    视图时，正面、正左、背面三个方向是零推导（直接拿锚点图），左前/左后只
+    转 45 度，既快又不容易走形。
+
+    dir_images: {方向: PIL}——用户为该方向直接指定的立绘图，跳过推导，
+    但仍然会用它作为参考图去跑 Wan。用来手动修某个方向。
+
     执行顺序刻意分成两轮：先推导全部方向立绘（编辑底座常驻），再集中生成
     全部视频（Wan 常驻）。两个底座交替加载会互相驱逐显存，每次切换都要
     重载 fp8 缓存，八方向能慢出几分钟。
     """
     dirs = directions_of(dir_mode)
+    # 三视图锚点：缺哪个角色就退回正视图（单张图进来的老链路照常工作）
+    view_map = {k: v for k, v in (view_anchors or {}).items() if v is not None}
+    if "front" not in view_map:
+        view_map["front"] = base
+    have_views = set(view_map)
+    # 每个真实方向用哪个锚点、要转多少度
+    plan = {d: anchor_for(d, have_views) for d in dirs if not DIR_MIRROR_OF.get(d)}
     src_map = {k: v for k, v in (sources or {}).items()
                if k in dirs and v and v.get("frames")}
     # 任何方向都能给来源（含右半边镜像方向）：显式来源优先于镜像，
@@ -326,7 +458,7 @@ async def run_walk(
         walk_meta[d] = {
             "mode": "existing", "file": src.get("file"), "frames": len(frames),
             "fps": src.get("fps") or fps, "seconds": 0.0, "model": "现成视频",
-            "size": [width, height],
+            "size": [width, height], **motion_stats(frames),
         }
         done += 1
         progress_mod.report(task_id, done, total_steps,
@@ -335,11 +467,21 @@ async def run_walk(
     # 第一轮：方向立绘（编辑底座）
     views: Dict[str, Image.Image] = {}
     for d in gen_dirs:
+        # 用户直接指定了这个方向的立绘图 → 不推导，但仍会拿它去跑 Wan
+        if d in (dir_images or {}):
+            views[d] = dir_images[d].convert("RGB")
+            derive_meta[d] = {"direction": d, "label": DIR_LABELS[d], "mode": "user"}
+            done += 1
+            progress_mod.report(task_id, done, total_steps,
+                                f"{DIR_LABELS[d]}用指定立绘")
+            continue
+        anchor_role, _delta = plan[d]
+        src_img = view_map.get(anchor_role) or base
         progress_mod.report(task_id, done, total_steps,
                             f"{DIR_LABELS[d]}立绘推导中…")
         try:
             img, meta = await derive_direction(
-                base, d, steps=steps, seed=seed,
+                src_img, d, anchor=anchor_role, steps=steps, seed=seed,
                 width=width, height=height, max_seq_len=max_seq_len,
                 provider_cfg=provider_cfg, task_id=task_id)
         except progress_mod.CancelledError:
@@ -364,14 +506,15 @@ async def run_walk(
                 views[d], action=action, steps=steps, seed=seed,
                 width=width, height=height, num_frames=num_frames,
                 fps=fps, max_side=max_side,
-                provider_cfg=provider_cfg, task_id=task_id)
+                provider_cfg=provider_cfg, task_id=task_id,
+                pixel_art=pixel_art)
         except progress_mod.CancelledError:
             raise
         except Exception as e:
             _fail(d, "walk", e)
             continue
         clips[d] = frames
-        walk_meta[d] = meta
+        walk_meta[d] = dict(meta, **motion_stats(frames))
         done += 1
         progress_mod.report(task_id, done, total_steps,
                             f"{DIR_LABELS[d]}行走视频完成（{done}/{total_steps}）")
@@ -394,6 +537,18 @@ async def run_walk(
     # 组装输出（含镜像方向）
     out: List[Dict[str, Any]] = []
     for d in dirs:
+        # 这一方向实际用的立绘图：节点要能预览它，用户也要能看出哪一步走形了。
+        # 现成视频没有独立立绘，用首帧代替；镜像方向给翻过来的那张。
+        if d in views:
+            view_img: Optional[Image.Image] = views[d]
+        elif d in clips:
+            view_img = clips[d][0]
+        else:
+            src = DIR_MIRROR_OF.get(d)
+            base_view = views.get(src) if src else None
+            if base_view is None and src in clips:
+                base_view = clips[src][0]
+            view_img = base_view.transpose(Image.FLIP_LEFT_RIGHT) if base_view else None
         if d in clips:
             # 现成视频优先于镜像：用户显式指定右侧视频时不该被左侧覆盖
             entry: Dict[str, Any] = {
@@ -420,6 +575,8 @@ async def run_walk(
                 "derive": {"direction": d, "mode": "mirror"},
                 "walk": dict(walk_meta[src], mirrored=True),
             }
+        if view_img is not None:
+            entry["view"] = view_img
         out.append(entry)
 
     meta = {
@@ -428,6 +585,9 @@ async def run_walk(
         "realDirections": len(real_dirs),
         "mirroredDirections": len([d for d in out if d["mirrored"]]),
         "existingDirections": len(src_dirs),
+        "anchors": sorted(have_views),
+        "anchorPlan": {d: {"anchor": r, "rotation": delta} for d, (r, delta) in plan.items()},
+        "userImages": sorted((dir_images or {}).keys()),
         "failures": failures,
         "fps": fps, "numFrames": num_frames,
         "size": [width, height], "maxSide": max_side,

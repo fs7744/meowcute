@@ -260,6 +260,11 @@ export type WalkVideoOptions = {
    * 替换不满意的方向、或完全用外部素材。
    */
   sources?: Partial<Record<WalkDir, string>>
+  /** 每个方向可指定一张现成立绘图：跳过该方向的推导，但仍会用它跑 Wan。
+   *  用来手动修某个方向（比如编辑底座把侧视图画歪了）。 */
+  dirImages?: Partial<Record<WalkDir, string>>
+  /** 像素保真：像素素材用最近邻缩放，别被视频底座的重采样糊掉 */
+  pixelArt?: boolean
   styleId: string | null
   steps: number | null
   seed: number | null
@@ -326,12 +331,20 @@ export type WalkDirection = {
     frames: number
     fps: number
   }
+  /** 这一方向实际用的立绘图（可放大查看），现成视频用首帧 */
+  view?: { assetId: string; url: string; width: number; height: number } | null
   count: number
   seed: number | null
   mirrored: boolean
   mirroredFrom: WalkDir | null
   /** existing = 这一段来自现成视频（跳过了推导 + Wan） */
-  walk?: { mode?: string; file?: string | null; model?: string | null }
+  walk?: {
+    mode?: string; file?: string | null; model?: string | null
+    /** 相邻帧剪影变化（0~100）：低于 3 说明基本没走 */
+    motion?: number
+    /** 剪影面积波动百分比：高于 80 说明画面在闪/糊 */
+    instability?: number
+  }
 }
 
 /** 行走视频节点的产出元数据。 */
@@ -349,6 +362,10 @@ export type WalkMeta = {
   vramPeakGB?: number | null
   /** 出完片并卸载底座后的显存占用（GB） */
   vramAfterGB?: number | null
+  /** 用到的三视图锚点（front/side/back） */
+  anchors?: string[]
+  /** 每个方向用了哪个锚点、转了多少度 */
+  anchorPlan?: Partial<Record<string, { anchor: string; rotation: number }>>
   fps: number
   numFrames: number
   size: [number, number]

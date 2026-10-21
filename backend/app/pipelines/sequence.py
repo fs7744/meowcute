@@ -59,6 +59,38 @@ def _diff_score(a: Image.Image, b: Image.Image) -> float:
     return float(np.abs(ga - gb).mean())
 
 
+def sharpness(img: Image.Image) -> float:
+    """锐度：灰度图的平均梯度能量（越高越清晰）。
+
+    视频底座偶尔会吐出「糊掉/重影」的帧——整帧被涂抹、边缘发虚，连像素硬边
+    都保不住。这种帧进精灵表就是一块糊斑（用户反馈的「像素糊了」「画面闪烁」
+    有一半来自这里）。梯度能量对模糊极其敏感，用它把离群帧挑出来丢掉。
+    """
+    g = np.asarray(img.convert("L").resize((96, 96)), dtype=np.float32)
+    gy = np.abs(np.diff(g, axis=0)).mean()
+    gx = np.abs(np.diff(g, axis=1)).mean()
+    return float(gx + gy)
+
+
+def reject_blurry(frames: List[Image.Image], ratio: float = 0.55
+                  ) -> Tuple[List[Image.Image], int]:
+    """剔除明显糊掉/重影的帧，返回 (留下的帧, 丢掉的数量)。
+
+    判据是「锐度低于中位数的 ratio 倍」。用中位数而不是均值：糊帧是少数，
+    均值会被它们拖低，中位数稳。留 2 帧保底，避免整段都糊时把视频清空。
+    """
+    if len(frames) < 4:
+        return list(frames), 0
+    scores = [sharpness(f) for f in frames]
+    med = float(np.median(scores))
+    if med <= 0:
+        return list(frames), 0
+    kept = [f for f, s in zip(frames, scores) if s >= med * ratio]
+    if len(kept) < max(2, len(frames) // 4):
+        return list(frames), 0          # 丢太多说明整段都糊，别硬删
+    return kept, len(frames) - len(kept)
+
+
 def dedup_frames(frames: List[Image.Image],
                  threshold: float = DEDUP_THRESHOLD) -> Tuple[List[Image.Image], int]:
     """掉掉与前一帧几乎相同的帧，返回 (帧列表, 去掉的帧数)。
@@ -207,7 +239,9 @@ async def run_sequence(
             raise RuntimeError(f"{DIR_LABELS.get(d.get('dir'), d.get('dir'))}方向没有视频帧")
         progress_mod.report(task_id, done, total,
                             f"{d.get('label') or DIR_LABELS.get(d.get('dir'), '')}：抽帧抠图中…")
-        picked = sample_frames(frames, frames_per_dir)
+        # 先剔掉糊掉的帧，再抽样：糊帧一旦被抽中，精灵表里就是一块抹布
+        clean, blurry = reject_blurry(frames)
+        picked = sample_frames(clean, frames_per_dir)
         picked, dropped = dedup_frames(picked)
         prepared: List[Image.Image] = []
         removed: List[float] = []
@@ -232,6 +266,7 @@ async def run_sequence(
             "count": len(prepared),
             "sourceFrames": len(frames),
             "dropped": dropped,
+            "blurryDropped": blurry,
             "matteErrors": matte_errors,
             "strip": contact_strip(prepared),
             "bgRemovedAvg": round(sum(removed) / max(1, len(removed)), 3),
@@ -243,6 +278,7 @@ async def run_sequence(
         "directions": len(out),
         "counts": [d["count"] for d in out],
         "dropped": sum(d["dropped"] for d in out),
+        "blurryDropped": sum(d.get("blurryDropped", 0) for d in out),
         "matteErrors": sum(d.get("matteErrors", 0) for d in out),
     }
     return out, meta

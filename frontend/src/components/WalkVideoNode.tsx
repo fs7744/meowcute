@@ -31,6 +31,9 @@ const DIR_CN: Record<WalkDir, string> = {
   'up': '背面', 'up-right': '右上', 'right': '右侧', 'down-right': '右下',
 }
 
+/** 三视图锚点的中文名（后端 anchorPlan 里的角色） */
+const ANCHOR_CN: Record<string, string> = { front: '正面', side: '侧面', back: '背面' }
+
 /** 每个方向模式里「真实生成」的方向（右侧三个是左侧镜像，不单独给来源）。 */
 const REAL_DIRS: Record<string, WalkDir[]> = {
   eight: ['down', 'down-left', 'left', 'up-left', 'up'],
@@ -79,17 +82,58 @@ export default function WalkVideoNode({
   const fileRef = useRef<HTMLInputElement>(null)
   const srcRef = useRef<HTMLDivElement>(null)
 
+  // ---- 方向立绘自选 ----
+  const [pickingImg, setPickingImg] = useState<WalkDir | null>(null)
+  const [imgFiles, setImgFiles] = useState<string[] | null>(null)
+  const imgRef = useRef<HTMLDivElement>(null)
+  const customDirCount = Object.values(v.dirImages || {}).filter(Boolean).length
+  // 两个量化指标（都在后端算，剪影判据）：
+  //   motion 相邻帧剪影变化 → 低于 3 基本等于没动（真走的实测 7~20）
+  //   instability 剪影面积波动 → 高于 80% 说明画面在闪/糊（正常的 28~38%）
+  const motions = dirs
+    .map((d) => (d.walk as any)?.motion)
+    .filter((m): m is number => typeof m === 'number')
+  const minMotion = motions.length ? Math.min(...motions) : null
+  const instabs = dirs
+    .map((d) => (d.walk as any)?.instability)
+    .filter((m): m is number => typeof m === 'number')
+  const maxInstab = instabs.length ? Math.max(...instabs) : null
+
+  const refreshImages = async () => {
+    try {
+      const info = await api.projectFiles(projectId)
+      const list = (info.files || [])
+        .filter((f) => f.kind === 'images' && /\.(png|jpe?g|webp)$/i.test(f.path))
+        .map((f) => f.path.split('/').pop() || f.path)
+      setImgFiles(list)
+    } catch {
+      setImgFiles([])
+    }
+  }
+  const openImgPicker = async (d: WalkDir) => {
+    setPickingImg(pickingImg === d ? null : d)
+    if (pickingImg !== d) await refreshImages()
+  }
+  const setDirImage = (d: WalkDir, file: string | null) => {
+    const next = { ...(v.dirImages || {}) }
+    if (file) next[d] = file
+    else delete next[d]
+    patch({ dirImages: next })
+  }
+
   // 点面板外面收起选择器：下拉开着却不消失，点别处还要再点一次很烦
   useEffect(() => {
-    if (!picking) return
+    if (!picking && !pickingImg) return
     const onDown = (e: MouseEvent) => {
-      if (srcRef.current && !srcRef.current.contains(e.target as Node)) {
-        setPicking(null)
-      }
+      const t = e.target as Node
+      if (srcRef.current && srcRef.current.contains(t)) return
+      if (imgRef.current && imgRef.current.contains(t)) return
+      setPicking(null)
+      setPickingImg(null)
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
-  }, [picking])
+  }, [picking, pickingImg])
 
   const refreshVideos = async () => {
     try {
@@ -190,6 +234,65 @@ export default function WalkVideoNode({
           <input className="input" value={v.action} maxLength={20}
             onChange={(e) => patch({ action: e.target.value })} />
         </label>
+
+        {/* ---- 方向立绘：每个真实方向用哪张图当参考（可预览 / 可自选） ---- */}
+        <div className="walk-src" ref={imgRef}>
+          <div className="walk-src-head">
+            <span>方向立绘</span>
+            <span className="walk-src-count">
+              {customDirCount ? `${customDirCount} 个已指定` : '自动（就近锚点）'}
+            </span>
+          </div>
+          {realDirs.map((d) => {
+            const sel = (v.dirImages || {})[d]
+            const ran = dirs.find((x) => x.dir === d)
+            const viewUrl = sel
+              ? `/api/projects/${projectId}/images/${sel}`
+              : ran?.view?.url
+            const plan = (meta?.anchorPlan || {})[d]
+            return (
+              <div className="walk-src-row" key={d}>
+                <span className="walk-src-dir">{DIR_CN[d]}</span>
+                {viewUrl ? (
+                  <button className="walk-src-thumb"
+                    title={`${DIR_CN[d]}立绘（点击放大）`}
+                    onClick={() => onPreview(viewUrl, `${DIR_CN[d]}立绘`)}>
+                    <img src={viewUrl} alt={`${DIR_CN[d]}立绘`} />
+                  </button>
+                ) : null}
+                <span className="walk-src-name" title={plan ? `从${ANCHOR_CN[plan.anchor] || plan.anchor}转 ${plan.rotation}°` : '按就近锚点推导'}>
+                  {sel ? '用户指定'
+                    : plan ? `${ANCHOR_CN[plan.anchor] || plan.anchor}${plan.rotation ? ` ${plan.rotation > 0 ? '+' : ''}${plan.rotation}°` : ' 直接用'}`
+                      : '自动'}
+                </span>
+                <button className="btn btn-xs" onClick={() => openImgPicker(d)}>选图</button>
+                {sel ? (
+                  <button className="btn btn-xs walk-src-clear" title="改回自动推导"
+                    onClick={() => setDirImage(d, null)}>×</button>
+                ) : null}
+                {pickingImg === d ? (
+                  <div className="walk-src-picker">
+                    <div className="walk-src-picker-head">
+                      <span>选一张立绘（{imgFiles?.length ?? 0}）</span>
+                      <button className="btn btn-xs" onClick={() => refreshImages()}>刷新</button>
+                    </div>
+                    {imgFiles && imgFiles.length ? imgFiles.map((f) => (
+                      <button key={f} className="walk-src-item"
+                        onClick={() => { setDirImage(d, f); setPickingImg(null) }}>
+                        <img src={`/api/projects/${projectId}/images/${f}`} alt={f} />
+                        <span>项目图片<i>{shortName(f)}</i></span>
+                      </button>
+                    )) : (
+                      <div className="hint" style={{ margin: 0 }}>
+                        项目里还没有图片。先跑上游的「生成图」或上传一张。
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
 
         {/* ---- 视频来源：每个方向可选 Wan 生成或现成视频 ---- */}
         <div className="walk-src" ref={srcRef}>
@@ -310,6 +413,17 @@ export default function WalkVideoNode({
           </label>
         </div>
 
+        <div className="switch-row" style={{ marginTop: 6 }}>
+          <span className="t" style={{ fontSize: 12 }}
+            title="像素素材用最近邻缩放：保住硬边，不会被视频底座的重采样糊掉">
+            像素保真（最近邻缩放）
+          </span>
+          <button className={`switch ${v.pixelArt ? 'on' : ''}`}
+            onClick={() => patch({ pixelArt: !v.pixelArt })} aria-label="切换像素保真">
+            <i />
+          </button>
+        </div>
+
         <button className="btn btn-sm" onClick={onRun} disabled={running}
           style={{ marginTop: 8, width: '100%' }}>
           {running ? <><span className="spin" /> 生成中…</> : runLabel}
@@ -341,6 +455,23 @@ export default function WalkVideoNode({
               </span>
             ) : null}
             <span className="meta-pill">{meta.seconds}s</span>
+          </div>
+        ) : null}
+
+        {minMotion != null && minMotion < 3 ? (
+          <div className="walk-fails">
+            <b>有方向几乎没动</b>
+            <div>剪影动作幅度最低 {minMotion}（真在走在 7 以上）。这段视频大概没走起来：
+              把 Wan 帧数提到 81（约 3.4 秒，能装下两个步态），或换个种子重跑。</div>
+          </div>
+        ) : null}
+
+        {maxInstab != null && maxInstab > 80 ? (
+          <div className="walk-fails">
+            <b>画面不稳（有糊帧 / 闪烁）</b>
+            <div>剪影面积波动 {maxInstab}%（正常 28~38%）。视频底座中途把画面冲淡或
+              重影了，这类帧进精灵表就是糊斑；重跑一次通常能好，也可以在序列帧里靠
+              「剔糊帧」兜住。</div>
           </div>
         ) : null}
 

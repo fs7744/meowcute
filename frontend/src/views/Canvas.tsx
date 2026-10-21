@@ -1187,10 +1187,26 @@ export default function Canvas({ projectId, onBack }: Props) {
     const src = resolveFrontOutput(node, runtime)
     const im = src.images[0]
     const w = node.walkvideo
+    // 三视图锚点：沿链条回溯收集正/侧/背——有了它们，三个方向零推导、
+    // 斜向只转 45 度，角色一致性明显更好
+    const tv = collectThreeViewOutputs(node as any, runtime)
+    const viewAssets: { role: string; file: string }[] = []
+    for (const role of ['front', 'side', 'back'] as const) {
+      const hit = tv[role]
+      if (!hit || hit.kind !== 'images' || !hit.images.length) continue
+      viewAssets.push({ role, file: `${hit.images[0].assetId}.png` })
+    }
     const { taskId } = await api.walkVideo({
       projectId: project.id,
       origAssetId: src.kind === 'images' ? im.assetId : '',
       sourceKind: src.kind, sourceFile: src.kind === 'refs' ? src.file : undefined,
+      // 三视图里没有正面时（例如上游是选图节点）退回单张正视图：
+      // viewAssets 为空 → 后端按老链路从正视图推导
+      viewAssets,
+      dirImages: Object.entries(w?.dirImages || {})
+        .filter(([, f]) => !!f)
+        .map(([dir, file]) => ({ dir, file: file as string })),
+      pixelArt: !!w?.pixelArt,
       dirMode: w?.dirMode ?? 'eight',
       action: w?.action ?? '行走',
       styleId: w?.styleId ?? null,

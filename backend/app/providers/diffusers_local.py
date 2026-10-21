@@ -665,7 +665,7 @@ class DiffusersProvider(BaseProvider):
                  width: int, height: int, steps: Optional[int],
                  seed: Optional[int], generator: Any,
                  ref: Optional[Any], num_frames: int, fps: int, max_side: int,
-                 task_id: Optional[str] = None):
+                 task_id: Optional[str] = None, pixel_art: bool = False):
         """图生视频：参考图 + 动作提示词 → 帧序列（PIL 列表）。
 
         - num_frames 必须是 4k+1（Wan 时序 VAE 的要求），内部向下取整；
@@ -688,7 +688,13 @@ class DiffusersProvider(BaseProvider):
         if max(w, h) > max_side:
             scale = max_side / max(w, h)
             w, h = max(16, int(w * scale) // 16 * 16), max(16, int(h * scale) // 16 * 16)
-        src = src.resize((w, h), _Image.LANCZOS)
+        # 像素保真只在**放大**时用最近邻（保住硬边）。缩小绝不能最近邻：
+        # 512×768 → 384×512 这种抽点会产生大量锯齿，视频底座会把它当成
+        # 噪声放大，实测剪影面积从稳定的 20~27% 抖到 13~69%（整帧冲淡/重影）。
+        # 缩小用 LANCZOS，抗锯齿的损失会被下游精灵表的硬边裁切吃掉。
+        upscaling = (w * h) > (src.width * src.height)
+        resample = _Image.NEAREST if (pixel_art and upscaling) else _Image.LANCZOS
+        src = src.resize((w, h), resample)
         # 峰值统计从这张视频开始算：不清零的话会带上之前方向的峰值，报出来的
         # 数字对不上「一段视频到底要多少显存」
         try:
@@ -1172,6 +1178,8 @@ class DiffusersProvider(BaseProvider):
         fps: int = 24,
         max_side: int = 832,
         task_id: Optional[str] = None,
+        pixel_art: bool = False,
+        negative: Optional[str] = None,
     ) -> ProviderResult:
         """图生视频：参考图 + 提示词 → 帧序列（ProviderResult.images = 帧）。
 
@@ -1198,9 +1206,11 @@ class DiffusersProvider(BaseProvider):
         async with _LOCK:
             progress_mod.check_cancel(task_id)
             images, meta = await asyncio.to_thread(
-                self._run_wan, model_id, prompt, self.cfg.get("negativePrompt", ""),
+                self._run_wan, model_id, prompt,
+                negative if negative is not None else self.cfg.get("negativePrompt", ""),
                 width, height, steps, seed, generator, ref,
                 int(num_frames), int(fps), int(max_side), task_id,
+                bool(pixel_art),
             )
         status = _torch_status()
         out_meta = {"provider": "diffusers", "model": model_id,
