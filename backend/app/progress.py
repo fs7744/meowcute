@@ -139,3 +139,13 @@ def cleanup(max_age: float = 3600.0) -> None:
 def ids() -> list:
     """当前还留着的任务 id（供上层清理自己那份结果缓存）。"""
     return list(_TASKS)
+
+
+def has_running() -> bool:
+    """是否还有没结束的任务（空闲卸载前必须先确认，中途卸模型会打挂任务）。"""
+    return any(v.done_at is None for v in _TASKS.values())
+
+
+def count() -> int:
+    """留着的任务条数（上层据此决定要不要跑清理）。"""
+    return len(_TASKS)

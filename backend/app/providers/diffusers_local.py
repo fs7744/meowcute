@@ -460,13 +460,14 @@ class DiffusersProvider(BaseProvider):
         if use_fp8:
             self._quantize_fp8(pipe.transformer, "zimage.transformer")
         # 注意：不要和 enable_model_cpu_offload 一起用 pipe.to("cuda")——
-        # 那会把所有模块先搬上 GPU，offload 就白开了
-        pipe.enable_model_cpu_offload()
+        # 那会把所有模块先搬上 GPU，offload 就白开了（_enable_offload 内部
+        # 只在 offload 不可用时才退回 to("cuda")）
+        offload = _enable_offload(pipe, "zimage")
         pipe.set_progress_bar_config(disable=True)
         _CAPS[model_id] = {
             "family": "zimage",
             "notes": ["Z-Image：中文提示词直喂，9 步蒸馏，guidance 固定 0",
-                      "cpu offload" + (" + transformer fp8" if use_fp8 else "")],
+                      offload + (" + transformer fp8" if use_fp8 else "")],
         }
         _CACHE[model_id] = pipe
         return pipe
@@ -519,24 +520,20 @@ class DiffusersProvider(BaseProvider):
                 self._quantize_fp8(pipe.transformer, "qwen_edit.transformer")
 
         # 实测 fp8 + model offload 的峰值约 22.4GB（4090 24GB）：卡干净时刚好
-        # 放得下，但只要有别的程序占了几 GB 就会 OOM。显存不够时自动换成
-        # sequential offload——每个子模块用完即换出，峰值降到几 GB，代价是慢
-        # （权重要反复过 PCIe）。宁可慢也别崩。
-        offload = "model"
-        try:
-            free_gb = torch.cuda.mem_get_info()[0] / 2**30
-            if 0 < free_gb < 21:
-                pipe.enable_sequential_cpu_offload()
-                offload = "sequential"
-            else:
-                pipe.enable_model_cpu_offload()
-        except Exception:
-            pipe.enable_model_cpu_offload()
+        # 放得下，但只要有别的程序占了几 GB 就会 OOM。
+        #
+        # 试过 enable_sequential_cpu_offload 当降级路径，实测无效（别再加回来）：
+        # 峰值 23.2GB vs model offload 的 22.4GB——几乎没降，耗时却从 100s 涨到
+        # 197s。原因是 fp8 transformer 在 QwenImageEditPlusPipeline 里被当成
+        # 一整块换入换出，拆不到子模块粒度，20GB 照样整块上 GPU。
+        # Qwen-Edit 的 20B fp8 权重就是 ~20GB，这是硬下限，只能靠「用完即放」
+        # 而不是更省的策略。
+        _enable_offload(pipe, "qwen_edit")
         pipe.set_progress_bar_config(disable=True)
         _CAPS[model_id] = {
             "family": "qwen_edit",
-            "notes": ["Qwen-Image-Edit：中文指令直喂；必须传参考图；fp8 + "
-                      f"{offload} offload"],
+            "notes": ["Qwen-Image-Edit：中文指令直喂；必须传参考图；fp8 + cpu offload",
+                      "峰值约 22GB（20B fp8 权重的硬下限），任务结束即释放"],
         }
         _CACHE[model_id] = pipe
         return pipe
@@ -1015,6 +1012,11 @@ class DiffusersProvider(BaseProvider):
         # 单图传 Image，多图传 list（Plus 管线两者都吃）
         image_arg = srcs[0] if len(srcs) == 1 else srcs
         images = []
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
         for i in range(max(1, min(n, 4))):
             out = pipe(
                 image=image_arg,
@@ -1035,10 +1037,25 @@ class DiffusersProvider(BaseProvider):
             images.append(out.images[0].convert("RGBA"))
             if generator is not None and seed is not None:
                 generator = torch.Generator(device=generator.device).manual_seed(int(seed) + i + 1)
-        return images, {"steps": use_steps, "cfg": 1.0, "trueCfg": 4.0,
-                        "family": "qwen_edit",
-                        "mode": "edit" if len(srcs) == 1 else "ref2img",
-                        "refCount": len(srcs), "size": [w, h], "seqLen": msl}
+        # 编辑任务也要「用完即放」：三视图推导 / 视角生成这类任务跑完，
+        # 之前是 22GB 一直占着——只有当别的模型加载时才被动换出，而用户
+        # 往往就停在结果页，显存白占十分钟。
+        _release_vram()
+        meta = {"steps": use_steps, "cfg": 1.0, "trueCfg": 4.0,
+                "family": "qwen_edit",
+                "mode": "edit" if len(srcs) == 1 else "ref2img",
+                "refCount": len(srcs), "size": [w, h], "seqLen": msl}
+        try:
+            if torch.cuda.is_available():
+                meta["vram"] = {
+                    "peakGB": round(torch.cuda.max_memory_allocated() / 2**30, 2),
+                    "reservedGB": round(torch.cuda.memory_reserved() / 2**30, 2),
+                    "totalGB": round(
+                        torch.cuda.get_device_properties(0).total_memory / 2**30, 2),
+                }
+        except Exception:
+            pass
+        return images, meta
 
     def _run(self, model_id: str, prompt: str, negative: str, width: int, height: int,
              steps: int, seed: Optional[int], n: int,
@@ -1294,3 +1311,23 @@ def _release_vram() -> None:
             torch.cuda.empty_cache()
     except Exception:
         pass
+
+
+def _enable_offload(pipe: Any, tag: str) -> str:
+    """开 cpu offload，失败时退回「整条管线常驻」。
+
+    enable_model_cpu_offload 依赖 accelerate：装不上（或版本不匹配）时如果直接
+    让加载失败，用户就再也出不了图——退到常驻虽然吃显存，但至少能用，并在
+    caps 里如实标注当前策略。
+    """
+    try:
+        pipe.enable_model_cpu_offload()
+        return "cpu offload"
+    except Exception as e:
+        print(f"[meowcute] {tag} 开不了 cpu offload（{e}），退回整条管线常驻显存",
+              flush=True)
+        try:
+            pipe.to("cuda")
+        except Exception:
+            pass
+        return "常驻显存（缺 accelerate）"

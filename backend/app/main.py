@@ -96,8 +96,7 @@ async def _idle_unload_loop() -> None:
             if DiffusersProvider.idle_seconds() < IDLE_UNLOAD_SECONDS:
                 continue
             # 有任务没结束就别动：中途卸掉模型会直接把任务打挂
-            busy = any(v.done_at is None for v in progress_mod._TASKS.values())
-            if busy:
+            if progress_mod.has_running():
                 continue
             before = DiffusersProvider.vram_gb().get("reserved", 0)
             DiffusersProvider.unload()
@@ -724,7 +723,7 @@ def _gc_tasks() -> None:
     会一直涨：任务快照带着标签字符串，task_results 带着整份产出清单。
     挂在任务查询上顺手清，不需要后台线程。
     """
-    if len(task_results) < 32:
+    if len(task_results) < 32 and progress_mod.count() < 64:
         return
     progress_mod.cleanup()
     live = set(progress_mod.ids())

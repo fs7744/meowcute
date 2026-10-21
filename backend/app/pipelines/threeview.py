@@ -308,7 +308,7 @@ async def derive_view(
     )
     rmeta = dict(result.meta or {})
     img = result.images[0].convert("RGB")
-    return img, {
+    out = {
         "view": view, "name": _VIEW_META[view]["cn"], "mode": "edit",
         "instruction": instruction,
         "steps": rmeta.get("steps"), "seed": seed,
@@ -316,3 +316,6 @@ async def derive_view(
         "autoRouted": bool(rmeta.get("autoRouted")),
         "seconds": round(time.time() - t, 1),
     }
+    if rmeta.get("vram"):
+        out["vram"] = rmeta["vram"]
+    return img, out
