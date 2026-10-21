@@ -1857,6 +1857,14 @@ export default function Canvas({ projectId, onBack }: Props) {
             if (up.length) pushDownstreamResult(n.id, up, {})
             continue
           }
+          // 行走视频关掉 = 整条链没有方向视频可用，下游三步必失败。
+          // 与其在第 2 步抛「上游没有方向信息」中断整个工作流，不如整链跳过。
+          if (n.type !== 'walkvideo' && project.nodes.some(
+            (x) => x.type === 'walkvideo' && !x.walkvideo?.enabled)) {
+            runtime.set(n.id, [])
+            metaRuntime.set(n.id, null)
+            continue
+          }
           try {
             if (n.type === 'walkvideo') {
               const { images: imgs, meta } = await executeWalkVideo(n, runtime)
@@ -2344,6 +2352,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               index={i}
               projectId={project.id}
               running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              progress={tasks[n.id]?.progress?.label}
               sourceLabel={frontLabel(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
               onDelete={() => deleteNode(n.id)}
@@ -2361,6 +2370,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               node={n}
               index={i}
               running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              progress={tasks[n.id]?.progress?.label}
               upstreamLabel={upstreamLabel(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
               onDelete={() => deleteNode(n.id)}
@@ -2378,6 +2388,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               node={n}
               index={i}
               running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              progress={tasks[n.id]?.progress?.label}
               upstreamLabel={upstreamLabel(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
               onDelete={() => deleteNode(n.id)}

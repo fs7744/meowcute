@@ -4,6 +4,8 @@ type Props = {
   node: SpriteSheetNodeType
   index: number
   running?: boolean
+  /** 后端推来的当前步骤文案 */
+  progress?: string | null
   /** 上游序列帧节点给出了哪几个方向 */
   upstreamLabel?: string | null
   onChange: (patch: Partial<SpriteSheetNodeType>) => void
@@ -23,7 +25,7 @@ type Props = {
  * 采样时渲出色晕），拼完逐格自检。
  */
 export default function SpriteSheetNode({
-  node, index, running, upstreamLabel, onChange, onDelete, onDragStart,
+  node, index, running, progress, upstreamLabel, onChange, onDelete, onDragStart,
   onRun, onStartLink, onFinishLink, onPreview,
 }: Props) {
   const DEFAULTS: SpriteSheetNodeType['spritesheet'] = {
@@ -106,6 +108,10 @@ export default function SpriteSheetNode({
           style={{ marginTop: 8, width: '100%' }}>
           {running ? <><span className="spin" /> 拼板中…</> : '运行拼精灵表'}
         </button>
+
+        {running && progress ? (
+          <div className="hint walk-progress" title="当前步骤">{progress}</div>
+        ) : null}
 
         {meta ? (
           <div className="result-meta" style={{ borderTop: 0, marginTop: 8 }}>

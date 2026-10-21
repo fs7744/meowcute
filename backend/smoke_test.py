@@ -548,6 +548,25 @@ def main() -> int:
     check("单方向只有正面", len(wm2.get("directions", [])) == 1
           and wm2["directions"][0]["dir"] == "down")
 
+    # 镜像方向也能指定现成视频：显式来源优先于「镜像左侧」
+    r = client.post("/api/walkvideo", json={
+        "projectId": vpid,
+        "origAssetId": base_info["id"],
+        "dirMode": "eight",
+        "sources": [{"dir": d, "file": g["file"]} for d, g in vsrc.items()]
+                   + [{"dir": "right", "file": vsrc["left"]["file"]}],
+    })
+    wv4 = wait_task(r.json()["taskId"]).get("result", {})
+    check("镜像方向显式来源无错误", not wv4.get("error"), str(wv4.get("error")))
+    wm4 = wv4.get("walk") or {}
+    r4 = {d["dir"]: d for d in (wm4.get("directions") or [])}
+    check("右侧用自己的来源而非镜像",
+          r4.get("right", {}).get("mirrored") is False
+          and r4["right"]["walk"]["mode"] == "existing",
+          str(r4.get("right", {}).get("mirrored")))
+    check("现成方向数含镜像方向", wm4.get("existingDirections") == 6,
+          str(wm4.get("existingDirections")))
+
     # 来源文件不存在 → 明确报错（不能静默回退到 Wan）
     r = client.post("/api/walkvideo", json={
         "projectId": vpid,
@@ -590,6 +609,20 @@ def main() -> int:
     check("序列帧无错误", not sq.get("error"), str(sq.get("error")))
     check("两个方向各 6 帧", all(d.get("count") == 6
                                 for d in (sq.get("sequence") or {}).get("directions", [])))
+
+    # 入参兜底：直接调 API 传超大尺寸也不会把输出撑爆（界面输入框有上下限，API 没有）
+    r = client.post("/api/spritesheet", json={
+        "projectId": vpid,
+        "directions": [{"dir": d["dir"],
+                        "frames": [f["assetId"] + ".png" for f in d["frames"]]}
+                       for d in (sq.get("sequence") or {}).get("directions", [])[:1]],
+        "size": 4096, "cols": 999,
+    })
+    check("超范围尺寸仍接单", r.status_code == 200)
+    sq2 = wait_task(r.json()["taskId"]).get("result", {})
+    check("尺寸被夹到 512", not sq2.get("error")
+          and sq2["sheet"]["directions"][0]["frameSize"]["w"] == 512,
+          str(sq2.get("error") or sq2["sheet"]["directions"][0]["frameSize"]))
 
     client.delete(f"/api/projects/{vpid}")
 

@@ -819,6 +819,13 @@ button { cursor: pointer; }
 .walk-src-thumb img, .walk-src-thumb video {
   width: 100%; height: 100%; object-fit: cover; display: block;
 }
+/* 非 GIF 视频不做缩略图（<video> 会把整段文件拉下来），只显示格式标签 */
+.walk-src-ext {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--chip); font-size: 8px; letter-spacing: 0.5px;
+  color: var(--muted); border-style: dashed; cursor: default;
+}
+.walk-src-ext-sm { flex: none; width: 34px; height: 26px; font-size: 8px; }
 .walk-src-clear { color: var(--muted); }
 .walk-src-clear:hover { color: var(--pink); border-color: var(--pink); }
 .walk-src-picker {
@@ -855,6 +862,11 @@ button { cursor: pointer; }
 .walk-src-badge {
   color: var(--orange, #ff8a4c);
   border-color: rgba(255, 138, 76, 0.45);
+}
+.walk-progress {
+  margin-top: 6px; padding: 4px 6px; border-left: 2px solid var(--orange, #ff8a4c);
+  background: rgba(255, 138, 76, 0.08); font-size: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .btn-xs {
   padding: 1px 6px; font-size: 10px; line-height: 18px;

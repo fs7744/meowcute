@@ -4,6 +4,8 @@ type Props = {
   node: SequenceNodeType
   index: number
   running?: boolean
+  /** 后端推来的当前步骤文案 */
+  progress?: string | null
   /** 上游行走视频节点给出了哪几个方向 */
   upstreamLabel?: string | null
   onChange: (patch: Partial<SequenceNodeType>) => void
@@ -23,7 +25,7 @@ type Props = {
  * 最终行走循环的帧数——默认 8 帧 @ 8fps。
  */
 export default function SequenceNode({
-  node, index, running, upstreamLabel, onChange, onDelete, onDragStart,
+  node, index, running, progress, upstreamLabel, onChange, onDelete, onDragStart,
   onRun, onStartLink, onFinishLink, onPreview,
 }: Props) {
   const DEFAULTS: SequenceNodeType['sequence'] = {
@@ -103,6 +105,10 @@ export default function SequenceNode({
           style={{ marginTop: 8, width: '100%' }}>
           {running ? <><span className="spin" /> 拆帧中…</> : '运行拆序列帧'}
         </button>
+
+        {running && progress ? (
+          <div className="hint walk-progress" title="当前步骤">{progress}</div>
+        ) : null}
 
         {meta ? (
           <div className="result-meta" style={{ borderTop: 0, marginTop: 8 }}>

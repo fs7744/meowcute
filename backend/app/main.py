@@ -683,8 +683,24 @@ async def generate(payload: GeneratePayload) -> Dict[str, Any]:
     return {"taskId": task_id}
 
 
+def _gc_tasks() -> None:
+    """回收已完成一小时的任务快照与结果。
+
+    两条缓存都是「一次任务一条」，跑一天下来（尤其反复重跑八方向链）
+    会一直涨：任务快照带着标签字符串，task_results 带着整份产出清单。
+    挂在任务查询上顺手清，不需要后台线程。
+    """
+    if len(task_results) < 32:
+        return
+    progress_mod.cleanup()
+    live = set(progress_mod.ids())
+    for tid in [t for t in task_results if t not in live]:
+        task_results.pop(tid, None)
+
+
 @app.get("/api/tasks/{task_id}")
 async def task_state(task_id: str) -> Dict[str, Any]:
+    _gc_tasks()
     snap = progress_mod.get(task_id)
     if snap is None:
         raise HTTPException(404, "任务不存在")
@@ -984,6 +1000,18 @@ class WalkVideoSource(BaseModel):
     file: str = ""                              # images/ 下的文件名
 
 
+def _clamp(v: Any, lo: int, hi: int, default: int) -> int:
+    """接口入参兜底：界面上的输入框有上下限，直接调 API 的没有。
+
+    不加这一层的话，`numFrames=100000` 或 `size=4096` 会一路传到推理里，
+    轻则跑几小时，重则 OOM 把服务端进程打死。
+    """
+    try:
+        return max(lo, min(int(v), hi))
+    except Exception:
+        return default
+
+
 class WalkVideoPayload(BaseModel):
     """行走视频节点：正视图 → 八方向立绘 + Wan 行走视频。"""
     projectId: str
@@ -1038,10 +1066,15 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
         directions, meta = await walkvideo_mod.run_walk(
             base,
             dir_mode=payload.dirMode, action=payload.action,
-            steps=payload.steps, seed=payload.seed,
-            width=payload.width, height=payload.height,
-            num_frames=payload.numFrames, fps=payload.fps,
-            max_side=payload.maxSide, max_seq_len=payload.maxSeqLen,
+            steps=(_clamp(payload.steps, 4, 60, 30) if payload.steps else None),
+            seed=payload.seed,
+            width=_clamp(payload.width, 128, 1024, 384),
+            height=_clamp(payload.height, 128, 1024, 512),
+            num_frames=_clamp(payload.numFrames, 5, 193, 81),
+            fps=_clamp(payload.fps, 8, 30, 24),
+            max_side=_clamp(payload.maxSide, 256, 1024, 512),
+            max_seq_len=(_clamp(payload.maxSeqLen, 256, 1536, 512)
+                         if payload.maxSeqLen else None),
             provider_cfg=provider_cfg, task_id=task_id,
             sources=src_frames or None)
 
@@ -1118,8 +1151,9 @@ async def _run_sequence(task_id: str, payload: SequencePayload) -> None:
 
         directions, meta = await sequence_mod.run_sequence(
             src_dirs,
-            frames_per_dir=payload.framesPerDir,
-            matte=payload.matte, tolerance=payload.tolerance,
+            frames_per_dir=_clamp(payload.framesPerDir, 2, 24, 8),
+            matte=payload.matte,
+            tolerance=_clamp(payload.tolerance, 10, 120, 40),
             task_id=task_id)
 
         out_dirs = []
@@ -1203,8 +1237,11 @@ async def _run_sheets(task_id: str, payload: SheetPayload) -> None:
             src_dirs.append({"dir": d.dir, "frames": frames})
 
         directions, meta = await spritesheet_mod.run_sheets(
-            src_dirs, size=payload.size, cols=payload.cols,
-            shared_scale=payload.sharedScale, anchor=payload.anchor,
+            src_dirs,
+            size=_clamp(payload.size, 16, 512, 128),
+            cols=_clamp(payload.cols, 0, 64, 0),
+            shared_scale=payload.sharedScale,
+            anchor=payload.anchor if payload.anchor in ("bottom", "center", "top") else "bottom",
             task_id=task_id)
 
         out_dirs = []

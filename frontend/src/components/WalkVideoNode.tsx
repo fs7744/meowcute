@@ -7,6 +7,8 @@ type Props = {
   index: number
   projectId: string
   running?: boolean
+  /** 后端推来的当前步骤文案（八方向跑几分钟，光转圈看不出进行到哪） */
+  progress?: string | null
   /** 参考的正视图来自哪个节点（链条最上游那张） */
   sourceLabel?: string | null
   onChange: (patch: Partial<WalkVideoNodeType>) => void
@@ -52,7 +54,7 @@ const shortName = (f: string) => (f.length > 22 ? `${f.slice(0, 10)}…${f.slice
  * 素材。上传的文件和历史生成的片段在同一个列表里选。
  */
 export default function WalkVideoNode({
-  node, index, projectId, running, sourceLabel, onChange, onDelete, onDragStart,
+  node, index, projectId, running, progress, sourceLabel, onChange, onDelete, onDragStart,
   onRun, onStartLink, onFinishLink, onPreview,
 }: Props) {
   const DEFAULTS: WalkVideoNodeType['walkvideo'] = {
@@ -204,13 +206,19 @@ export default function WalkVideoNode({
                 <span className="walk-src-dir">{DIR_CN[d]}</span>
                 {file ? (
                   <>
-                    <button className="walk-src-thumb" title={`${file}（点击放大）`}
-                      onClick={() => onPreview(
-                        `/api/projects/${projectId}/images/${file}`, `${DIR_CN[d]}现成视频`)}>
-                      {isGif(file)
-                        ? <img src={`/api/projects/${projectId}/images/${file}`} alt={file} />
-                        : <video src={`/api/projects/${projectId}/images/${file}`} muted playsInline />}
-                    </button>
+                    {isGif(file) ? (
+                      <button className="walk-src-thumb" title={`${file}（点击放大）`}
+                        onClick={() => onPreview(
+                          `/api/projects/${projectId}/images/${file}`, `${DIR_CN[d]}现成视频`)}>
+                        <img src={`/api/projects/${projectId}/images/${file}`} alt={file} />
+                      </button>
+                    ) : (
+                      // 非 GIF 不做缩略图：<video> 会把整段视频拉下来当封面，
+                      // 上传的 mp4 动辄几十 MB，一个面板能拉几百 MB
+                      <span className="walk-src-thumb walk-src-ext" title={file}>
+                        {file.split('.').pop()?.toUpperCase()}
+                      </span>
+                    )}
                     <span className="walk-src-name" title={file}>{shortName(file)}</span>
                     <button className="btn btn-xs" onClick={() => openPicker(d)}>换</button>
                     <button className="btn btn-xs walk-src-clear" title="改回 Wan 生成"
@@ -238,7 +246,9 @@ export default function WalkVideoNode({
                         onClick={() => setSource(d, vd.file)}>
                         {isGif(vd.file)
                           ? <img src={vd.url} alt={vd.file} />
-                          : <video src={vd.url} muted playsInline />}
+                          : <span className="walk-src-ext walk-src-ext-sm">
+                            {vd.file.split('.').pop()?.toUpperCase()}
+                          </span>}
                         <span>
                           {vd.origin === 'generated'
                             ? `生成·${DIR_CN[vd.dir as WalkDir] ?? vd.dir ?? '未知'}`
@@ -298,6 +308,10 @@ export default function WalkVideoNode({
           style={{ marginTop: 8, width: '100%' }}>
           {running ? <><span className="spin" /> 生成中…</> : runLabel}
         </button>
+
+        {running && progress ? (
+          <div className="hint walk-progress" title="当前步骤">{progress}</div>
+        ) : null}
 
         {meta ? (
           <div className="result-meta" style={{ borderTop: 0, marginTop: 8 }}>

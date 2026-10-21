@@ -134,3 +134,8 @@ def cleanup(max_age: float = 3600.0) -> None:
                 if v.done_at is not None and now - v.done_at > max_age]:
         _TASKS.pop(tid, None)
         _WAITERS.pop(tid, None)
+
+
+def ids() -> list:
+    """当前还留着的任务 id（供上层清理自己那份结果缓存）。"""
+    return list(_TASKS)

@@ -286,12 +286,14 @@ async def run_walk(
     dirs = directions_of(dir_mode)
     src_map = {k: v for k, v in (sources or {}).items()
                if k in dirs and v and v.get("frames")}
+    # 任何方向都能给来源（含右半边镜像方向）：显式来源优先于镜像，
+    # 这样「左侧用 Wan、右侧用自己录的视频」这种事也说得通
+    src_dirs = [d for d in dirs if d in src_map]
     real_dirs = [d for d in dirs if not DIR_MIRROR_OF.get(d)]
     gen_dirs = [d for d in real_dirs if d not in src_map]
-    src_real = [d for d in real_dirs if d in src_map]
     # 进度按「现成视频算 1 步、生成方向算 2 步」累计，和下面 done 的增量对齐；
     # 只按 gen_dirs 算会让全现成时出现 1/0、混合时进度超过 100%
-    total_steps = len(src_real) + len(gen_dirs) * 2
+    total_steps = len(src_dirs) + len(gen_dirs) * 2
     done = 0
     t0 = time.time()
 
@@ -299,9 +301,7 @@ async def run_walk(
     clips: Dict[str, List[Image.Image]] = {}
     derive_meta: Dict[str, Dict[str, Any]] = {}
     walk_meta: Dict[str, Dict[str, Any]] = {}
-    for d in real_dirs:
-        if d not in src_map:
-            continue
+    for d in src_dirs:
         src = src_map[d]
         frames = normalize_source_frames(src["frames"], width=width, height=height)
         if not frames:
@@ -375,7 +375,7 @@ async def run_walk(
         "action": action, "directions": len(out),
         "realDirections": len(real_dirs),
         "mirroredDirections": len(out) - len(real_dirs),
-        "existingDirections": len([d for d in real_dirs if d in src_map]),
+        "existingDirections": len(src_dirs),
         "fps": fps, "numFrames": num_frames,
         "size": [width, height], "maxSide": max_side,
         "seconds": round(time.time() - t0, 1),
