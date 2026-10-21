@@ -1082,6 +1082,13 @@ class WalkVideoPayload(BaseModel):
     dirImages: List[WalkDirImage] = Field(default_factory=list)
     # 像素保真：像素素材用最近邻缩放，别被视频底座糊掉
     pixelArt: bool = False
+    # 行走动作控制（轻量闭环，不上更大模型也能逼出「真正在走」）：
+    # guidanceScale=None 用默认 5.0；motionThreshold 是动作幅度合格线
+    # （motion_stats 的剪影 1-IoU，真实行走约 5~20，定格 <3）；retries 是
+    # 不达标时自动加压重跑的次数。
+    guidanceScale: Optional[float] = None
+    motionThreshold: float = 6.0
+    retries: int = 2
 
 
 async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
@@ -1153,7 +1160,11 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
             sources=src_frames or None,
             view_anchors=view_anchors or None,
             dir_images=dir_images or None,
-            pixel_art=payload.pixelArt)
+            pixel_art=payload.pixelArt,
+            guidance_scale=(None if payload.guidanceScale is None
+                            else _clamp(payload.guidanceScale, 1.0, 9.0, 5.0)),
+            motion_threshold=_clamp(payload.motionThreshold, 1.0, 30.0, 6.0),
+            retries=_clamp(payload.retries, 0, 5, 2))
 
         # 显存账：峰值取各方向最大值（每段视频都单独清零过峰值统计），
         # 收尾值是卸载后的——这两个数能直接回答「这条链到底吃多少显存」

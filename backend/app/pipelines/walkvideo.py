@@ -183,26 +183,42 @@ def direction_instruction(direction: str, anchor: str = "front") -> str:
     )
 
 
-def walk_prompt(action: str = "行走") -> str:
+def walk_prompt(action: str = "行走", *, motion_emphasis: bool = False) -> str:
     """Wan 图生视频的动作提示词。
 
-    这里踩过坑：早先写的是「角色位置、大小、朝向始终不变，**没有位移**，
-    没有镜头运动、没有起停」——视频底座把「没有位移」理解成「别动」，
-    结果出的是一张几乎不动的图（用户反馈「没有正常行走」）。
+    历史踩坑（用户反馈「没有正常行走」）：早先写「角色位置、大小、朝向始终
+    不变，**没有位移**，不转身、不镜头运动」——视频底座把「没有位移」理解成
+    「别动」，结果出的是一张几乎静止的图。
 
-    正确做法是**分开说**：步态该有的动作明确点名要（蹬地、屈膝、脚掌离地、
-    手臂反向摆动、重心起伏），该禁的只禁整体平移、转身、镜头运动和起停。
-    精灵表要求的是「角色站在画面同一处」，不等于「角色一动不动」。
+    正确做法分两层，且必须用**不同主语**说清，否则模型偷懒定格：
+    1) 角色的运动（主语=角色）：双腿持续交替迈步、膝盖屈伸、脚掌离地落地、
+       身体随步伐上下颠动、手臂反向摆动——这是要强调的「动」；
+    2) 镜头的静止（主语=取景框/背景）：取景框与背景不动、角色始终居中、
+       体型不变。**只说镜头/背景静止，绝不写「角色不动」**——
+       「原地行走」≠「静止」，后者是模型最爱的偷懒解。
+
+    motion_emphasis=True 用于动作不达标时的重试：进一步点名「全程动态、绝不
+    定格、每帧都在变」，配合上调的 guidance_scale 把动作幅度逼出来。
     """
     act = (action or "行走").strip() or "行走"
-    return (
-        f"画面中的角色在原地{act}：双脚交替蹬地迈步，膝盖随步伐弯曲，"
-        "脚掌有明确的离地与落地动作；手臂与腿反向自然摆动；身体随重心"
-        "轻微上下起伏，发饰和衣摆随步伐轻微晃动。动作连贯循环，"
-        "一只脚落地时另一只脚抬起。"
-        "角色的站立位置固定在画面中央、朝向与大小始终不变，"
-        "不整体平移、不转身、不突然静止；镜头完全静止，背景保持纯色。"
+    motion = (
+        f"角色在原地{act}：双腿持续交替迈步，膝盖随步伐明显弯曲伸展，"
+        "脚掌明确地反复抬起、离地、再落地；身体随重心上下颠动，"
+        "手臂与腿反向自然摆动，发饰和衣摆随步伐轻微晃动。"
+        "动作连贯成循环，一只脚落地时另一只脚抬起，步态清晰可见。"
     )
+    if motion_emphasis:
+        motion = (
+            "强烈的持续行走动作：" + motion +
+            " 全程保持动态，绝不定格、绝不站桩、绝不变成单张静态姿势；"
+            "每一帧肢体的位置都在变化，步伐明显而有力。"
+        )
+    stable = (
+        "保持取景框与背景完全静止，角色始终位于画面中心、体型大小不变"
+        "（原地行走，不向画面任何方向平移、不旋转身体、镜头不动、背景为纯色）。"
+    )
+    return motion + stable
+
 
 
 def directions_of(dir_mode: str) -> List[str]:
@@ -326,46 +342,87 @@ async def generate_walk(
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
     pixel_art: bool = False,
+    guidance_scale: Optional[float] = None,
+    motion_threshold: float = 6.0,
+    retries: int = 2,
 ) -> Tuple[List[Image.Image], Dict[str, Any]]:
     """Wan2.2 TI2V-5B：方向立绘 + 动作提示词 → 行走视频帧序列。
 
-    视频底座必须单独指定：provider_cfg 里的 model 是文生图底座，这里按
-    resolve_video_model() 覆盖成 Wan。两个底座交替时装载会互相驱逐，
-    所以调用方要「先推导全部方向立绘，再集中生成全部视频」（run_walk
-    的顺序即为此）。
+    轻量控制闭环（不上更大模型也能治「没正常走」）：先按正常 CFG 生成，用
+    motion_stats 量化「动没动」，分数低于阈值就升级 guidance_scale（并加重
+    动作提示词、适度加步数）重跑，直到达标或用尽重试次数。这样即便 5B 底座
+    偶尔偷懒定格，也会被自动逼出真正在走的版本——最终交付动作幅度最高的那次。
+
+    见模块文档：选视频底座是为了动作连贯、不闪；这个闭环是在不引入新模型的
+    前提下，把「动作幅度」这条指标拉到合格线之上。
     """
     from ..providers.diffusers_local import DiffusersProvider, resolve_video_model
 
     cfg = dict(provider_cfg or {})
     cfg["model"] = resolve_video_model(cfg.get("videoModel"))
     provider = DiffusersProvider(cfg)
-    prompt = walk_prompt(action)
+    base_prompt = walk_prompt(action)
+    # 负向词直接对准用户反馈的现象：糊掉（涂抹/重影/低清）与闪烁/变形，
+    # 再加「站桩/单帧定格/姿势不变/动作僵硬」——把模型最爱偷懒的静止解
+    # 也写进黑名单，和正向的「持续运动」形成夹击。
+    negative = ("模糊, 重影, 涂抹, 低清, 噪点, 闪烁, 变形, 静止不动, 镜头晃动, "
+                "站桩, 单帧定格, 姿势不变, 动作僵硬")
 
     t = time.time()
-    # 试过给参考图加一圈边距防止肢体顶到边缘，实测**反而更差**（别再加回来）：
-    # 12% 边距时角色周围空太多，Wan 在空区脑补横向色带（像地平线）；6% 时后段
-    # 直接编出绿色色带和紫色房间背景。剪影面积从稳定的 20~27% 抖到 15~100%。
-    # 结论：宁可让肢体偶尔贴边，也不要给它空白去发挥。
-    result = await provider.generate_video(
-        prompt, view,
-        width=width, height=height,
-        steps=steps, seed=seed,
-        num_frames=num_frames, fps=fps, max_side=max_side,
-        task_id=task_id, pixel_art=pixel_art,
-        # 负向词直接对准用户反馈的两个现象：糊掉（涂抹/重影/低清）与闪烁。
-        # 视频底座对负向词是有反应的，写上比留着空串强。
-        negative="模糊, 重影, 涂抹, 低清, 噪点, 闪烁, 变形, 静止不动, 镜头晃动",
-    )
-    rmeta = dict(result.meta or {})
+    base_gs = 5.0 if guidance_scale is None else float(guidance_scale)
+    max_attempts = 1 + max(0, int(retries))
+    frames: List[Image.Image] = []
+    rmeta: Dict[str, Any] = {}
+    best_frames = frames
+    best_motion = -1.0
+    last_motion = 0.0
+    for attempt in range(max_attempts):
+        emphasis = attempt > 0
+        prompt = walk_prompt(action, motion_emphasis=emphasis) if emphasis else base_prompt
+        # 重试逐次加压：CFG 每次 +1.5（封顶 9.0），步数不够时每次 +5（封顶 50）。
+        # CFG 上调对「运动幅度」是最直接的杠杆——这正是 _run_wan 把 CFG 改可调控的原因。
+        cur_gs = min(9.0, base_gs + attempt * 1.5)
+        cur_steps = None
+        if steps is not None:
+            cur_steps = min(50, int(steps) + attempt * 5)
+        if attempt > 0:
+            progress_mod.report(task_id, 0, 0,
+                                f"动作幅度不足（{last_motion} < {motion_threshold}），"
+                                f"重试加强（CFG {cur_gs:.1f}）…")
+        result = await provider.generate_video(
+            prompt, view,
+            width=width, height=height,
+            steps=cur_steps, seed=seed,
+            num_frames=num_frames, fps=fps, max_side=max_side,
+            task_id=task_id, pixel_art=pixel_art,
+            negative=negative, guidance_scale=cur_gs,
+        )
+        frames = list(result.images)
+        stats = motion_stats(frames)
+        last_motion = stats["motion"]
+        # 交付动作幅度最高的那次（CFG 高不一定运动大，以实测分数为准）
+        if stats["motion"] > best_motion:
+            best_motion = stats["motion"]
+            best_frames = frames
+            rmeta = dict(result.meta or {})
+        if stats["motion"] >= motion_threshold:
+            frames = best_frames
+            break
+    frames = best_frames
     out = {
-        "prompt": prompt, "mode": "i2v", "frames": len(result.images),
+        "prompt": base_prompt, "mode": "i2v", "frames": len(frames),
         "fps": rmeta.get("fps"), "seconds": round(time.time() - t, 1),
         "model": rmeta.get("model"), "size": rmeta.get("size"),
         "steps": rmeta.get("steps"), "seed": seed,
+        "guidanceScale": rmeta.get("cfg"),
+        "motionScore": round(last_motion, 2),
+        "motionBest": round(best_motion, 2),
+        "motionThreshold": motion_threshold,
+        "retriesUsed": max(0, max_attempts - 1),
     }
     if rmeta.get("vram"):
         out["vram"] = rmeta["vram"]
-    return list(result.images), out
+    return frames, out
 
 
 async def run_walk(
@@ -387,6 +444,9 @@ async def run_walk(
     view_anchors: Optional[Dict[str, Image.Image]] = None,
     dir_images: Optional[Dict[str, Image.Image]] = None,
     pixel_art: bool = False,
+    guidance_scale: Optional[float] = None,
+    motion_threshold: float = 6.0,
+    retries: int = 2,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """跑完一个方向集合，返回每方向的帧序列。
 
@@ -507,7 +567,9 @@ async def run_walk(
                 width=width, height=height, num_frames=num_frames,
                 fps=fps, max_side=max_side,
                 provider_cfg=provider_cfg, task_id=task_id,
-                pixel_art=pixel_art)
+                pixel_art=pixel_art,
+                guidance_scale=guidance_scale,
+                motion_threshold=motion_threshold, retries=retries)
         except progress_mod.CancelledError:
             raise
         except Exception as e:

@@ -99,6 +99,11 @@ DEFAULT_WALKVIDEO = {
     "fps": 24,
     "maxSide": 512,
     "maxSeqLen": None,
+    # 行走动作控制（轻量闭环）：guidanceScale=None 用默认 5.0；
+    # motionThreshold 是动作幅度合格线；retries 是不达标时自动加压重跑次数。
+    "guidanceScale": None,
+    "motionThreshold": 6.0,
+    "retries": 2,
 }
 
 # walkvideo.sources 的合法方向键（顺时针一圈）

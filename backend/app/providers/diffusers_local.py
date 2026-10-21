@@ -665,7 +665,8 @@ class DiffusersProvider(BaseProvider):
                  width: int, height: int, steps: Optional[int],
                  seed: Optional[int], generator: Any,
                  ref: Optional[Any], num_frames: int, fps: int, max_side: int,
-                 task_id: Optional[str] = None, pixel_art: bool = False):
+                 task_id: Optional[str] = None, pixel_art: bool = False,
+                 guidance_scale: Optional[float] = None):
         """图生视频：参考图 + 动作提示词 → 帧序列（PIL 列表）。
 
         - num_frames 必须是 4k+1（Wan 时序 VAE 的要求），内部向下取整；
@@ -680,6 +681,11 @@ class DiffusersProvider(BaseProvider):
             raise ValueError("Wan 图生视频需要一张参考图（ref）")
         pipe = self._load(model_id)
         use_steps = 30 if not steps else max(20, min(int(steps), 50))
+        # CFG 可调控：默认 5.0（TI2V-5B 官方推荐）。行走动作偏弱时上调能显著
+        # 加强运动幅度——这正是「动作幅度不够就自动重试加压」的闭环杠杆。
+        # 上限 9.0 防止过头引入重影/崩坏；重试逻辑会按步递增到这里。
+        gs = 5.0 if guidance_scale is None else float(
+            max(1.0, min(9.0, guidance_scale)))
         from PIL import Image as _Image
 
         src = ref.convert("RGB")
@@ -712,7 +718,7 @@ class DiffusersProvider(BaseProvider):
             width=w,
             num_frames=frames,
             num_inference_steps=use_steps,
-            guidance_scale=5.0,
+            guidance_scale=gs,
             generator=generator,
             # Wan 的 I2V 管线默认 output_type="np"（返回 ndarray），不是 "pil"。
             # 显式要 PIL：下游统一按 Image 处理，少一层 numpy 往返也少一处错位风险。
@@ -738,7 +744,7 @@ class DiffusersProvider(BaseProvider):
         # 一段视频跑完就把缓存块还回去：八方向连跑五段，分配器会越攒越大
         _release_vram()
         return imgs, {
-            "steps": use_steps, "cfg": 5.0, "family": "wan",
+            "steps": use_steps, "cfg": gs, "family": "wan",
             "mode": "i2v", "frames": len(imgs), "fps": fps,
             "seconds": round(len(imgs) / max(1, int(fps)), 2),
             "size": [w, h],
@@ -1180,6 +1186,7 @@ class DiffusersProvider(BaseProvider):
         task_id: Optional[str] = None,
         pixel_art: bool = False,
         negative: Optional[str] = None,
+        guidance_scale: Optional[float] = None,
     ) -> ProviderResult:
         """图生视频：参考图 + 提示词 → 帧序列（ProviderResult.images = 帧）。
 
@@ -1210,7 +1217,7 @@ class DiffusersProvider(BaseProvider):
                 negative if negative is not None else self.cfg.get("negativePrompt", ""),
                 width, height, steps, seed, generator, ref,
                 int(num_frames), int(fps), int(max_side), task_id,
-                bool(pixel_art),
+                bool(pixel_art), guidance_scale,
             )
         status = _torch_status()
         out_meta = {"provider": "diffusers", "model": model_id,

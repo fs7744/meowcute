@@ -64,6 +64,7 @@ export default function WalkVideoNode({
     enabled: true, dirMode: 'eight', action: '行走', styleId: null,
     steps: null, seed: null, width: 384, height: 512,
     numFrames: 81, fps: 24, maxSide: 512, maxSeqLen: null,
+    guidanceScale: null, motionThreshold: 6.0, retries: 2,
     sources: {},
   }
   const v = { ...DEFAULTS, ...node.walkvideo }
@@ -424,6 +425,36 @@ export default function WalkVideoNode({
           </button>
         </div>
 
+        {/* ---- 行走动作控制（轻量闭环：不上更大模型也能逼出「真正在走」） ---- */}
+        <div className="param-grid" style={{ marginTop: 6 }}>
+          <label className="gen-field">
+            <span className="gen-field-label" title="引导强度。默认 5.0；行走动作偏弱时上调（封顶 9.0）可逼出更大动作幅度">
+              引导 CFG（空=5.0）
+            </span>
+            <input className="input" type="number" min={1} max={9} step={0.5}
+              value={v.guidanceScale ?? ''} placeholder="5.0"
+              onChange={(e) => patch({ guidanceScale: e.target.value ? Number(e.target.value) : null })} />
+          </label>
+          <label className="gen-field">
+            <span className="gen-field-label" title="动作幅度合格线：剪影 1-IoU，真实行走约 5~20，定格 <3。低于此值自动加压重跑">
+              动作合格线
+            </span>
+            <input className="input" type="number" min={1} max={30} step={1}
+              value={v.motionThreshold}
+              onChange={(e) => patch({ motionThreshold: Number(e.target.value) })} />
+          </label>
+        </div>
+        <div className="param-grid" style={{ marginTop: 4 }}>
+          <label className="gen-field" style={{ gridColumn: '1 / -1' }}>
+            <span className="gen-field-label" title="动作不达标时自动加压（每次 CFG +1.5、步数 +5）重跑的次数；0 = 不重试">
+              不达标自动重试次数：{v.retries}
+            </span>
+            <input className="input" type="range" min={0} max={5} step={1}
+              value={v.retries}
+              onChange={(e) => patch({ retries: Number(e.target.value) })} />
+          </label>
+        </div>
+
         <button className="btn btn-sm" onClick={onRun} disabled={running}
           style={{ marginTop: 8, width: '100%' }}>
           {running ? <><span className="spin" /> 生成中…</> : runLabel}
@@ -462,7 +493,8 @@ export default function WalkVideoNode({
           <div className="walk-fails">
             <b>有方向几乎没动</b>
             <div>剪影动作幅度最低 {minMotion}（真在走在 7 以上）。这段视频大概没走起来：
-              把 Wan 帧数提到 81（约 3.4 秒，能装下两个步态），或换个种子重跑。</div>
+              把「引导 CFG」调到 6.5~8、或「不达标自动重试次数」调到 2~3 再跑，
+              闭环会把动作幅度逼到合格线以上；也可以换个种子重跑。</div>
           </div>
         ) : null}
 

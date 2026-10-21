@@ -275,6 +275,12 @@ export type WalkVideoOptions = {
   fps: number
   maxSide: number
   maxSeqLen: number | null
+  /** 引导强度 CFG：默认 5.0；行走动作偏弱时上调可逼出更大动作幅度 */
+  guidanceScale: number | null
+  /** 动作幅度合格线（剪影 1-IoU，真实行走约 5~20，定格 <3）；低于此值自动重试 */
+  motionThreshold: number
+  /** 动作不达标时自动加压重跑的次数（0 = 不重试） */
+  retries: number
 }
 
 /** 项目内可选用的视频资产（GET /api/projects/{id}/videos）。 */

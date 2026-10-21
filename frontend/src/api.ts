@@ -192,6 +192,10 @@ export const api = {
     width?: number; height?: number
     numFrames?: number; fps?: number; maxSide?: number
     maxSeqLen?: number | null
+    /** 行走动作控制（轻量闭环） */
+    guidanceScale?: number | null
+    motionThreshold?: number
+    retries?: number
     sources?: { dir: string; file: string }[]
     /** 三视图锚点：有了它们，正/侧/背零推导，斜向只转 45 度 */
     viewAssets?: { role: string; file: string }[]

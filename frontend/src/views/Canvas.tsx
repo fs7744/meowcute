@@ -581,6 +581,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         enabled: true, dirMode: 'eight', action: '行走', styleId: null,
         steps: null, seed: null, width: 384, height: 512,
         numFrames: 81, fps: 24, maxSide: 512, maxSeqLen: null,
+        guidanceScale: null, motionThreshold: 6.0, retries: 2,
       },
       result: null, images: [], meta: null, createdAt: Date.now() / 1000,
     }
