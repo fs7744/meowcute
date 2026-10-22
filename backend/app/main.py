@@ -621,6 +621,10 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
             refs=refs or None,
             task_id=task_id,
             max_seq_len=params.maxSeqLen,
+            # 负面词必须真的传下去：以前只把 built["negative"] 塞进 meta 给
+            # 界面看，provider 读的是设置里的默认值，像素模式的负面清单
+            # （抗锯齿/渐变/半透明…）从未生效。
+            negative=built["negative"] or None,
         )
 
         images = list(result.images)
@@ -931,6 +935,9 @@ class ViewDerivePayload(BaseModel):
     # 正视图的背景（gray/green/none/transparent）：侧/背/右复用同一背景，
     # 拼板时各张底色才一致，抠底不会把角色咬出异色边
     background: str = "gray"
+    # 正视图那句角色描述原文：附在视角指令里当「部件清单」，防止腰挎的刀、
+    # 背上的弓这类细长配件在重画身体时被漏掉（前端从上游生成卡带下来）
+    character: str = ""
 
 
 class ThreeViewSource(BaseModel):
@@ -980,6 +987,7 @@ async def _run_view_derive(task_id: str, payload: ViewDerivePayload) -> None:
             width=payload.width, height=payload.height,
             max_seq_len=payload.maxSeqLen,
             background=payload.background,
+            character=payload.character,
             provider_cfg=provider_cfg, task_id=task_id)
 
         info = storage.save_image(payload.projectId, out.convert("RGBA"),

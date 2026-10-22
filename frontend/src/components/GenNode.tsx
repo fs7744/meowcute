@@ -134,7 +134,7 @@ export default function GenNode({
             ref={taRef}
             className="textarea"
             style={{ minHeight: 92 }}
-            placeholder="例：灰白英短猫武士，红色短披风，腰挎武士刀，三头身比例，正面站立"
+            placeholder="例：灰白英短猫武士，红色短披风，左腰侧挎武士刀，三头身比例，正面站立"
             value={node.prompt}
             onChange={(e) => onChange({ prompt: e.target.value })}
           />

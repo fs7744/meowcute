@@ -168,6 +168,8 @@ export const api = {
     width?: number; height?: number
     maxSeqLen?: number | null
     background?: string
+    /** 正视图的角色描述原文：视角指令会把它当「部件清单」，防止细长配件漏画 */
+    character?: string
   }) =>
     fetch('/api/threeview/derive', jsonInit(payload)).then(j<{ taskId: string }>),
 

@@ -1255,6 +1255,9 @@ class DiffusersProvider(BaseProvider):
                 raise RuntimeError(
                     "Z-Image 是纯文生图底座，不支持参考图。请改用编辑底座（有参考图时自动路由）。"
                 )
+            # 注意：Z-Image 是 guidance 蒸馏底座（guidance_scale=0.0），没有
+            # CFG，负面词对它**完全无效**——这里不传 negative 不是漏了。
+            # 所以「不要阴影」这类要求对 Z-Image 只能写进正面提示词。
             images, meta = self._run_zimage(model_id, prompt, width, height,
                                             steps, seed, generator, n, task_id=task_id,
                                             max_seq_len=max_seq_len)
@@ -1286,6 +1289,7 @@ class DiffusersProvider(BaseProvider):
         refs: Optional[Any] = None,
         task_id: Optional[str] = None,
         max_seq_len: Optional[int] = None,
+        negative: Optional[str] = None,
     ) -> ProviderResult:
         # 入口先卡一次：缺 torch 时直接把安装指引抛给前端，
         # 而不是等 _run 里 import 出一句光秃秃的 "No module named 'torch'"
@@ -1320,8 +1324,13 @@ class DiffusersProvider(BaseProvider):
         progress_mod.check_cancel(task_id)
         async with _LOCK:
             progress_mod.check_cancel(task_id)
+            # 负面词：调用方显式给了就用它（像素契约/视角接力各有自己的负面
+            # 清单），没给就回落到设置里的默认值。历史上这里只读设置，导致
+            # 后端算出来的 built["negative"] 从来没到过模型——UI 展示了、
+            # 推理没用上，属于静默失效。
+            neg = self.cfg.get("negativePrompt", "") if negative is None else negative
             images, meta = await asyncio.to_thread(
-                self._run, model_id, prompt, self.cfg.get("negativePrompt", ""),
+                self._run, model_id, prompt, neg,
                 width, height, steps, seed, n, ref, all_refs or None,
                 task_id, max_seq_len,
             )

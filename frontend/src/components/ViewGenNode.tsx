@@ -99,6 +99,10 @@ export default function ViewGenNode({
               ? '角色整体转向画面右侧：展现完整侧面轮廓，造型以正视图为准。'
               : '角色整体转向画面左侧：展现完整侧面轮廓，造型以正视图为准。'}
         </div>
+        <div className="hint" style={{ marginTop: -4 }}>
+          单侧配件（腰挎刀 / 单肩包 / 单侧护具）按「同一侧、同一高度、同样佩戴方式」
+          保留；正视图的角色描述会作为部件清单一起交给模型，防止细长配件漏画。
+        </div>
 
         {inherit ? (
           <div className="param-grid">

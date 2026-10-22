@@ -428,6 +428,49 @@ def main() -> int:
           "不要地面投影" in tr_instr and "不要阴影" in tr_instr, tr_instr[-140:])
     check("灰底视角指令保留纯色背景句",
           "背景保持纯色不变" in _apply_background(_view_instruction("side"), "gray"))
+
+    print("== 视角指令：单侧配件守恒（腰挎刀类） ==")
+    # 单侧配件（腰挎刀/单肩包/单侧护具）在侧/背/右视图里最容易镜像或消失：
+    # 指令必须同时给出「配件守恒」「遮挡守恒」和「自身左右锚定」三条几何约束，
+    # 且不能点名任何具体道具（点名＝给所有角色下「必须长出来」的指令）。
+    for v in ("side", "side_r", "back"):
+        ins = _view_instruction(v)
+        check(f"{v} 指令含配件守恒", "同一侧" in ins and "不能换到另一侧" in ins)
+        check(f"{v} 指令含遮挡守恒", "被身体挡住" in ins)
+        check(f"{v} 指令不点名具体道具",
+              all(w not in ins for w in ("武士刀", "披风", "法杖", "盾牌")), v)
+    check("侧视图锚定角色左侧面",
+          "角色的左侧面" in _view_instruction("side")
+          and "角色的右侧面" in _view_instruction("side_r"))
+    check("背视图锚定左右镜像关系",
+          "和正视图正好相反" in _view_instruction("back"))
+    # 近侧配件必须在肢体最外层：漏了这句，左视图里腰挎的刀整把消失（实测）
+    check("侧视图声明近侧配件在最外层",
+          "最外层" in _view_instruction("side") and "画在胳膊和腿的外面" in _view_instruction("side_r"))
+    # 角色描述原文当「部件清单」：细长配件不会在重画身体时被漏掉，
+    # 但原句里的姿势词必须当场作废，否则模型退回正面站姿。
+    _with_char = _view_instruction("side", "灰白猫武士，左腰侧挎武士刀，正面站立")
+    check("指令附角色部件清单", "角色设定清单" in _with_char and "左腰侧挎武士刀" in _with_char)
+    check("清单里姿势词声明作废",
+          "作废" in _with_char and "以本张图的视角为准" in _with_char)
+    check("无角色描述时不加清单", "角色设定清单" not in _view_instruction("side"))
+    # 长指令被序列长度截断是静默失效：截掉的正好是尾部的背景句/守恒条款
+    from backend.app.pipelines.threeview import _fit_seq_len
+    _ins = _view_instruction("side")
+    _need = int(len(_ins) * 1.3) + 64
+    check("视角指令不被序列长度截断", _fit_seq_len(_ins, 512) >= _need,
+          f"{_fit_seq_len(_ins, 512)} vs {_need}")
+
+    print("== 背景句：脚下不留阴影 ==")
+    from backend.app.styles import background_phrase
+    for _bg in ("gray", "green", "transparent"):
+        _ph = background_phrase(_bg)
+        check(f"{_bg} 背景句把背景说成「只有角色+单一底色」",
+              "整幅图只有" in _ph, _ph[:40])
+        # 「角色悬空不落地」与姿势词「站立」自相矛盾，模型会折中成带影子的站姿
+        check(f"{_bg} 背景句不再写「悬空」", "悬空" not in _ph)
+    from backend.app.pipelines.threeview import _VIEW_META
+    check("正视图姿势词不提踩地", "踩地" not in _VIEW_META["front"]["pose_cn"])
     # derive 要认 background 字段（pydantic 不认会 422，前端任务起不来）。
     # 不真的 POST：那会 create_task 跑模型，冒烟测试不该碰 GPU。
     from backend.app.main import ViewDerivePayload
@@ -437,6 +480,10 @@ def main() -> int:
     check("derive payload 支持透明背景", dp.background == "transparent")
     check("derive payload 默认背景中灰",
           ViewDerivePayload(projectId=pid, view="back").background == "gray")
+    check("derive payload 带角色描述",
+          ViewDerivePayload(projectId=pid, view="side", character="左腰挎刀").character
+          == "左腰挎刀"
+          and ViewDerivePayload(projectId=pid, view="side").character == "")
 
     print("== 项目文件夹（输入与产出都落在项目目录） ==")
     from backend.app.config import PROJECTS_DIR

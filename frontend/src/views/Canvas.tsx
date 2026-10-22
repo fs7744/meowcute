@@ -1030,6 +1030,9 @@ export default function Canvas({ projectId, onBack }: Props) {
     const maxSeqLen = gp?.maxSeqLen ?? null
     // 背景必须跟正视图一致：拼板按各张底色抠图，底色不同就会咬出异色边
     const background = gp?.background ?? 'gray'
+    // 角色描述跟着正视图走：视角指令把它当部件清单，腰挎的刀/背上的弓这类
+    // 细长配件不会在重画身体时被漏掉（上游是选图节点时没有可继承的描述）
+    const character = gen?.prompt?.trim() ?? ''
     const { taskId } = await api.threeviewDerive({
       projectId: project.id,
       origAssetId: srcOut.kind === 'images' ? im.assetId : '',
@@ -1045,6 +1048,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       height,
       maxSeqLen,
       background,
+      character,
     })
     activeTaskRef.current = taskId
     setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
