@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""make_dirs8_sheets.py — 八方向对跑结果的三联对比图（锚点 | 2.1 | edit-2511）。
+"""make_dirs8_sheets.py — 八方向对跑结果的三联对比图（锚点 | 2.1 | 已归档的 edit-2511 基线）。
+
+右列数据是 2026-10 迁到 Qwen-Image-2.1 之前用 Edit-2511 跑的旧结果，只作历史
+对照；Edit-2511 的权重与管线已从项目移除（2026-10-23），不再重跑。
 
 用法：.venv/Scripts/python.exe tools/make_dirs8_sheets.py
 产出：.verify/exp-b/sheets/<direction>.png（每张 384*3 宽）
@@ -16,7 +19,7 @@ OUT = ROOT / ".verify" / "exp-b"
 SHEETS = OUT / "sheets"
 ANCHOR = OUT / "walkdown-frame0.png"
 DIRS = ["down-left", "left", "up-left", "up", "up-right", "right", "down-right"]
-LABELS = ["锚点(正面)", "Qwen-2.1", "Edit-2511"]
+LABELS = ["锚点(正面)", "Qwen-2.1", "Edit-2511(归档基线)"]
 CELL = (384, 512)
 PAD = 8
 HDR = 22

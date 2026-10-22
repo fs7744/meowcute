@@ -408,6 +408,29 @@ def main() -> int:
               all(v["matte"] == "alpha" for v in tviews),
               str([v["matte"] for v in tviews]))
 
+    print("== 底座统一：图片侧只有 Qwen-Image-2.1 ==")
+    # 2026-10-23：Z-Image / Edit-2511 / Layered 的 loader 与设置项全部删除。
+    # 这些断言是「不再退回多底座」的护栏：谁要再把旧底座加回来，会先在这里红。
+    from backend.app.config import DEFAULT_SETTINGS, KNOWN_MODELS
+    from backend.app.providers.diffusers_local import DiffusersProvider, detect_family
+    check("已知底座只剩 qwen21 / wan",
+          set(KNOWN_MODELS.values()) == {"qwen21", "wan"}, str(KNOWN_MODELS))
+    check("默认图片底座是 Qwen-Image-2.1",
+          DEFAULT_SETTINGS["providers"]["diffusers"]["model"] == "models/qwen-image-2.1",
+          DEFAULT_SETTINGS["providers"]["diffusers"]["model"])
+    # 默认步数曾是 Z-Image 的 9 步；Qwen-Image-2.1 是非蒸馏底座，必须 40 步
+    check("默认步数不再写死（改由 provider 按底座兜底）",
+          DEFAULT_SETTINGS["defaults"]["steps"] is None,
+          str(DEFAULT_SETTINGS["defaults"]["steps"]))
+    check("qwen-image-2.1 目录识别为 qwen21",
+          detect_family("models/qwen-image-2.1") == "qwen21")
+    check("旧底座目录不再被识别（不会静默走错 loader）",
+          detect_family("models/z-image-turbo") == "unknown"
+          and detect_family("models/qwen-image-edit-2511") == "unknown")
+    check("旧 loader 已删除",
+          not hasattr(DiffusersProvider, "_load_zimage")
+          and not hasattr(DiffusersProvider, "_load_qwen_edit"))
+
     print("== 视角生成：参数复用正视图 ==")
     from backend.app.pipelines.threeview import _apply_background
     instr = _apply_background("把角色转成侧面。", "gray")

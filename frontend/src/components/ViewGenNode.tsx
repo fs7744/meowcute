@@ -182,11 +182,6 @@ export default function ViewGenNode({
                 </div>
               </>
             ) : null}
-            {meta?.autoRouted ? (
-              <div className="hint" style={{ marginTop: 4 }}>
-                已自动路由到编辑底座（Qwen-Image-Edit）。
-              </div>
-            ) : null}
             {(meta as any)?.bgWarning ? (
               <div className="warn" style={{ marginTop: 4 }}>{(meta as any).bgWarning}</div>
             ) : null}

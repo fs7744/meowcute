@@ -184,6 +184,8 @@ export default function Canvas({ projectId, onBack }: Props) {
   const [project, setProject] = useState<Project | null>(null)
   const [template, setTemplate] = useState<Template | null>(null)
   const [styles, setStyles] = useState<Style[]>([])
+  /** 设置页「新建节点时的默认值」（width/height/n/background） */
+  const [nodeDefaults, setNodeDefaults] = useState<Record<string, any>>({})
   const [backgrounds, setBackgrounds] = useState<BackgroundOption[]>([])
   const [examples, setExamples] = useState<PromptExample[]>([])
   const [categories, setCategories] = useState<string[]>([])
@@ -247,7 +249,8 @@ export default function Canvas({ projectId, onBack }: Props) {
       api.styles(),
       api.promptExamples(),
       api.templates(),
-    ]).then(([pr, st, ex, tp]) => {
+      api.settings(),
+    ]).then(([pr, st, ex, tp, se]) => {
       if (!alive) return
       const tpl = tp.templates.find((t) => t.id === pr.project.templateId) || null
       setProject(pr.project)
@@ -257,6 +260,8 @@ export default function Canvas({ projectId, onBack }: Props) {
       setExamples(ex.examples)
       setCategories(ex.categories)
       setTemplate(tpl)
+      // 设置页的「新建节点默认值」：新建生成卡时预填（模板 defaults 仍可覆盖）
+      setNodeDefaults(se.settings?.defaults || {})
       lastPayload.current = JSON.stringify({
         name: pr.project.name, nodes: pr.project.nodes,
         edges: pr.project.edges, viewport: pr.project.viewport,
@@ -442,7 +447,9 @@ export default function Canvas({ projectId, onBack }: Props) {
       : (rect
         ? toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2)
         : { x: 200, y: 160 })
-    const d = template?.defaults || {}
+    // 优先级：模板 defaults > 设置页 defaults > 硬编码兜底。
+    // 设置页那一层以前只是摆设（没有任何代码读它），用户改了不生效。
+    const d = { ...nodeDefaults, ...(template?.defaults || {}) } as any
     const node: GenNodeType = {
       id: newId('gen'),
       type: 'generate',

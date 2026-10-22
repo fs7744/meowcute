@@ -55,7 +55,7 @@ pixelforge/
 │     ├─ prompt_examples.py 内置示例（可增删改、软删除）
 │     ├─ doctor.py         环境体检
 │     ├─ progress.py       任务进度与取消（SSE）
-│     ├─ providers/        diffusers 本地底座（Z-Image / Qwen 家族）
+│     ├─ providers/        diffusers 本地底座（Qwen-Image-2.1 / Wan）
 │     └─ pipelines/        perfect_pixel · palette · refine · matte ·
 │                          sequence · spritesheet · threeview · walkvideo
 ├─ frontend/              React 18 + TypeScript + Vite（模板/项目/画布/设置四页）
@@ -68,7 +68,7 @@ pixelforge/
 - **后端**：FastAPI；推理走 `diffusers` 本地底座，家族互斥换出（不同时驻留）以省显存。
 - **前端**：React 18 + TypeScript + Vite，无限画布交互（缩放/平移/拖节点/连线/删除）。
 - **模型层是两条腿**：
-  - 生产面：文生图默认 **Z-Image-Turbo**；编辑/四视图/八方向推导当前底座 **Qwen-Image-2.1**（原生 RGBA 透明，比上一代 edit-2511 更忠实、更省显存）；行走视频用 **Wan2.2-TI2V-5B**。
+  - 生产面：**Qwen-Image-2.1 一个底座管所有图片**——文生图、带参考图的指令改图（四视图 / 八方向推导）、原生 RGBA 透明输出；行走视频用 **Wan2.2-TI2V-5B**。带不带参考图由节点决定，模型不用切，负面词走 true_cfg 真正生效。
   - 研究面（`tools/`）：`exp_exploded_parts.py`（扣部件爆炸图）+ `rigwalk_ghibli.py`（套骨骼行走），以及 see-through 候选方案。
 - **后处理纯 numpy/PIL**：FFT 网格对齐、共享调色板、抠图都不碰模型，几秒出结果，无 GPU 也能测。
 
@@ -80,7 +80,7 @@ pixelforge/
 
 光写一句 "pixel art" 出不了像素图——模型只会给你一张「看起来像像素」的模糊图。这里拆成三道互相兜底的关卡：
 
-1. **提示词契约**（生成侧）：把网格尺寸、每格单色、限定色板、无抗锯齿、硬轮廓写进提示词，先让模型往网格上画。风格词放最前——Z-Image 的编码器是因果结构，尾部 token 权重最弱。
+1. **提示词契约**（生成侧）：把网格尺寸、每格单色、限定色板、无抗锯齿、硬轮廓写进提示词，先让模型往网格上画。风格词放最前——Qwen3-VL 编码器是因果结构，尾部 token 权重最弱。
 2. **FFT 网格对齐**（后处理）：FFT 找出画面里真实的像素块大小 → Sobel 梯度峰吸附网格线 → 每格多数表决采样。块大小是量出来的，不靠猜。
 3. **共享调色板**（后处理）：频次加权最远点采样压到 16 色内。按出现频次加权（而非面积占比，否则背景白占满色位），用感知距离（2/4/3）挑色。
 
@@ -96,7 +96,7 @@ pixelforge/
 
 **目标**：一张人物参考图 → 语义部件（头/双臂/躯干/双腿各自独立）→ 套现成骨骼行走骨架 → GIF。
 
-**已验证可用路线（edit-2511 爆炸图）**，`tools/exp_exploded_parts.py --ghibli --enhance --v3 --mirror` + `tools/rigwalk_ghibli.py <部件目录>`：
+**已验证可用路线（爆炸图，原用 edit-2511，现走 Qwen-Image-2.1）**，`tools/exp_exploded_parts.py --ghibli --enhance --v3 --mirror` + `tools/rigwalk_ghibli.py <部件目录>`：
 
 1. 提示词把布局钉成网格（头/双臂/躯干/双腿各行），**v3 关键：强制头与躯干断开留白**，负向禁「头身一体」。
 2. 分割掩码 = `luma<190 | chroma>40`（暗描边或高饱和），连通域 + `binary_fill_holes`，**alpha 用掩码**（不能按白色阈值抠底，白身体会被抠穿）。
@@ -185,7 +185,7 @@ python tools/gen_icon.py          # 模型按像素契约出 4 张候选 → 精
 python tools/gen_icon.py --pick 1 # 选第 1 张，写成 favicon.ico / favicon-32.png / favicon-192.png
 ```
 
-流程：Z-Image 按「32×32 网格 + 12 色 + 硬边」契约出图 → FFT 网格对齐精修 → 泛洪抠掉中灰背景。16px 档不走最近邻硬缩（会打断轮廓），改 2×2 块多数表决降采样。
+流程：Qwen-Image-2.1 按「32×32 网格 + 12 色 + 硬边」契约出图 → FFT 网格对齐精修 → 泛洪抠掉中灰背景。16px 档不走最近邻硬缩（会打断轮廓），改 2×2 块多数表决降采样。
 
 ---
 
@@ -209,10 +209,13 @@ torchao 0.16.0 · accelerate 1.15.0
 
 | 底座 | 角色 | 备注 |
 |---|---|---|
-| **Z-Image-Turbo** | 文生图（中文原生） | 默认生图底座 |
-| **Qwen-Image-2.1** | 指令式编辑 / 四视图 / 八方向推导 | 原生 RGBA 透明、更忠实、更省显存，当前编辑默认底座 |
-| Qwen-Image-Edit-2511 | 上一代编辑底座（fp8） | 迁移对照基线 |
+| **Qwen-Image-2.1** | 文生图 / 指令改图（四视图、八方向推导）/ 原生 RGBA 透明 | 唯一的图片底座，fp8 + cpu offload 峰值约 14.8GB，40 步 |
 | Wan2.2-TI2V-5B | 行走视频生成 | fp8 量化 |
+
+> 2026-10-23 起图片侧只保留 Qwen-Image-2.1：Z-Image-Turbo 与 Qwen-Image-Edit-2511
+> 两条管线（loader / 参数 / 设置项）已从代码删除，权重移归档目录。三套底座并存时
+> 「负面词只在一个族生效」「透明声明只在一个族被识别」这类静默失效反复出现，
+> 统一后这类问题不再有藏身之处。
 | see-through（外部） | 单图→23 语义透明图层 | 候选方案，权重待下载 |
 
 当前 `models/` 目录已就位的权重：`qwen-image-2.1`、`wan2.2-ti2v-5b`。

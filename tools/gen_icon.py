@@ -1,6 +1,6 @@
 """用本项目自己的模型和管线生成「可爱的像素猫」图标。
 
-流程：Z-Image 按像素契约出图 → FFT 网格对齐精修到 32×32 → 抠掉中灰背景 → 拼候选图。
+流程：Qwen-Image-2.1 按像素契约出图 → FFT 网格对齐精修到 32×32 → 抠掉中灰背景 → 拼候选图。
 
 用法：
     python tools/gen_icon.py              # 生成 4 个候选，输出 tools/icon_candidates.png

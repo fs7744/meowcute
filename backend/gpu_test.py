@@ -1,4 +1,4 @@
-"""真实 GPU 生成验证：Z-Image 文生图 → 像素精修 → 落盘。
+"""真实 GPU 生成验证：Qwen-Image-2.1 文生图 → 像素精修 → 落盘。
 
 用法：python backend/gpu_test.py [--refs]
 产物：backend/_gpu_out/*.png（原图 + 精修图，供人眼检查）

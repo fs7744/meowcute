@@ -153,7 +153,7 @@ TEMPLATES: List[Dict[str, Any]] = [
         "accent": "#00FF88",
         "icon": "sprite",
         "description": (
-            "用本地 Z-Image 底座把文字描述变成游戏素材，再用确定性管线把 AI 的"
+            "用本地 Qwen-Image-2.1 底座把文字描述变成游戏素材，再用确定性管线把 AI 的"
             "「像素感」收成真像素：自动检测网格、每格取主色、限定调色板、"
             "alpha 二值化。支持多张参考图（自动路由到编辑底座）与 15 种游戏画风。"
         ),
@@ -180,7 +180,7 @@ TEMPLATES: List[Dict[str, Any]] = [
         ],
         "steps": [
             {"n": 1, "title": "组装提示词", "detail": "画风词前置 → 主体 → 像素契约；纯字符串拼接，可预览"},
-            {"n": 2, "title": "本地推理", "detail": "无参考图走 Z-Image（9 步）；有参考图自动走 Qwen-Image-Edit（40 步）"},
+            {"n": 2, "title": "本地推理", "detail": "同一个 Qwen-Image-2.1：无参考图文生图、带参考图指令改图（40 步）"},
             {"n": 3, "title": "像素精修", "detail": "FFT 检测网格 → 网格线吸附 → 每格取中位色 → 共享色板量化 → alpha 二值化"},
             {"n": 4, "title": "扣除背景", "detail": "u2net 语义分割（退化到 GrabCut / 颜色键）+ 硬边 alpha + 边缘去污"},
             {"n": 5, "title": "落盘成卡", "detail": "结果以卡片落到无限画布，保留原图与精修两版，可放大对比"},

@@ -2,14 +2,12 @@
 """生成一张宫崎骏动画风格的正面角色参考图（干净浅底），给爆炸图路线当硬核测试。
 
 复杂点（对比之前三头身像素小人）：飘逸长发盖肩、连衣裙复杂衣褶、非对称姿态，
-用来检验「edit-2511 爆炸图」对复杂角色的泛化能力。
+用来检验视角接力对复杂角色的泛化能力。底座：Qwen-Image-2.1（2026-10-23 起唯一图片底座）。
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-
-import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -26,15 +24,24 @@ PROMPT = (
 
 
 def main():
+    import asyncio
+
+    from backend.app.config import load_settings
     from backend.app.providers.diffusers_local import DiffusersProvider
 
-    prov = DiffusersProvider({"model": "models/z-image-turbo"})
-    gen = torch.Generator("cpu").manual_seed(7)
-    imgs, meta = prov._run_zimage(
-        "models/z-image-turbo", PROMPT, 768, 768, 9, 7, gen, 1)
+    cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
+
+    async def _run():
+        prov = DiffusersProvider(cfg)
+        res = await prov.generate(prompt=PROMPT, width=768, height=768,
+                                  steps=40, seed=7, n=1)
+        return res
+
+    res = asyncio.run(_run())
     p = OUT / "ref.png"
-    imgs[0].save(p)
-    print(f"SAVED {p} size={imgs[0].size} mode={imgs[0].mode} meta={meta}")
+    res.images[0].save(p)
+    print(f"SAVED {p} size={res.images[0].size} mode={res.images[0].mode} "
+          f"meta={res.meta}")
 
 
 if __name__ == "__main__":

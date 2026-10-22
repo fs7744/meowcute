@@ -39,9 +39,10 @@ class BaseProvider:
     ) -> ProviderResult:
         """refs 参考图入参：
 
-        - Z-Image 是纯文生图，喂参考图会自动改走编辑底座（autoRouted），
-          而不是把参考图悄悄丢掉；
-        - Qwen-Image-Edit 走指令式编辑，refs 支持多张（最多 4 张）语义组合。
+        - 只有一个图片底座 Qwen-Image-2.1：带 refs 就是指令改图，不带就是
+          文生图，不存在「喂了参考图被悄悄丢掉」的分支；
+        - refs 支持多张（最多 4 张），按 _normalize_refs 的顺序排列，
+          第一张决定输出宽高比。
         """
         raise NotImplementedError
 

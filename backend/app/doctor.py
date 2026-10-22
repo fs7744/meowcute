@@ -48,8 +48,8 @@ def run_doctor() -> Dict[str, Any]:
                 "cuda", "CUDA GPU", True,
                 detail=f"{gpu_name} · {vram}GB（可用 {free_vram}GB）"))
             items.append(_item(
-                "vram", "显存余量", free_vram >= 20.0,
-                detail=f"当前可用 {free_vram}GB，Z-Image 需约 20.5GB、Qwen-Edit 约 21GB",
+                "vram", "显存余量", free_vram >= 15.0,
+                detail=f"当前可用 {free_vram}GB，Qwen-Image-2.1 fp8 峰值约 14.8GB",
                 fix="关闭浏览器硬件加速 / 游戏 / 视频播放 / 其他 AI 工具后重试。"
                     "显存不足不会报错，但推理会慢 50-100 倍（走共享内存）。",
                 level="warn"))
@@ -71,7 +71,7 @@ def run_doctor() -> Dict[str, Any]:
             items.append(_item("diffusers", "diffusers", True, detail=diffusers.__version__))
         except Exception as e:
             items.append(_item("diffusers", "diffusers", False, detail=str(e)[:200],
-                               fix="pip install -U diffusers（需含 ZImagePipeline）"))
+                               fix="pip install -U diffusers（需含 QwenImagePipeline）"))
     else:
         items.append(_item("diffusers", "diffusers", False, detail="未安装",
                            fix="pip install diffusers transformers accelerate safetensors"))
@@ -83,11 +83,14 @@ def run_doctor() -> Dict[str, Any]:
         "models", "本地模型权重", "qwen21" in families,
         detail="、".join(f"{m['name']}（{m['gb']}GB）" for m in models) or f"{MODELS_DIR} 下没有识别到模型",
         fix="把 qwen-image-2.1 放到项目 models/ 目录。"))
+    # 文生图与改图是同一个模型（Qwen-Image-2.1），所以这一项和上面同生共死；
+    # 保留一项是为了在 UI 上把「参考图生成」单独说清楚，别让用户以为还要另配。
     items.append(_item(
-        "edit_model", "编辑底座（参考图用）", "qwen21" in families or "qwen_edit" in families,
-        detail="有参考图时走 Qwen-Image-2.1 改图模式" if ("qwen21" in families or "qwen_edit" in families)
-        else "未找到 qwen-image-2.1：参考图生成不可用",
-        fix="把 qwen-image-2.1 放到 models/，或只用无参考图的文生图。",
+        "edit_model", "参考图改图", "qwen21" in families,
+        detail="文生图 / 改图同一个模型：Qwen-Image-2.1（带参考图时自动走改图模式）"
+        if "qwen21" in families
+        else "未找到 qwen-image-2.1：参考图生成不可用（文生图同样不可用）",
+        fix="把 qwen-image-2.1 放到 models/ 目录。",
         level="warn"))
 
     # ---- 数据目录 ----
@@ -120,7 +123,7 @@ def run_doctor() -> Dict[str, Any]:
 
     errors = [i for i in items if not i["ok"] and i["level"] == "error"]
     warns = [i for i in items if not i["ok"] and i["level"] == "warn"]
-    can_generate = torch_ok and "zimage" in families and importlib.util.find_spec("diffusers") is not None
+    can_generate = torch_ok and "qwen21" in families and importlib.util.find_spec("diffusers") is not None
     return {
         "ok": len(errors) == 0,
         "canGenerate": bool(can_generate),

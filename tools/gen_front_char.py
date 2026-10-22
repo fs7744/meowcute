@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""生成一张正面 A-pose 角色（干净白底），给纸娃娃骨骼方案当演示素材。"""
-import os
+"""生成一张正面 A-pose 角色（干净白底），给纸娃娃骨骼方案当演示素材。
+
+底座：Qwen-Image-2.1（2026-10-23 起唯一图片底座，文生图/改图同一个模型）。
+"""
 import sys
-import torch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,11 +19,21 @@ PROMPT = (
     "三头身比例，短红披风，圆头大眼，纯品红色背景，全身可见，游戏素材风格"
 )
 
-prov = DiffusersProvider({"model": "models/z-image-turbo"})
-gen = torch.Generator("cpu").manual_seed(42)
-out = prov._run_zimage(
-    "models/z-image-turbo", PROMPT, 768, 768, 9, 42, gen, 1)
-imgs, meta = out
+import asyncio
+
+from backend.app.config import load_settings
+
+cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
+
+
+async def _run():
+    prov = DiffusersProvider(cfg)
+    return await prov.generate(prompt=PROMPT, width=768, height=768,
+                               steps=40, seed=42, n=1)
+
+
+res = asyncio.run(_run())
 p = OUT / "front-char.png"
-imgs[0].save(p)
-print(f"SAVED {p} size={imgs[0].size} mode={imgs[0].mode} meta={meta}")
+res.images[0].save(p)
+print(f"SAVED {p} size={res.images[0].size} mode={res.images[0].mode} "
+      f"meta={res.meta}")

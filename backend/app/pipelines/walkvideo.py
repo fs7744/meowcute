@@ -291,7 +291,7 @@ async def derive_direction(
     多数方向的角度差只有 0 或 45 度——比从正视图硬转 90/180 度稳得多：
     旋转幅度越小，编辑器越不容易改动服装、配件和画风。
 
-    走 Qwen-Image-Edit-2511：外观保持最好，且不需要重新描述角色。
+    走 Qwen-Image-2.1 指令改图：外观保持最好，且不需要重新描述角色。
     provider 带 refs 时会自动路由到编辑底座。
     """
     from ..providers.diffusers_local import DiffusersProvider
@@ -323,7 +323,6 @@ async def derive_direction(
         "instruction": instruction,
         "steps": rmeta.get("steps"), "seed": seed,
         "model": rmeta.get("model"),
-        "autoRouted": bool(rmeta.get("autoRouted")),
         "seconds": round(time.time() - t, 1),
     }
 

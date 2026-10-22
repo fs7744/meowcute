@@ -636,8 +636,8 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
         pixel_on = bool(pixel.enabled and style_def and style_def.get("pixelClass"))
         meta["pixelOn"] = pixel_on
 
-        # 透明背景只有 Qwen-Image-2.1（qwen21 族）能原生输出；旧底座
-        # （Z-Image / Edit-2511）会忽略 RGBA 声明给出不透明图，必须明说。
+        # 透明背景只有 Qwen-Image-2.1 能原生输出（VAE 第 4 通道）；
+        # 走到这里说明底座不是它（设置里被改成了别的路径），必须明说。
         if params.background == "transparent" and meta.get("family") != "qwen21":
             meta["bgWarning"] = (
                 f"当前底座（{meta.get('family') or '未知'}）不支持原生透明输出，"
@@ -709,7 +709,6 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
                 "seqLen": meta.get("seqLen"),
                 "seed": seed,
                 "seconds": elapsed,
-                "autoRouted": bool(meta.get("autoRouted")),
                 "vramWarning": meta.get("vramWarning"),
                 "bgWarning": meta.get("bgWarning"),
                 # 峰值显存（GB）：显存是这条工具链最容易被抱怨的资源，报出来

@@ -211,33 +211,44 @@ function ModelPanel() {
     }
   }
 
-  const modelPaths = models.map((m) => m.path)
+  // 图片底座只列图片族（qwen21），视频底座只列视频族（wan）：混列会让用户
+  // 把 Wan 选成生图模型，然后在 _run 里才报「暂不支持的模型族」。
+  const imageModels = models.filter((m) => m.family === 'qwen21')
+  const videoModels = models.filter((m) => m.family === 'wan')
+  const imagePaths = imageModels.map((m) => m.path)
+  const videoPaths = videoModels.map((m) => m.path)
 
   return (
     <>
       <div className="card card-pad">
         <div className="section-title" style={{ marginBottom: 4 }}>本地底座</div>
         <div className="hint" style={{ lineHeight: 1.75, marginBottom: 14 }}>
-          两个模型按需换入换出，同一时间只占一份显存：纯文字走 Z-Image-Turbo（9 步出图），
-          带参考图或要改图时自动路由到 Qwen-Image-Edit（40 步）。
+          <b>Qwen-Image-2.1 一个底座同时管三件事</b>：文生图、带参考图的指令改图、原生 RGBA 透明输出
+          （带不带参考图由节点自己决定，模型不用切）。视频底座 Wan2.2 TI2V-5B 按需换入换出，
+          同一时间只占一份显存，跑完即释放。
         </div>
 
         <div className="form-grid">
           <label className="field">
-            <span className="field-label">文生图模型</span>
-            <select className="select" value={diff.model || ''} onChange={(e) => patchDiff('model', e.target.value)}>
-              {modelPaths.length === 0 ? <option value={diff.model || ''}>{diff.model || '未发现模型'}</option> : null}
-              {modelPaths.map((p) => <option key={p} value={p}>{p}</option>)}
-              {diff.model && !modelPaths.includes(diff.model) ? <option value={diff.model}>{diff.model}（缺失）</option> : null}
+            <span className="field-label">图片底座（文生图 / 改图通用）</span>
+            <select className="select" value={diff.model || ''} onChange={(e) => {
+              // 改图复用同一个模型：两个字段一起改，别让它们漂移后出现
+              // 「文生图是新底座、改图是旧底座」的混合状态
+              const v = e.target.value
+              patch({ providers: { ...settings.providers, diffusers: { ...diff, model: v, editModel: v } } })
+            }}>
+              {imagePaths.length === 0 ? <option value={diff.model || ''}>{diff.model || '未发现图片底座'}</option> : null}
+              {imagePaths.map((p) => <option key={p} value={p}>{p}</option>)}
+              {diff.model && !imagePaths.includes(diff.model) ? <option value={diff.model}>{diff.model}（缺失）</option> : null}
             </select>
           </label>
 
           <label className="field">
-            <span className="field-label">编辑 / 参考图模型</span>
-            <select className="select" value={diff.editModel || ''} onChange={(e) => patchDiff('editModel', e.target.value)}>
-              {modelPaths.length === 0 ? <option value={diff.editModel || ''}>{diff.editModel || '未发现模型'}</option> : null}
-              {modelPaths.map((p) => <option key={p} value={p}>{p}</option>)}
-              {diff.editModel && !modelPaths.includes(diff.editModel) ? <option value={diff.editModel}>{diff.editModel}（缺失）</option> : null}
+            <span className="field-label">视频底座（行走视频用）</span>
+            <select className="select" value={diff.videoModel || ''} onChange={(e) => patchDiff('videoModel', e.target.value)}>
+              {videoPaths.length === 0 ? <option value={diff.videoModel || ''}>{diff.videoModel || '未发现视频底座'}</option> : null}
+              {videoPaths.map((p) => <option key={p} value={p}>{p}</option>)}
+              {diff.videoModel && !videoPaths.includes(diff.videoModel) ? <option value={diff.videoModel}>{diff.videoModel}（缺失）</option> : null}
             </select>
           </label>
 
@@ -266,14 +277,12 @@ function ModelPanel() {
 
       <div className="card card-pad">
         <div className="section-title" style={{ marginBottom: 4 }}>新建节点时的默认值</div>
-        <div className="hint" style={{ marginBottom: 14 }}>只影响之后新建的生成卡，已有节点不受影响。</div>
+        <div className="hint" style={{ marginBottom: 14 }}>
+          只影响之后新建的生成卡（在画布上点「生成图」时预填），已有节点不受影响。
+          步数不在这里设：Qwen-Image-2.1 是非蒸馏底座，固定按 40 步跑（官方推荐值）。
+        </div>
 
         <div className="form-grid">
-          <label className="field">
-            <span className="field-label">默认步数</span>
-            <input className="input" type="number" min={1} max={80} value={defs.steps ?? 9}
-              onChange={(e) => patchDefs('steps', Number(e.target.value))} />
-          </label>
           <label className="field">
             <span className="field-label">默认张数</span>
             <input className="input" type="number" min={1} max={4} value={defs.n ?? 1}

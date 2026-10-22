@@ -205,7 +205,7 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
           <div className="section-title">本地优先</div>
         </div>
         <div className="hint" style={{ lineHeight: 1.9, maxWidth: 860 }}>
-          生成使用项目 models/ 目录下的本地权重（Z-Image-Turbo 文生图 / Qwen-Image-Edit 参考图编辑），
+          生成使用项目 models/ 目录下的本地权重（Qwen-Image-2.1 一个底座：文生图 / 参考图改图 / 原生透明），
           数据全部落在本机 data/ 目录，不上传任何素材。设置页可查看模型体检与显存状态；
           未来接入第三方接口时，只需替换生成端，像素精修与项目结构不变。
         </div>

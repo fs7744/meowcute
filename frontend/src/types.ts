@@ -566,7 +566,6 @@ export type ResultImage = {
     steps?: number
     seed?: number
     model?: string
-    autoRouted?: boolean
     seconds?: number
   }
   /** 这张图是否是四视图拼板 */
@@ -586,7 +585,6 @@ export type ResultMeta = {
   steps?: number
   seed?: number
   seconds?: number
-  autoRouted?: boolean
   vramWarning?: string | null
   /** 选了透明背景但当前底座不支持原生 RGBA 时的提示 */
   bgWarning?: string | null

@@ -105,9 +105,10 @@ from ..styles import background_phrase
 DEFAULT_BG = (27, 67, 50)
 
 # 视角接力的负面词。只放「这个视角绝不该出现的东西」，不放画风词：
-# 编辑底座走 true_cfg_scale=4.0，负面词真的参与 CFG（不像 Z-Image 是
-# guidance 蒸馏、负面词恒无效）。「地面/接地阴影」是实测最顽固的一项：
-# 角色在中灰底上站着，模型几乎必然补一圈接触阴影，正面描述压不住时靠它兜。
+# Qwen-Image-2.1 走 true_cfg_scale=4.0，负面词真的参与 CFG（历史上另一条
+# guidance 蒸馏底座 negative 恒无效，才逼出「把结果说成画面事实」的写法）。
+# 「地面/接地阴影」是实测最顽固的一项：角色在中灰底上站着，模型几乎必然
+# 补一圈接触阴影，正面描述压不住时靠它兜。
 VIEW_NEGATIVE = "地面, 地面线, 接地阴影, 椭圆投影, 倒影, 两个角色, 重复的配件, 文字, 水印"
 
 # 视角元数据：名称 + 正视图姿势词
@@ -168,7 +169,7 @@ def _character_clause(character: str) -> str:
 def _view_instruction(view: str, character: str = "") -> str:
     """编辑底座的中文指令：只转视角，外观/服装/配色/画风零改动。
 
-    编辑器（Qwen-Image-Edit-2511 / Qwen-Image-2.1）吃中文指令。指令由八段
+    编辑器（Qwen-Image-2.1）吃中文指令。指令由八段
     组成，顺序即优先级：转到哪 → 这一侧能看到什么（自身左右锚定）→ 部件
     清单 → 配件守恒 → 背覆体积守恒 → 遮挡守恒 → 身份锚点 → 外观/姿势不变。
     除部件清单（来自用户自己的角色描述）外全是通用几何约束，不点名任何
@@ -641,9 +642,8 @@ async def derive_view(
 ) -> Tuple[Image.Image, Dict[str, Any]]:
     """由正视图接力生成侧/背/右视图。
 
-    走编辑底座（Qwen-Image-Edit-2511 / Qwen-Image-2.1）的指令接力：外观保持最好，
-    且不需要重新描述角色。provider 带 refs 时会自动路由到编辑底座，Z-Image 纯文生图
-    底座不支持参考图，会直接抛出可读的配置提示。
+    走 Qwen-Image-2.1 的指令改图接力：外观保持最好，且不需要重新描述角色。
+    provider 带 refs 就是改图模式，同一个模型；没有参考图会直接报错。
 
     character = 正视图那句角色描述原文（可为空）：只用来给模型补一份「部件
     清单」，细长小配件（腰挎的刀/背上的弓/手上的杖）不会在重画身体时被漏掉；
@@ -701,7 +701,6 @@ async def derive_view(
         "steps": rmeta.get("steps"), "seed": seed,
         "model": rmeta.get("model"),
         "background": background,
-        "autoRouted": bool(rmeta.get("autoRouted")),
         "seconds": round(time.time() - t, 1),
     }
     # 透明背景只有 Qwen-Image-2.1（qwen21 族）能原生输出；旧底座会忽略

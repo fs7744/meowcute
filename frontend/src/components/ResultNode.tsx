@@ -97,7 +97,6 @@ export default function ResultNode({
               峰值显存 {m.vram.peakGB}GB
             </span>
           ) : null}
-          {m.autoRouted ? <span className="tag yellow">已自动路由编辑底座</span> : null}
           {m.refCount ? <span className="tag purple">{m.refCount} 参考图</span> : null}
         </div>
 

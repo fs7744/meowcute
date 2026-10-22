@@ -22,22 +22,19 @@ PROMPT_EXAMPLES_PATH = DATA_DIR / "prompt_examples.json"
 MODELS_DIR = ROOT / "models"
 
 # 已知底座目录名 → 族。用于设置页自动探测与下拉选择。
-# 2026-10-22 起主力底座为 Qwen-Image-2.1（文生图/改图/RGBA 三合一），
-# Z-Image 与 Qwen-Image-Edit-2511 退为可选旧档（权重已移归档目录）。
+# 2026-10-23 起图片侧只有 Qwen-Image-2.1（文生图 / 参考图编辑 / 原生 RGBA
+# 三合一），视频侧是 Wan2.2 TI2V-5B。旧底座（Z-Image / Edit-2511 / Layered）
+# 的权重已移归档目录，代码里的对应管线一并删除，不再探测。
 KNOWN_MODELS: Dict[str, str] = {
     "qwen-image-2.1": "qwen21",
     "wan2.2-ti2v-5b": "wan",
-    "z-image-turbo": "zimage",
-    "qwen-image-edit-2511": "qwen_edit",
-    "qwen-image-edit-2511-lightning": "qwen_edit_lora",
-    "qwen-image-layered": "qwen_layered",
 }
 
 DEFAULT_EDIT_MODEL = "models/qwen-image-2.1"
 DEFAULT_VIDEO_MODEL = "models/wan2.2-ti2v-5b"
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
-    # 本地底座：Qwen-Image-2.1（文生图 + 指令编辑/参考图，2026-10-22 迁移）
+    # 本地底座：Qwen-Image-2.1 一个模型同时管文生图与参考图编辑（2026-10-23 统一）
     # + Wan2.2 TI2V-5B（图生视频，行走视频节点用）
     "activeProvider": "diffusers",
     "providers": {
@@ -53,7 +50,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
             "enabled": True,
         },
     },
-    "defaults": {"steps": 9, "width": 512, "height": 512, "n": 1},
+    # 步数不给默认值：Qwen-Image-2.1 是非蒸馏底座，官方推荐 40 步，
+    # 由 provider 在 steps=None 时兜底（历史上这里是 Z-Image 的 9 步）
+    "defaults": {"steps": None, "width": 512, "height": 512, "n": 1},
     # 像素精修默认参数：选像素类画风时自动建议（block/colors 由画风给出）
     "pixel": {
         "enabled": True,
@@ -105,14 +104,8 @@ def scan_models() -> List[Dict[str, Any]]:
             if idx.is_file():
                 try:
                     cls = str(json.loads(idx.read_text(encoding="utf-8")).get("_class_name") or "")
-                    if "ZImage" in cls:
-                        family = "zimage"
-                    elif "QwenImage21" in cls:
+                    if "QwenImage21" in cls:
                         family = "qwen21"
-                    elif "QwenImageEdit" in cls:
-                        family = "qwen_edit"
-                    elif "QwenImageLayered" in cls:
-                        family = "qwen_layered"
                     elif "Wan" in cls:
                         family = "wan"
                 except Exception:
