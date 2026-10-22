@@ -74,12 +74,12 @@ const UPSTREAM_HINT: Record<string, string> = {
   refine: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
   matte: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
   viewgen: '选择图片 / 生成图 / 扣除背景 / 像素精修 / 图片结果',
-  threeview: '生成图 / 侧视图 / 背视图 / 扣除背景 / 图片结果',
+  threeview: '生成图 / 侧视图 / 右视图 / 背视图 / 扣除背景 / 图片结果',
   walkvideo: '生成图 / 选择图片 / 扣除背景 / 像素精修',
   sequence: '行走视频',
   spritesheet: '序列帧',
   play: '精灵整图',
-  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 三视图拼板 / 行走链',
+  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 四视图拼板 / 行走链',
 }
 
 function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): boolean {
@@ -89,7 +89,7 @@ function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): b
 }
 
 /** 只能接收单条入边的类型：新连线替换旧入边，避免多源歧义。
- *  三视图拼板不在列：它要收正/侧/背三路。 */
+ *  四视图拼板不在列：它要收正/侧/背/右四路。 */
 const SINGLE_INPUT = new Set(['refine', 'matte', 'result', 'viewgen',
                               'walkvideo', 'sequence', 'spritesheet', 'play'])
 
@@ -120,6 +120,8 @@ const NODE_CATALOG: {
     items: [
       { type: 'viewgen', label: '生成侧视图', dot: 'd-view', preset: 'side',
         hint: '编辑底座指令接力：转成侧面，造型以正视图为准' },
+      { type: 'viewgen', label: '生成右视图', dot: 'd-view', preset: 'side_r',
+        hint: '同链路转向画面右侧：与侧视图镜像，补全四视图' },
       { type: 'viewgen', label: '生成背视图', dot: 'd-view', preset: 'back',
         hint: '同链路转 180°：脸部不可见，不新增衣物配件' },
     ],
@@ -131,7 +133,7 @@ const NODE_CATALOG: {
         hint: '网格对齐 + 调色板量化，输出原生像素尺寸' },
       { type: 'matte', label: '扣除背景', dot: 'd-matte',
         hint: 'u2net / GrabCut 抠图，输出透明底 PNG' },
-      { type: 'threeview', label: '三视图拼板', dot: 'd-threeview',
+      { type: 'threeview', label: '四视图拼板', dot: 'd-threeview',
         hint: '正/侧/背三张按共同基线拼成横向板' },
     ],
   },
@@ -160,7 +162,7 @@ const NODE_CATALOG: {
 const NODE_LABEL: Record<string, string> = {
   input: '选择图片', generate: '生成图', refine: '像素精修',
   matte: '扣除背景', result: '图片结果',
-  viewgen: '生成视角', threeview: '三视图拼板',
+  viewgen: '生成视角', threeview: '四视图拼板',
   walkvideo: '行走视频', sequence: '序列帧',
   spritesheet: '精灵整图', play: '可操控预览',
 }
@@ -530,7 +532,10 @@ export default function Canvas({ projectId, onBack }: Props) {
     else if (type === 'generate') addGenNode(at)
     else if (type === 'refine') addRefineNode(at)
     else if (type === 'matte') addMatteNode(at)
-    else if (type === 'viewgen') addViewGenNode(at, preset === 'back' ? 'back' : 'side')
+    else if (type === 'viewgen') {
+      const pv = preset === 'back' ? 'back' : preset === 'side_r' ? 'side_r' : 'side'
+      addViewGenNode(at, pv)
+    }
     else if (type === 'threeview') addThreeViewNode(at)
     else if (type === 'walkvideo') addWalkVideoNode(at)
     else if (type === 'sequence') addSequenceNode(at)
@@ -539,7 +544,9 @@ export default function Canvas({ projectId, onBack }: Props) {
     else addEmptyResultNode(at)
   }
 
-  const addViewGenNode = (at: { x: number; y: number }, view: 'side' | 'back' = 'side') => {
+  const addViewGenNode = (
+    at: { x: number; y: number }, view: 'side' | 'back' | 'side_r' = 'side',
+  ) => {
     if (!project) return
     const spot = { x: Math.round(at.x), y: Math.round(at.y) }
     const node: ViewGenNodeType = {
@@ -848,7 +855,7 @@ export default function Canvas({ projectId, onBack }: Props) {
     return out
   }
 
-  // ---------- 角色三视图 / 八方向行走 ----------
+  // ---------- 角色四视图 / 八方向行走 ----------
   /** 节点的产出图，外加它在磁盘上的位置（images/ 产出还是 refs/ 上传）。
    *  runtime 给定时优先用它——一键工作流里上游刚跑完，React 状态还没刷新。
    *  meta 是八方向链的结构化产出（walk / sequence / sheet），下游节点靠它
@@ -924,12 +931,15 @@ export default function Canvas({ projectId, onBack }: Props) {
    *  path 只做环检测，不能跨分支共享，否则菱形连线会误判。 */
   const roleOf = (
     id: string, path: Set<string> = new Set(),
-  ): 'front' | 'side' | 'back' | null => {
+  ): 'front' | 'side' | 'back' | 'side_r' | null => {
     if (path.has(id)) return null
     const p = projectRef.current
     const n = p?.nodes.find((x) => x.id === id)
     if (!n) return null
-    if (n.type === 'viewgen') return n.viewgen?.view === 'back' ? 'back' : 'side'
+    if (n.type === 'viewgen') {
+      const vw = n.viewgen?.view
+      return vw === 'back' ? 'back' : vw === 'side_r' ? 'side_r' : 'side'
+    }
     if (n.type === 'generate' || n.type === 'input') return 'front'
     const next = new Set(path)
     next.add(id)
@@ -940,7 +950,7 @@ export default function Canvas({ projectId, onBack }: Props) {
     return null
   }
 
-  /** 收齐正/侧/背三路输入：先看连进来的入边，缺的沿链条回溯补。
+  /** 收齐正/侧/背/右四路输入：先看连进来的入边，缺的沿链条回溯补。
    *  「生成图 → 侧视图 → 背视图 → 拼板」这条直线不用额外连线也能收齐三张。
    *  同时记下每张是从哪个节点收的，UI 上给个来源说明。 */
   const collectThreeViewOutputs = (
@@ -948,7 +958,7 @@ export default function Canvas({ projectId, onBack }: Props) {
   ) => {
     const p = projectRef.current
     type Hit = { images: ResultImage[]; kind: 'images' | 'refs'; file: string; from: string }
-    const found: Partial<Record<'front' | 'side' | 'back', Hit>> = {}
+    const found: Partial<Record<'front' | 'side' | 'back' | 'side_r', Hit>> = {}
     if (!p) return found
     const seen = new Set<string>([node.id])
     const queue = [node.id]
@@ -1006,7 +1016,10 @@ export default function Canvas({ projectId, onBack }: Props) {
       projectId: project.id,
       origAssetId: src.kind === 'images' ? im.assetId : '',
       sourceKind: src.kind, sourceFile: src.kind === 'refs' ? src.file : undefined,
-      view: node.viewgen?.view === 'back' ? 'back' : 'side',
+      view: (() => {
+        const vw = node.viewgen?.view
+        return vw === 'back' ? 'back' : vw === 'side_r' ? 'side_r' : 'side'
+      })(),
       styleId: node.viewgen?.styleId ?? null,
       steps: node.viewgen?.steps ?? null,
       seed: node.viewgen?.seed ?? null,
@@ -1034,7 +1047,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         ? ({ ...n, result } as CanvasNode) : n),
     } : p)
     pushDownstreamResult(node.id, [result], {})
-    // 链条末端（没有下游）才补一张结果卡：中间节点补卡会让三视图链上多出废卡
+    // 链条末端（没有下游）才补一张结果卡：中间节点补卡会让四视图链上多出废卡
     if (!projectRef.current?.edges.some((e) => e.from === node.id)) {
       ensureResultCard(node, [result], {})
     }
@@ -1060,17 +1073,21 @@ export default function Canvas({ projectId, onBack }: Props) {
   ): Promise<ResultImage> => {
     if (!project) throw new Error('项目未加载')
     const found = collectThreeViewOutputs(node, runtime)
-    const order: ('front' | 'side' | 'back')[] = ['front', 'side', 'back']
-    const missing = order.filter((k) => !found[k])
+    // 四视图：正/侧/背必需，右视图可选（缺了按三视图拼板，向后兼容旧项目）
+    const order = ['front', 'side', 'back', 'side_r'] as const
+    const required = ['front', 'side', 'back'] as const
+    const missing = required.filter((k) => !found[k])
     if (missing.length) {
-      const cn: Record<string, string> = { front: '正视图', side: '侧视图', back: '背视图' }
-      throw new Error(`三视图拼板还缺：${missing.map((m) => cn[m]).join('、')}。`
+      const cn: Record<string, string> = {
+        front: '正视图', side: '侧视图', back: '背视图', side_r: '右视图',
+      }
+      throw new Error(`四视图拼板还缺：${missing.map((m) => cn[m]).join('、')}。`
         + '把对应节点的输出连到本节点左侧，或保证链条上能回溯到它。')
     }
     const t = node.threeview
     const r = await api.threeviewCompose({
       projectId: project.id,
-      sources: order.map((k) => {
+      sources: order.filter((k) => found[k]).map((k) => {
         const s = found[k]!
         return { kind: s.kind, file: s.kind === 'images' ? s.images[0].assetId : s.file }
       }),
@@ -1133,7 +1150,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       const result = await executeCompose(node)
       applyComposeResult(node, result)
     } catch (e: any) {
-      alert(`三视图拼板失败：${e.message || e}`)
+      alert(`四视图拼板失败：${e.message || e}`)
       setTasks((t) => ({
         ...t,
         [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
@@ -1141,11 +1158,14 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
   }
 
-  /** 拼板节点要显示的三路输入（缺的也会列出来，让用户知道缺谁）。 */
+  /** 拼板节点要显示的四路输入（缺的也会列出来，让用户知道缺谁；
+   *  右视图缺失不阻塞运行——按三视图拼板）。 */
   const threeViewSlots = (node: ThreeViewNodeType) => {
     const found = collectThreeViewOutputs(node)
-    const cn: Record<string, string> = { front: '正视图', side: '侧视图', back: '背视图' }
-    return (['front', 'side', 'back'] as const).map((k) => ({
+    const cn: Record<string, string> = {
+      front: '正视图', side: '侧视图', back: '背视图', side_r: '右视图',
+    }
+    return (['front', 'side', 'back', 'side_r'] as const).map((k) => ({
       view: k, label: cn[k],
       image: found[k]?.images[0] ?? null,
       from: found[k]?.from ?? '',
@@ -1188,11 +1208,11 @@ export default function Canvas({ projectId, onBack }: Props) {
     const src = resolveFrontOutput(node, runtime)
     const im = src.images[0]
     const w = node.walkvideo
-    // 三视图锚点：沿链条回溯收集正/侧/背——有了它们，三个方向零推导、
+    // 四视图锚点：沿链条回溯收集正/侧/背/右——有了它们，四个方向零推导、
     // 斜向只转 45 度，角色一致性明显更好
     const tv = collectThreeViewOutputs(node as any, runtime)
     const viewAssets: { role: string; file: string }[] = []
-    for (const role of ['front', 'side', 'back'] as const) {
+    for (const role of ['front', 'side', 'back', 'side_r'] as const) {
       const hit = tv[role]
       if (!hit || hit.kind !== 'images' || !hit.images.length) continue
       viewAssets.push({ role, file: `${hit.images[0].assetId}.png` })
@@ -1201,7 +1221,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       projectId: project.id,
       origAssetId: src.kind === 'images' ? im.assetId : '',
       sourceKind: src.kind, sourceFile: src.kind === 'refs' ? src.file : undefined,
-      // 三视图里没有正面时（例如上游是选图节点）退回单张正视图：
+      // 四视图里没有正面时（例如上游是选图节点）退回单张正视图：
       // viewAssets 为空 → 后端按老链路从正视图推导
       viewAssets,
       dirImages: Object.entries(w?.dirImages || {})
@@ -1672,7 +1692,7 @@ export default function Canvas({ projectId, onBack }: Props) {
           runtime.set(next.id, cur)
           fromId = next.id
         } catch (e: any) {
-          throw new Error(`三视图拼板失败：${e.message || e}`)
+          throw new Error(`四视图拼板失败：${e.message || e}`)
         }
       } else if (next.type === 'walkvideo') {
         if (!next.walkvideo?.enabled) {
@@ -1817,7 +1837,7 @@ export default function Canvas({ projectId, onBack }: Props) {
           : n.type === 'matte' ? (n.matte?.enabled ? '扣背景' : '跳过扣背景')
           : n.type === 'viewgen' ? (n.viewgen?.enabled
             ? (n.viewgen?.view === 'back' ? '背视图' : '侧视图') : '跳过视角')
-          : n.type === 'threeview' ? (n.threeview?.enabled ? '三视图拼板' : '跳过拼板')
+          : n.type === 'threeview' ? (n.threeview?.enabled ? '四视图拼板' : '跳过拼板')
           : n.type === 'walkvideo' ? (n.walkvideo?.enabled ? '行走视频' : '跳过行走视频')
           : n.type === 'sequence' ? (n.sequence?.enabled ? '序列帧' : '跳过序列帧')
           : n.type === 'spritesheet' ? (n.spritesheet?.enabled ? '精灵整图' : '跳过精灵整图')
@@ -1856,7 +1876,7 @@ export default function Canvas({ projectId, onBack }: Props) {
             applyComposeResult(n, result)
             runtime.set(n.id, [result])
           } catch (e: any) {
-            throw new Error(`第 ${i + 1} 步（三视图拼板）：${e.message || e}`)
+            throw new Error(`第 ${i + 1} 步（四视图拼板）：${e.message || e}`)
           }
           continue
         }
@@ -1915,7 +1935,7 @@ export default function Canvas({ projectId, onBack }: Props) {
           if (!n.prompt.trim()) throw new Error(`第 ${i + 1} 步：生成节点的提示词为空`)
           const r = await executeGenerate(n)
           // 下游还有后处理节点（抠图/精修/视角/拼板）时，结果卡由链条末端建，
-          // 否则三视图链上会先在生成卡旁边多出一张只放原图的废卡
+          // 否则四视图链上会先在生成卡旁边多出一张只放原图的废卡
           const down = project.edges.filter((e) => e.from === n.id)
             .map((e) => byId.get(e.to))
             .filter((x): x is RunnerNode => !!x && x.type !== 'result')

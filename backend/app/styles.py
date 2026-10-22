@@ -249,6 +249,18 @@ BACKGROUND_PRESETS: List[Dict[str, Any]] = [
         "phrase": "",
         "hint": "不指定背景：模型可能自行补场景元素，出图更「好看」但不好抠",
     },
+    {
+        "id": "transparent", "label": "透明", "swatch": "transparent",
+        # Qwen-Image-2.1 原生 RGBA：VAE 解码器就是 4 通道，但必须用官方推荐的
+        # 双段式声明（开头 "This is an RGBA image with transparency." + 结尾
+        # "The image has alpha channel and the background is transparent."）
+        # 才能激活 alpha 通道——只说「透明背景」不够，实测 alpha 会恒为 255
+        # （.verify/exp-b/alpha-test.png：加声明后 68.5% 像素真正透明）。
+        # 包装在 main._build_generation_prompt 里做，这里只写背景约束。
+        "phrase": "背景完全透明：不绘制任何底色、渐变、纹理与场景元素；"
+                  "角色悬空不落地，脚下不要接地阴影、不要椭圆投影、不要地面、不要倒影",
+        "hint": "Qwen-Image-2.1 原生 RGBA：直接输出透明通道，省去后续抠图（旧底座不支持，效果等同「无」）",
+    },
 ]
 
 _BG_BY_ID = {b["id"]: b for b in BACKGROUND_PRESETS}
@@ -304,6 +316,11 @@ def pixel_contract(
     gw, gh = max(8, int(g[0])), max(8, int(g[1]))
     bg = (background or "").strip().rstrip("。")
     tail = f"{bg}。" if bg else ""
+    # 透明背景下「禁止半透明像素」要收窄成「禁止渐变式半透明」：alpha 通道
+    # 本身就是半透明机制，一刀切禁掉会让模型把透明底画成不透明纯色。
+    # 像素画的透明必须是二进制硬边（全透明或全不透明）。
+    no_trans = ("禁止渐变式半透明像素（alpha 通道仅允许全透明或全不透明，硬边）"
+                if "透明" in bg else "禁止半透明像素")
 
     if edit:
         translucent = ("半透明材质用 2-3 级色阶表现（外缘亮、内部深、顶部高光），"
@@ -338,7 +355,7 @@ def pixel_contract(
         f"严格像素画规格：画布精确划分为 {gw}×{gh} 的像素网格，"
         f"每个网格单元只允许一种纯色，图案边界必须严格对齐网格线；"
         f"全图不超过 {int(colors)} 种颜色，使用有限的共享调色板；"
-        "禁止抗锯齿、禁止渐变、禁止模糊、禁止半透明像素、禁止噪点纹理；"
+        f"禁止抗锯齿、禁止渐变、禁止模糊、{no_trans}、禁止噪点纹理；"
         "深色连续外轮廓（1 像素宽），内部为平涂色块与单级硬边阴影；"
         "主体占画面约 65%，居中构图，四周留安全边距，完整不裁切；正面平视；"
         "背景无地面、无环境元素、无文字；剪影清晰可读。"

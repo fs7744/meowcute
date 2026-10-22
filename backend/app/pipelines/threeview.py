@@ -1,4 +1,4 @@
-"""角色三视图：正/侧/背三张独立生成 → 确定性拼横向板。
+"""角色四视图：正/侧/背/右四张独立生成 → 确定性拼横向板。
 
 为什么不再「一张图里画三个视角」（移植自归档项目的实测结论）：
 单图提示词让模型一次画齐正/侧/背，在 turbo 蒸馏模型上基本不可可控——
@@ -7,10 +7,15 @@
   帧 1 正视图  → 画布上的「生成图 / 选择图片」节点产出（txt2img 底座自由创作）
   帧 2 侧视图  → 本模块 derive_view：Qwen-Image-Edit 指令接力「转成侧面视图」
   帧 3 背视图  → 同上，「转成背面视图」
+  帧 4 右视图  → 同上，「转成右侧面视图」（四视图新增，与侧视图镜像）
   拼板        → 抠掉各自底色 → 统一暗绿底 → 基线/水平居中对齐
 
-「三张、不重叠、同一角色」由结构保证：每张图只有一个角色的约束 +
+「四张、不重叠、同一角色」由结构保证：每张图只有一个角色的约束 +
 编辑底座的外观保持指令 + 拼板是确定性像素操作，不靠模型自觉。
+
+侧视图（side）与右视图（side_r）的命名约定：side = 角色面向画面左侧
+（与 walkvideo 的 left/90° 锚点、历史项目数据 vs-/vb- 兼容），
+side_r = 角色面向画面右侧（与 walkvideo 的 right/270° 对应）。
 
 抠图边缘实测审计（u2net，512×768 真实出图，两轮）——以下修法都不动 alpha
 形状，所以不会啃掉胡须/触角：
@@ -62,9 +67,17 @@ _VIEW_META: Dict[str, Dict[str, str]] = {
         "pose_cn": "角色背对观众，展现完整背部轮廓，全身站立，身体居中",
         "pose_en": "character seen from behind, full back silhouette, full body standing, centered",
     },
+    "side_r": {
+        "cn": "右视图", "en": "right side view",
+        "pose_cn": "角色面向画面右侧，展现完整侧面轮廓，全身站立，身体居中",
+        "pose_en": "character in profile facing right, full side silhouette, full body standing, centered",
+    },
 }
 
-VIEW_ORDER = ("front", "side", "back")
+# 四视图顺序：正 → 左 → 背 → 右（环形顺序，拼板按此排列）
+VIEW_ORDER = ("front", "side", "back", "side_r")
+# 拼板必需的老三张（右视图可选：缺了按三视图拼板，向后兼容旧项目）
+REQUIRED_VIEWS = ("front", "side", "back")
 
 
 def _view_instruction(view: str) -> str:
@@ -80,9 +93,10 @@ def _view_instruction(view: str) -> str:
         "不新增也不删除任何部件。背景保持纯色不变，角色居中站立，"
         "画面中仍然只有一个角色，不要添加文字和水印。"
     )
-    if view == "side":
+    if view in ("side", "side_r"):
+        lean = "左" if view == "side" else "右"
         return (
-            "把画面中的角色转换成侧面视图：角色整体转向画面左侧，展现完整的侧面轮廓，"
+            f"把画面中的角色转换成侧面视图：角色整体转向画面{lean}侧，展现完整的侧面轮廓，"
             "全身站立。侧面的造型全部来自参考图中这个角色本身，身体的各个部位按它"
             "本来的样子推演，参考图里没有的东西不要出现。" + keep
         )
@@ -185,7 +199,7 @@ def _matte_padded(img: Image.Image, pad_frac: float, tolerance: int
     return cut, meta
 
 
-def compose_three_view(
+def compose_view_board(
     views: List[Image.Image],
     *,
     cell: Optional[Tuple[int, int]] = None,
@@ -195,19 +209,21 @@ def compose_three_view(
     tolerance: int = 40,
     pad_frac: float = 0.12,
 ) -> Tuple[Image.Image, Dict[str, Any]]:
-    """把正/侧/背三张单视角图拼成一张横向三视图板。
+    """把正/侧/背（/右）多张单视角图拼成一张横向视图板。
 
-    - 每张先抠底色，消除三张图之间色差的可见接缝。抠图走 auto 链
+    - 每张先抠底色，消除图与图之间色差的可见接缝。抠图走 auto 链
       （u2net 语义 → grabcut → 颜色键）：实测颜色键容差 72 会把「深色裤子/
       黑披风」这类与暗绿底距离近的配件当成背景咬掉，优先语义抠图；
       key 兜底容差收紧到 40，保住深色小配件；抠图前先铺边距，防踩边肢体被截；
     - 主体底部对齐到共同基线、水平居中——模型出图的角色高低不齐，
-      平移对齐后才是可用的三视图基准；
-    - 抠空（背景没识别出来）时退回原图等比贴入，绝不丢视图。
+      平移对齐后才是可用的视图基准；
+    - 抠空（背景没识别出来）时退回原图等比贴入，绝不丢视图；
+    - 张数不限（3=老三视图，4=四视图），按传入顺序排列。
     """
     imgs = [v.convert("RGB") for v in views]
-    if len(imgs) != 3:
-        raise ValueError(f"三视图需要 3 张图，收到 {len(imgs)} 张")
+    if not 2 <= len(imgs) <= 4:
+        raise ValueError(f"视图板需要 2~4 张图，收到 {len(imgs)} 张")
+    order = VIEW_ORDER[:len(imgs)]
 
     if cell is None:
         cw = max(i.width for i in imgs)
@@ -230,7 +246,7 @@ def compose_three_view(
             mats.append((im.convert("RGBA"), None, "raw"))
 
     baseline_y = int(ch * baseline)
-    strip = Image.new("RGB", (cw * 3 + gap * 2, ch), bg)
+    strip = Image.new("RGB", (cw * len(imgs) + gap * (len(imgs) - 1), ch), bg)
     infos: List[Dict[str, Any]] = []
     for i, (rgba, box, method) in enumerate(mats):
         x0 = i * (cw + gap)
@@ -240,7 +256,7 @@ def compose_three_view(
             nw, nh = max(1, int(rgba.width * scale)), max(1, int(rgba.height * scale))
             small = rgba.resize((nw, nh), Image.LANCZOS)
             strip.paste(small, (x0 + (cw - nw) // 2, (ch - nh) // 2), small)
-            infos.append({"view": VIEW_ORDER[i], "matte": method, "bbox": None,
+            infos.append({"view": order[i], "matte": method, "bbox": None,
                           "offset": [(cw - nw) // 2, (ch - nh) // 2], "scaled": [nw, nh]})
             continue
         bx0, by0, bx1, by1 = box
@@ -251,7 +267,7 @@ def compose_three_view(
         dx = max(min(dx, cw - bx1 - 1), -bx0)
         dy = max(min(dy, ch - by1 - 1), -by0)
         strip.paste(rgba, (x0 + dx, dy), rgba)
-        infos.append({"view": VIEW_ORDER[i], "matte": method, "bbox": list(box),
+        infos.append({"view": order[i], "matte": method, "bbox": list(box),
                       "offset": [dx, dy]})
     return strip, {
         "cell": [cw, ch], "gap": gap, "baseline": baseline_y,
@@ -260,13 +276,17 @@ def compose_three_view(
     }
 
 
+# 向后兼容别名（老调用方/老项目数据里的三视图拼板）
+compose_three_view = compose_view_board
+
+
 def cell_size(width: int, height: int) -> Tuple[int, int]:
     """对齐到 16 的倍数（下采样约束），最小 64。"""
     return max(64, int(width) // 16 * 16), max(64, int(height) // 16 * 16)
 
 
 # --------------------------------------------------------------------------- #
-# 单步执行：侧/背视图（编辑底座指令接力）
+# 单步执行：侧/背/右视图（编辑底座指令接力）
 # --------------------------------------------------------------------------- #
 async def derive_view(
     view: str,
@@ -281,7 +301,7 @@ async def derive_view(
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
 ) -> Tuple[Image.Image, Dict[str, Any]]:
-    """由正视图接力生成侧/背视图。
+    """由正视图接力生成侧/背/右视图。
 
     走编辑底座（Qwen-Image-Edit-2511）的指令接力：外观保持最好，且不需要
     重新描述角色。provider 带 refs 时会自动路由到编辑底座，Z-Image 纯文生图
@@ -290,7 +310,7 @@ async def derive_view(
     from .. import progress as progress_mod
     from ..providers.diffusers_local import DiffusersProvider
 
-    if view not in ("side", "back"):
+    if view not in ("side", "back", "side_r"):
         raise ValueError(f"未知视角：{view}")
 
     provider = DiffusersProvider(provider_cfg or {})

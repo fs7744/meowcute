@@ -31,8 +31,8 @@ const DIR_CN: Record<WalkDir, string> = {
   'up': '背面', 'up-right': '右上', 'right': '右侧', 'down-right': '右下',
 }
 
-/** 三视图锚点的中文名（后端 anchorPlan 里的角色） */
-const ANCHOR_CN: Record<string, string> = { front: '正面', side: '侧面', back: '背面' }
+/** 四视图锚点的中文名（后端 anchorPlan 里的角色） */
+const ANCHOR_CN: Record<string, string> = { front: '正面', side: '侧面', back: '背面', side_r: '右面' }
 
 /** 每个方向模式里「真实生成」的方向（右侧三个是左侧镜像，不单独给来源）。 */
 const REAL_DIRS: Record<string, WalkDir[]> = {

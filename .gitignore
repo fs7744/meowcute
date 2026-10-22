@@ -72,3 +72,5 @@ backend/out_*.png
 # 最终交付的 favicon（frontend/public/favicon*）要入库，所以不忽略 public/。
 tools/_icon/
 tools/icon_*.png
+.verify/
+tools/dbwalk/

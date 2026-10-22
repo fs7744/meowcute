@@ -104,13 +104,14 @@ export type GenParams = {
   n: number
   steps: number | null
   seed: number | null
-  background: 'gray' | 'green' | 'none'
+  /** gray=中灰底 / green=绿幕 / none=不约束 / transparent=原生透明（Qwen-Image-2.1 RGBA） */
+  background: 'gray' | 'green' | 'none' | 'transparent'
   // 提示词质量档位映射的文本序列长度：null=自动，512=快速，768=标准，1024=高质量
   maxSeqLen: number | null
 }
 
 export type BackgroundOption = {
-  id: 'gray' | 'green' | 'none'
+  id: 'gray' | 'green' | 'none' | 'transparent'
   label: string
   swatch: string
   phrase: string
@@ -176,12 +177,12 @@ export type MatteNode = {
   createdAt?: number
 }
 
-/** 视角生成参数（三视图的侧/背视图，对应后端 DEFAULT_VIEWGEN）。
- *  view 固定 side | back——同一个节点组件、同一个接口，靠它区分。 */
+/** 视角生成参数（四视图的侧/背/右视图，对应后端 DEFAULT_VIEWGEN）。
+ *  view 固定 side | back | side_r——同一个节点组件、同一个接口，靠它区分。 */
 export type ViewGenOptions = {
   /** 使用开关：关掉时透传上游正视图，节点仍留在链上 */
   enabled: boolean
-  view: 'side' | 'back'
+  view: 'side' | 'back' | 'side_r'
   styleId: string | null
   steps: number | null
   seed: number | null
@@ -190,7 +191,7 @@ export type ViewGenOptions = {
   maxSeqLen: number | null
 }
 
-/** 三视图拼板参数（对应后端 DEFAULT_THREEVIEW）。 */
+/** 四视图拼板参数（对应后端 DEFAULT_THREEVIEW）。 */
 export type ThreeViewOptions = {
   enabled: boolean
   /** 底板色，6 位十六进制（不带 #），默认暗绿 1B4332 */
@@ -198,7 +199,7 @@ export type ThreeViewOptions = {
   gap: number
   /** 主体底部对齐到画布高度的比例 */
   baseline: number
-  /** 单格尺寸 [宽, 高]，null = 取三张图的最大值 */
+  /** 单格尺寸 [宽, 高]，null = 取所有张的最大值 */
   cell: [number, number] | null
 }
 
@@ -213,7 +214,7 @@ export type ViewGenNode = {
   createdAt?: number
 }
 
-/** 三视图拼板节点：收齐正/侧/背三张，按共同基线拼成横向板。 */
+/** 四视图拼板节点：收齐正/侧/背/右四张，按共同基线拼成横向板（缺右视图按三视图拼板）。 */
 export type ThreeViewNode = {
   id: string
   type: 'threeview'
@@ -232,7 +233,7 @@ export type ThreeViewMeta = {
   bg: string
   size: [number, number]
   views: {
-    view: 'front' | 'side' | 'back'
+    view: 'front' | 'side' | 'back' | 'side_r'
     matte: string
     bbox: [number, number, number, number] | null
     offset: [number, number]
@@ -368,7 +369,7 @@ export type WalkMeta = {
   vramPeakGB?: number | null
   /** 出完片并卸载底座后的显存占用（GB） */
   vramAfterGB?: number | null
-  /** 用到的三视图锚点（front/side/back） */
+  /** 用到的四视图锚点（front/side/back/side_r） */
   anchors?: string[]
   /** 每个方向用了哪个锚点、转了多少度 */
   anchorPlan?: Partial<Record<string, { anchor: string; rotation: number }>>
@@ -536,8 +537,8 @@ export type ResultImage = {
   }
   /** 这张图是否经过扣背景节点 */
   matte?: MatteMeta
-  /** 这张图是哪个视角生成的（side / back） */
-  view?: 'side' | 'back'
+  /** 这张图是哪个视角生成的（side / back / side_r） */
+  view?: 'side' | 'back' | 'side_r'
   /** 视角生成的附加信息 */
   viewMeta?: {
     view: string
@@ -550,7 +551,7 @@ export type ResultImage = {
     autoRouted?: boolean
     seconds?: number
   }
-  /** 这张图是否是三视图拼板 */
+  /** 这张图是否是四视图拼板 */
   threeview?: ThreeViewMeta
   /** 这张图属于哪个方向（八方向行走链） */
   walkDir?: WalkDir
@@ -565,6 +566,8 @@ export type ResultMeta = {
   seconds?: number
   autoRouted?: boolean
   vramWarning?: string | null
+  /** 选了透明背景但当前底座不支持原生 RGBA 时的提示 */
+  bgWarning?: string | null
   /** 这次生成的峰值显存（GB），用于让用户看得见资源消耗 */
   vram?: { peakGB: number; reservedGB: number; totalGB: number } | null
   refCount?: number

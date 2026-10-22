@@ -1,7 +1,7 @@
 import type { ResultImage, ThreeViewNode as ThreeViewNodeType } from '../types'
 
 type Slot = {
-  view: 'front' | 'side' | 'back'
+  view: 'front' | 'side' | 'back' | 'side_r'
   label: string
   image: ResultImage | null
   /** 这张图是从哪个节点收来的（UI 上给个来源说明） */
@@ -12,7 +12,7 @@ type Props = {
   node: ThreeViewNodeType
   index: number
   running?: boolean
-  /** 正/侧/背三路输入；缺哪路就显示哪路未找到 */
+  /** 正/侧/背/右四路输入；缺哪路就显示哪路未找到（右视图缺失不阻塞） */
   slots: Slot[]
   onChange: (patch: Partial<ThreeViewNodeType>) => void
   onDelete: () => void
@@ -23,12 +23,15 @@ type Props = {
   onPreview: (url: string, title: string) => void
 }
 
-const VIEW_CN = { front: '正视图', side: '侧视图', back: '背视图' } as const
+const VIEW_CN = {
+  front: '正视图', side: '侧视图', back: '背视图', side_r: '右视图',
+} as const
 
 /**
- * 三视图拼板节点：收齐正/侧/背三张 → 逐张抠底 → 统一底板 → 按共同基线拼成横板。
+ * 四视图拼板节点：收齐正/侧/背/右四张 → 逐张抠底 → 统一底板 → 按共同基线拼成横板。
+ * 右视图可选：缺了按三视图拼板（向后兼容旧项目），UI 上给提示不阻塞运行。
  *
- * 三路输入怎么来：先看连到本节点的入边，缺的再沿链条往上回溯（视角节点、
+ * 四路输入怎么来：先看连到本节点的入边，缺的再沿链条往上回溯（视角节点、
  * 扣除背景/精修这类透传节点都会穿过去），所以「生成图 → 侧视图 → 背视图 →
  * 拼板」这条直线不用额外连线也能收齐三张。
  */
@@ -43,14 +46,16 @@ export default function ThreeViewNode({
   const patch = (p: Partial<typeof t>) => onChange({ threeview: { ...t, ...p } })
 
   const meta = node.result?.threeview
-  const missing = slots.filter((s) => !s.image).map((s) => VIEW_CN[s.view])
+  // 右视图可选：缺它只提示、不阻塞；正/侧/背缺任一才阻塞
+  const requiredMissing = slots.filter((s) => !s.image && s.view !== 'side_r')
+  const optionalMissing = slots.filter((s) => !s.image && s.view === 'side_r')
 
   return (
     <div className={`node threeview ${t.enabled ? '' : 'off'}`}
       style={{ left: node.x, top: node.y, width: 380 }} data-node-id={node.id}>
       <div className="node-head" onMouseDown={onDragStart}>
-        <span className="node-kind">3V</span>
-        <span className="node-title">三视图拼板</span>
+        <span className="node-kind">4V</span>
+        <span className="node-title">四视图拼板</span>
         <span className="node-idx">T{index + 1}</span>
         <button className="node-x" title="删除这张拼板卡"
           onMouseDown={(e) => e.stopPropagation()} onClick={onDelete}>×</button>
@@ -67,10 +72,10 @@ export default function ThreeViewNode({
       <div className="node-body">
         <div className="switch-row">
           <span className="t" style={{ fontSize: 12 }}>
-            使用此节点{t.enabled ? '' : '（已关闭，直接透传背视图）'}
+            使用此节点{t.enabled ? '' : '（已关闭，直接透传上游图片）'}
           </span>
           <button className={`switch ${t.enabled ? 'on' : ''}`}
-            onClick={() => patch({ enabled: !t.enabled })} aria-label="切换三视图拼板节点">
+            onClick={() => patch({ enabled: !t.enabled })} aria-label="切换四视图拼板节点">
             <i />
           </button>
         </div>
@@ -88,10 +93,14 @@ export default function ThreeViewNode({
             </div>
           ))}
         </div>
-        {missing.length ? (
+        {requiredMissing.length ? (
           <div className="ref-note" style={{ marginTop: -4 }}>
-            还缺：{missing.join('、')}。把对应节点的输出连到本节点左侧，
-            或保证链条上能回溯到它。
+            还缺：{requiredMissing.map((s) => VIEW_CN[s.view]).join('、')}。
+            把对应节点的输出连到本节点左侧，或保证链条上能回溯到它。
+          </div>
+        ) : optionalMissing.length ? (
+          <div className="hint" style={{ marginTop: -4 }}>
+            缺右视图：将按三视图拼板；补上「生成右视图」节点即可升级四视图。
           </div>
         ) : null}
 
@@ -113,7 +122,7 @@ export default function ThreeViewNode({
         </div>
 
         <label className="gen-field">
-          <span className="gen-field-label" title="主体底部对齐到画布高度的比例；调它让三张图的脚落在同一水平线上">
+          <span className="gen-field-label" title="主体底部对齐到画布高度的比例；调它让各张图的脚落在同一水平线上">
             基线 {Math.round(t.baseline * 100)}%
           </span>
           <input type="range" min={0.6} max={0.98} step={0.01} value={t.baseline}
@@ -121,20 +130,21 @@ export default function ThreeViewNode({
         </label>
 
         <div className="hint" style={{ marginTop: -4 }}>
-          拼板前每张会先抠底、补封闭孔洞、洗边缘溢色——三张图底色不一致时，
+          拼板前每张会先抠底、补封闭孔洞、洗边缘溢色——各张图底色不一致时，
           接缝处不会留下一圈异色描边。
         </div>
 
-        <button className="btn btn-sm" onClick={onRun} disabled={running || !!missing.length}
+        <button className="btn btn-sm" onClick={onRun}
+          disabled={running || !!requiredMissing.length}
           style={{ marginTop: 8, width: '100%' }}>
-          {running ? <><span className="spin" /> 拼板中…</> : '运行三视图拼板'}
+          {running ? <><span className="spin" /> 拼板中…</> : '运行四视图拼板'}
         </button>
 
         {node.result ? (
           <div style={{ marginTop: 10 }}>
             <button className="matte-thumb wide" title="点击放大"
-              onClick={() => onPreview(node.result!.url, '三视图拼板')}>
-              <img src={node.result.url} alt="三视图拼板" />
+              onClick={() => onPreview(node.result!.url, '四视图拼板')}>
+              <img src={node.result.url} alt="四视图拼板" />
             </button>
             <div className="result-meta" style={{ borderTop: 0 }}>
               <span className="meta-pill good">{node.result.width}×{node.result.height}</span>
@@ -152,7 +162,7 @@ export default function ThreeViewNode({
           </div>
         ) : (
           <div className="hint" style={{ marginTop: 8 }}>
-            还没有拼板结果。三张图齐了之后点上面的按钮。
+            还没有拼板结果。正/侧/背齐了之后点上面的按钮。
           </div>
         )}
       </div>

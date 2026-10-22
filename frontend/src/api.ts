@@ -155,12 +155,12 @@ export const api = {
     u2net: boolean; cv2: boolean; u2netError: string | null
   }>),
 
-  /** 三视图：由正视图接力生成侧/背视图（任务制，跑编辑底座）。 */
+  /** 四视图：由正视图接力生成侧/背/右视图（任务制，跑编辑底座）。 */
   threeviewDerive: (payload: {
     projectId: string
     origAssetId?: string
     sourceKind?: 'images' | 'refs'; sourceFile?: string
-    view: 'side' | 'back'
+    view: 'side' | 'back' | 'side_r'
     styleId?: string | null
     steps?: number | null
     seed?: number | null
@@ -169,7 +169,8 @@ export const api = {
   }) =>
     fetch('/api/threeview/derive', jsonInit(payload)).then(j<{ taskId: string }>),
 
-  /** 三视图：正/侧/背三张拼成一张横向板（确定性后处理，立即返回）。 */
+  /** 四视图：正/侧/背/右拼成一张横向板（确定性后处理，立即返回）。
+   *  传 3 张按老三视图拼板，传 4 张为四视图。 */
   threeviewCompose: (payload: {
     projectId: string
     sources: { kind: 'images' | 'refs'; file: string }[]
@@ -197,7 +198,7 @@ export const api = {
     motionThreshold?: number
     retries?: number
     sources?: { dir: string; file: string }[]
-    /** 三视图锚点：有了它们，正/侧/背零推导，斜向只转 45 度 */
+    /** 四视图锚点：有了它们，正/侧/背/右零推导，斜向只转 45 度 */
     viewAssets?: { role: string; file: string }[]
     /** 每个方向直接指定的立绘图（跳过推导，仍会跑 Wan） */
     dirImages?: { dir: string; file: string }[]

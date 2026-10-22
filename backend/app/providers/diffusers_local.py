@@ -3,15 +3,21 @@
 从归档 PixelForge 的 diffusers_local.py 移植（同批实测参数），保留：
 - 懒加载：不装 torch/diffusers 也能启动服务，只在首次生成时报错；
 - 单例缓存 + 家族互斥显存换出（单卡 24GB 现实）；
-- Qwen-Image-Edit transformer fp8 权重量化 + 落盘缓存（39GB → 约 20GB）；
+- 组件级 fp8 权重量化 + 落盘缓存（Qwen 系 39GB → 约 20GB / 2.1 全套 → 14.8GB）；
 - 步进回调：SSE 进度 + 取消。
 
-本版只支持两个族（第一个工作流模板用不到视频/分层，按需再接）：
+2026-10-22 底座迁移：主力换成 Qwen-Image-2.1（qwen21 族，文生图 / 指令
+改图 / 原生 RGBA 三合一），Z-Image 与 Qwen-Image-Edit-2511 退为可选旧档。
+支持的族：
+- qwen21：Qwen-Image-2.1（7B 单流 DiT + Qwen3-VL 编码器）
+      文生图与指令改图合体；组件分批 fp8 + cpu offload，峰值约 14.8GB
+      40 步 · true_cfg_scale=4.0（必须配 negative_prompt，否则 CFG 静默失效）
 - zimage：Z-Image-Turbo（S3-DiT 单流 + Qwen3-4B 中文编码器）
       中文提示词直喂，9 步蒸馏 · guidance_scale 固定 0.0 · 1024² 原生分辨率
 - qwen_edit：Qwen-Image-Edit-2511（20B MMDiT + Qwen2.5-VL 编码器）
       指令式编辑（必须传参考图），中文指令直喂，最多 4 张参考图
       40 步 · true_cfg_scale=4.0 · guidance_scale=1.0 · FP8/bf16
+- wan：Wan2.2 TI2V-5B（图生视频，行走视频节点用）
 """
 from __future__ import annotations
 
@@ -106,7 +112,7 @@ def _read_json(path: str) -> Dict[str, Any]:
 
 
 def detect_family(model_id: str) -> str:
-    """模型族识别：zimage / qwen_edit / qwen_layered / wan / unknown。
+    """模型族识别：zimage / qwen21 / qwen_edit / qwen_layered / wan / unknown。
 
     先读 model_index.json 的 _class_name（最可靠），再看目录名兜底；
     认不出来返回 "unknown"（由调用方报错，不静默按别的族加载）。
@@ -119,6 +125,8 @@ def detect_family(model_id: str) -> str:
         cls = str(idx.get("_class_name") or "")
         if "ZImage" in cls:
             family = "zimage"
+        elif "QwenImage21" in cls:
+            family = "qwen21"
         elif "QwenImageLayered" in cls:
             family = "qwen_layered"
         elif "QwenImageEdit" in cls:
@@ -129,6 +137,8 @@ def detect_family(model_id: str) -> str:
         name = os.path.basename(model_id.rstrip("/\\")).lower()
         if "z-image" in name or "zimage" in name:
             family = "zimage"
+        elif "qwen-image-2" in name or "qwen_image_2" in name or "qwenimage21" in name:
+            family = "qwen21"
         elif "qwen-image-layered" in name or "qwen_image_layered" in name:
             family = "qwen_layered"
         elif "qwen-image-edit" in name or "qwen_image_edit" in name:
@@ -139,9 +149,10 @@ def detect_family(model_id: str) -> str:
     return family
 
 
-# 单卡 24GB 的现实：Z-Image bf16 约 21GB、Qwen-Image-Edit fp8 前向峰值 20.3GB，
-# 任两个模型族在同进程共存都可能 OOM 或被 WDDM 挤到共享内存，必须互斥驻留。
-_BIG_FAMILIES = {"zimage", "qwen_edit", "qwen_layered", "wan"}
+# 单卡 24GB 的现实：Qwen-Image-2.1 fp8 峰值约 14.8GB、Z-Image bf16 约 21GB、
+# Qwen-Image-Edit fp8 前向峰值 20.3GB，任两个模型族在同进程共存都可能 OOM
+# 或被 WDDM 挤到共享内存，必须互斥驻留。
+_BIG_FAMILIES = {"zimage", "qwen21", "qwen_edit", "qwen_layered", "wan"}
 
 
 def _evict_other_families(incoming: str) -> None:
@@ -243,10 +254,13 @@ def _resolve_seq_len(prompt: str, requested: Optional[int]) -> int:
 
 
 def resolve_edit_model(explicit: Optional[str] = None) -> str:
-    """解析 Qwen-Image-Edit 底座路径，解析不到就抛带指引的错误。
+    """解析指令编辑底座路径，解析不到就抛带指引的错误。
 
-    顺序：显式参数 → 设置里的 editModel → 设置里任何 qwen_edit 族 provider →
-    models/qwen-image-edit-2511。
+    底座已迁移到 Qwen-Image-2.1（2026-10-22 实测：同图同指令下比
+    Edit-2511 更忠实、显存低 5GB、快 6~9 倍，且原生 RGBA）。
+
+    顺序：显式参数 → 设置里的 editModel → 设置里任何 qwen21/qwen_edit 族
+    provider → models/qwen-image-2.1 → models/qwen-image-edit-2511（老安装兜底）。
     """
     if explicit:
         hit = resolve_path(explicit)
@@ -257,21 +271,24 @@ def resolve_edit_model(explicit: Optional[str] = None) -> str:
 
         s = load_settings()
         direct = resolve_path(str((s.get("providers", {}).get("diffusers", {}) or {}).get("editModel") or ""))
-        if direct and os.path.isdir(direct) and detect_family(direct) == "qwen_edit":
+        if direct and os.path.isdir(direct) and detect_family(direct) in ("qwen21", "qwen_edit"):
             return direct
         for cfg in (s.get("providers") or {}).values():
             if not isinstance(cfg, dict):
                 continue
             mid = resolve_path(str(cfg.get("model") or ""))
-            if mid and os.path.isdir(mid) and detect_family(mid) == "qwen_edit":
+            if mid and os.path.isdir(mid) and detect_family(mid) in ("qwen21", "qwen_edit"):
                 return mid
     except Exception:
         pass
-    default = resolve_path("models/qwen-image-edit-2511")
+    default = resolve_path("models/qwen-image-2.1")
     if os.path.isdir(default):
         return default
+    legacy = resolve_path("models/qwen-image-edit-2511")
+    if os.path.isdir(legacy):
+        return legacy
     raise RuntimeError(
-        "未找到 Qwen-Image-Edit 底座。请将 models/qwen-image-edit-2511 放到项目 "
+        "未找到指令编辑底座。请将 models/qwen-image-2.1 放到项目 "
         "models/ 目录下，或在设置里配置编辑底座路径。")
 
 
@@ -358,7 +375,7 @@ def _torch_status() -> Dict[str, Any]:
 
 # 两个大族在 24GB 卡上的实测/估算占用（bf16 / fp8+offload）：
 # Z-Image 19.3GB、Qwen-Edit fp8 前向峰值 20.3GB。留 1GB 余量给 CUDA context。
-_NEED_GB = {"zimage": 20.5, "qwen_edit": 21.0, "wan": 19.0}
+_NEED_GB = {"zimage": 20.5, "qwen21": 14.8, "qwen_edit": 21.0, "wan": 19.0}
 
 
 def _vram_note(family: str) -> Optional[str]:
@@ -392,27 +409,30 @@ def _vram_note(family: str) -> Optional[str]:
 
 class DiffusersProvider(BaseProvider):
     id = "diffusers"
-    label = "本地底座（Z-Image / Qwen-Edit / Wan 视频）"
+    label = "本地底座（Qwen-Image-2.1 / Wan 视频）"
 
     def _resolve_model(self) -> str:
         model = (self.cfg.get("model") or "").strip()
         if model:
             # 相对路径按项目根解析：从别的目录启动服务也能找到 models/ 下的底座
             return resolve_path(model)
-        return resolve_path(os.environ.get("MEOWCUTE_MODEL", "models/z-image-turbo"))
+        return resolve_path(os.environ.get("MEOWCUTE_MODEL", "models/qwen-image-2.1"))
 
     def _load(self, model_id: str):
         if model_id in _CACHE:
             return _CACHE[model_id]
         family = detect_family(model_id)
-        if family not in ("zimage", "qwen_edit", "wan"):
+        if family not in ("zimage", "qwen21", "qwen_edit", "wan"):
             raise RuntimeError(
-                f"暂不支持的模型：{model_id}。当前版本支持 Z-Image-Turbo（文生图）、"
-                "Qwen-Image-Edit-2511（参考图编辑）与 Wan2.2 TI2V-5B（图生视频）。")
+                f"暂不支持的模型：{model_id}。当前版本支持 Qwen-Image-2.1（文生图 / "
+                "参考图编辑）、Z-Image-Turbo（文生图）、Qwen-Image-Edit-2511"
+                "（参考图编辑）与 Wan2.2 TI2V-5B（图生视频）。")
         # 单卡 24GB 只容一个大家族：切换前先把另一大族卸了，否则共存必 OOM
         _evict_other_families(family)
         if family == "zimage":
             return self._load_zimage(model_id)
+        if family == "qwen21":
+            return self._load_qwen21(model_id)
         if family == "wan":
             return self._load_wan(model_id)
         return self._load_qwen_edit(model_id)
@@ -537,6 +557,139 @@ class DiffusersProvider(BaseProvider):
         }
         _CACHE[model_id] = pipe
         return pipe
+
+    # ---------- Qwen-Image-2.1：文生图 / 指令改图 / 原生 RGBA 三合一 ----------
+
+    def _load_qwen21(self, model_id: str):
+        """Qwen-Image-2.1：7B 单流 DiT 统一底座（2026-10-22 迁为主力底座）。
+
+        一个 checkpoint 覆盖三件事：文生图、指令改图（参考图编辑）、原生
+        RGBA 透明输出。实测（同图同指令对比 Edit-2511）：更忠实、峰值显存
+        14.6~14.8GB（Edit-2511 fp8 为 19.8~22.4GB）、单次 13~19s（快 6~9 倍）。
+
+        显存策略（实测踩坑）：一次性 from_pretrained 整个仓库要 31GB，本机
+        可用内存扛不住，必须组件分批加载 + fp8 量化再组装——
+        transformer 13.25GB bf16 → fp8（_load_component_fp8，缓存落盘），
+        text_encoder 16.33GB bf16 → torchao fp8（与实验脚本同路径，约 9s）。
+        """
+        import torch
+        from pathlib import Path
+
+        try:
+            from diffusers import QwenImage21Pipeline, QwenImage21Transformer2DModel
+        except Exception as e:
+            raise RuntimeError(
+                "Qwen-Image-2.1 需要较新版本的 diffusers（含 QwenImage21Pipeline）。"
+                "请执行：\n"
+                "  ./start.sh --gpu      （Windows：start.bat --gpu）\n"
+                "或  pip install -U diffusers\n"
+                f"原始错误：{e}"
+            ) from e
+        try:
+            from transformers import Qwen3VLForConditionalGeneration
+        except Exception as e:
+            raise RuntimeError(
+                "Qwen-Image-2.1 的文本编码器需要 transformers ≥ 5.17。请执行：\n"
+                "  pip install -U transformers\n"
+                f"原始错误：{e}"
+            ) from e
+
+        torch.backends.cudnn.benchmark = True
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "Qwen-Image-2.1 是 7B DiT，需要 CUDA GPU（如 RTX 4090）；CPU 推理不可行。"
+            )
+
+        print("[meowcute] 加载并量化 Qwen-Image-2.1 transformer（fp8）…", flush=True)
+        transformer = self._load_component_fp8(
+            model_id, "transformer", QwenImage21Transformer2DModel,
+            "qwen21.transformer")
+        print("[meowcute] 加载并量化 Qwen-Image-2.1 text_encoder（fp8）…", flush=True)
+        text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+            str(Path(model_id) / "text_encoder"), torch_dtype=torch.bfloat16)
+        self._quantize_fp8(text_encoder, "qwen21.text_encoder")
+
+        pipe = QwenImage21Pipeline.from_pretrained(
+            model_id, transformer=transformer, text_encoder=text_encoder,
+            torch_dtype=torch.bfloat16)
+        offload = _enable_offload(pipe, "qwen21")
+        pipe.set_progress_bar_config(disable=True)
+        _CAPS[model_id] = {
+            "family": "qwen21",
+            "notes": ["Qwen-Image-2.1：文生图 / 指令改图 / 原生 RGBA 三合一；"
+                      "fp8（transformer+text_encoder）+ cpu offload",
+                      offload + "；峰值约 14.8GB，任务结束即释放"],
+        }
+        _CACHE[model_id] = pipe
+        return pipe
+
+    def _run_qwen21(self, model_id: str, prompt: str, negative: str,
+                    width: int, height: int, steps: Optional[int],
+                    seed: Optional[int], generator: Any, n: int,
+                    refs: Optional[Any] = None, task_id: Optional[str] = None,
+                    max_seq_len: Optional[int] = None):
+        """Qwen-Image-2.1 统一推理：带参考图 = 指令改图，不带 = 文生图。
+
+        - true_cfg_scale=4.0 必须配 negative_prompt：管线是
+          `do_true_cfg = true_cfg_scale > 1 and has_neg_prompt`，不传负向
+          时 CFG **静默失效**（2026-10-22 实测 cfg1/cfg4 输出逐字节相同）；
+        - 输出尺寸显式传 width/height（output_resolution 只在缺省时兜底）；
+        - 改图路径把参考图统一缩放到目标尺寸（管线对多图原生支持）；
+        - 提示词要透明底时（含 RGBA 描述）直接出 alpha，可省掉后续抠图。
+        """
+        import torch
+        from PIL import Image as _Image
+
+        pipe = self._load(model_id)
+        use_steps = 40 if not steps else max(20, min(int(steps), 50))
+        w = int(width or 512) // 16 * 16
+        h = int(height or 512) // 16 * 16
+
+        srcs = [r.convert("RGB") for r in (refs or []) if r is not None]
+        if srcs:
+            srcs = [s.resize((w, h), _Image.LANCZOS) for s in srcs]
+        image_arg = srcs[0] if len(srcs) == 1 else (srcs or None)
+
+        images = []
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
+        for i in range(max(1, min(n, 4))):
+            kw = dict(
+                prompt=prompt,
+                negative_prompt=negative if negative is not None else "",
+                height=h, width=w,
+                output_resolution=max(w, h),
+                num_inference_steps=use_steps,
+                true_cfg_scale=4.0,
+                generator=generator,
+                callback_on_step_end=progress_mod.make_step_callback(
+                    task_id, use_steps, label=f"第 {i + 1} 张"),
+            )
+            if image_arg is not None:
+                kw["image"] = image_arg
+            out = pipe(**kw)
+            images.append(out.images[0].convert("RGBA"))
+            if generator is not None and seed is not None:
+                generator = torch.Generator(device=generator.device).manual_seed(int(seed) + i + 1)
+        _release_vram()
+        meta = {"steps": use_steps, "cfg": 1.0, "trueCfg": 4.0,
+                "family": "qwen21",
+                "mode": "edit" if srcs else "txt2img",
+                "refCount": len(srcs), "size": [w, h]}
+        try:
+            if torch.cuda.is_available():
+                meta["vram"] = {
+                    "peakGB": round(torch.cuda.max_memory_allocated() / 2**30, 2),
+                    "reservedGB": round(torch.cuda.memory_reserved() / 2**30, 2),
+                    "totalGB": round(
+                        torch.cuda.get_device_properties(0).total_memory / 2**30, 2),
+                }
+        except Exception:
+            pass
+        return images, meta
 
     # ---------- Qwen-Image-Edit fp8 transformer：量化 + 落盘缓存 ----------
 
@@ -1050,7 +1203,7 @@ class DiffusersProvider(BaseProvider):
             images.append(out.images[0].convert("RGBA"))
             if generator is not None and seed is not None:
                 generator = torch.Generator(device=generator.device).manual_seed(int(seed) + i + 1)
-        # 编辑任务也要「用完即放」：三视图推导 / 视角生成这类任务跑完，
+        # 编辑任务也要「用完即放」：四视图推导 / 视角生成这类任务跑完，
         # 之前是 22GB 一直占着——只有当别的模型加载时才被动换出，而用户
         # 往往就停在结果页，显存白占十分钟。
         _release_vram()
@@ -1105,6 +1258,12 @@ class DiffusersProvider(BaseProvider):
             images, meta = self._run_zimage(model_id, prompt, width, height,
                                             steps, seed, generator, n, task_id=task_id,
                                             max_seq_len=max_seq_len)
+        elif family == "qwen21":
+            images, meta = self._run_qwen21(model_id, prompt, negative, width, height,
+                                            steps, seed, generator, n,
+                                            refs=_normalize_refs(ref, refs),
+                                            task_id=task_id,
+                                            max_seq_len=max_seq_len)
         else:
             images, meta = self._run_qwen_edit(model_id, prompt, negative, width, height,
                                                steps, seed, generator, n,
@@ -1140,15 +1299,16 @@ class DiffusersProvider(BaseProvider):
 
         # 带参考图 = 图生图/参考图生成；Z-Image 没有这条管线，自动改走编辑底座，
         # 而不是把参考图悄悄丢掉（历史上就是这样静默忽略的）。
+        # Qwen-Image-2.1 是文生图/改图合一座椅，带参考图时留在原模型走改图模式。
         if all_refs and family == "zimage":
             try:
                 model_id = resolve_edit_model()
-                family = "qwen_edit"
+                family = "qwen_edit" if detect_family(model_id) == "qwen_edit" else "qwen21"
                 auto_routed = True
             except Exception as e:
                 raise RuntimeError(
                     "Z-Image 是纯文生图底座，不支持参考图。要按参考图生成，"
-                    "请先配置编辑底座 models/qwen-image-edit-2511。") from e
+                    "请先配置编辑底座 models/qwen-image-2.1。") from e
 
         if steps is None:
             # 蒸馏模型只需极少步数：Z-Image 9 步（8 次前向）、

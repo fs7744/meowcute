@@ -15,11 +15,11 @@ type Props = {
   onPreview: (url: string, title: string) => void
 }
 
-const VIEW_CN = { side: '侧视图', back: '背视图' } as const
+const VIEW_CN = { side: '侧视图', side_r: '右视图', back: '背视图' } as const
 
 /**
- * 视角生成节点（三视图的第 2/3 步）：以「正视图」为参考，用编辑底座指令接力
- * 生成侧视图或背视图。
+ * 视角生成节点（四视图的第 2/3/4 步）：以「正视图」为参考，用编辑底座指令接力
+ * 生成侧视图、右视图或背视图。
  *
  * 两个关键设计：
  * 1. 参考永远是最上游那张正视图——链条中间隔着别的视角节点也会自动往前找，
@@ -41,6 +41,7 @@ export default function ViewGenNode({
 
   const meta = node.result?.viewMeta
   const isBack = v.view === 'back'
+  const isRight = v.view === 'side_r'
 
   return (
     <div className={`node viewgen ${v.enabled ? '' : 'off'}`}
@@ -78,7 +79,9 @@ export default function ViewGenNode({
         <div className="hint" style={{ marginTop: -4 }}>
           {isBack
             ? '角色旋转 180° 背对观众：脸部不可见，不新增任何衣物配件。'
-            : '角色整体转向画面左侧：展现完整侧面轮廓，造型以正视图为准。'}
+            : isRight
+              ? '角色整体转向画面右侧：展现完整侧面轮廓，造型以正视图为准。'
+              : '角色整体转向画面左侧：展现完整侧面轮廓，造型以正视图为准。'}
         </div>
 
         <label className="gen-field">

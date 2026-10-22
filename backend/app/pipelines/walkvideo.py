@@ -83,7 +83,7 @@ DIR_ANGLE = {
     "right": 270,       # 正右
     "down-right": 315,  # 右前 45°
 }
-ANCHOR_ANGLE = {"front": 0, "side": 90, "back": 180}
+ANCHOR_ANGLE = {"front": 0, "side": 90, "back": 180, "side_r": 270}
 
 
 def anchor_for(direction: str, have: Optional[set] = None) -> Tuple[str, int]:
@@ -91,11 +91,11 @@ def anchor_for(direction: str, have: Optional[set] = None) -> Tuple[str, int]:
 
     角度差 0 = 这张锚点图本身就是该朝向，直接用、不用推导；
     45° 只需微调，比从正视图硬转 90/180 度稳得多（后者最容易长出部件、
-    丢装备、画风漂）。这正是「先出三视图再进行走视频」的价值：五个真实
-    方向里有三个是零推导，剩下两个也只转 45 度。
+    丢装备、画风漂）。这正是「先出四视图再进行走视频」的价值：八个方向里
+    有四个是零推导（正/左/背/右直通对应锚点），剩下四个也只转 45 度。
     """
     target = DIR_ANGLE[direction]
-    pool = [r for r in ("front", "side", "back")
+    pool = [r for r in ("front", "side", "back", "side_r")
             if have is None or r in have] or ["front"]
     # 并列时按「朝向同一侧」优先：左后/右后这种带背面特征的方向，应该从背面
     # 锚点转 45 度，而不是从侧面锚点转 45 度——背面的发型、背包、披风只有
@@ -133,7 +133,7 @@ def direction_instruction(direction: str, anchor: str = "front") -> str:
     backish = 90 < DIR_ANGLE[direction] < 270
 
     if ad == 0:
-        # 锚点图本身就是这个朝向（三视图直接命中），不做任何旋转
+        # 锚点图本身就是这个朝向（四视图直接命中），不做任何旋转
         return (
             "保持画面中的角色当前朝向与全身站立姿势不变：造型、配色、体型比例和"
             "画风与参考图完全一致。" + keep
@@ -287,7 +287,7 @@ async def derive_direction(
 ) -> Tuple[Image.Image, Dict[str, Any]]:
     """从锚点图接力生成指定方向的立绘（编辑底座指令接力）。
 
-    anchor 是这张参考图本身的朝向（front/side/back）。有了三视图之后，
+    anchor 是这张参考图本身的朝向（front/side/back/side_r）。有了四视图之后，
     多数方向的角度差只有 0 或 45 度——比从正视图硬转 90/180 度稳得多：
     旋转幅度越小，编辑器越不容易改动服装、配件和画风。
 
@@ -300,7 +300,7 @@ async def derive_direction(
         raise ValueError(f"未知方向：{direction}")
     _role, delta = anchor_for(direction, {anchor})
     if delta == 0:
-        # 锚点图本身就是这个朝向（三视图命中），再跑一次编辑只会引入无谓的漂移
+        # 锚点图本身就是这个朝向（四视图命中），再跑一次编辑只会引入无谓的漂移
         return base.convert("RGB"), {"direction": direction, "mode": "passthrough",
                                      "anchor": anchor}
 
@@ -459,7 +459,7 @@ async def run_walk(
     立绘 + Wan 生成」两步；没给来源的方向照常走 Wan。一个模型都不加载也是
     合法的（全部有来源时），用来快速换参数重跑下游的序列帧/精灵整图。
 
-    view_anchors: {"front"/"side"/"back": PIL}——三视图锚点。这是角色一致性的
+    view_anchors: {"front"/"side"/"back"/"side_r": PIL}——四视图锚点。这是角色一致性的
     关键：每个方向从**离它最近的锚点**推导，而不是一律从正视图转。有侧/背
     视图时，正面、正左、背面三个方向是零推导（直接拿锚点图），左前/左后只
     转 45 度，既快又不容易走形。
@@ -472,7 +472,7 @@ async def run_walk(
     重载 fp8 缓存，八方向能慢出几分钟。
     """
     dirs = directions_of(dir_mode)
-    # 三视图锚点：缺哪个角色就退回正视图（单张图进来的老链路照常工作）
+    # 四视图锚点：缺哪个角色就退回正视图（单张图进来的老链路照常工作）
     view_map = {k: v for k, v in (view_anchors or {}).items() if v is not None}
     if "front" not in view_map:
         view_map["front"] = base

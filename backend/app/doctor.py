@@ -80,14 +80,14 @@ def run_doctor() -> Dict[str, Any]:
     models = scan_models()
     families = {m["family"] for m in models}
     items.append(_item(
-        "models", "本地模型权重", "zimage" in families,
+        "models", "本地模型权重", "qwen21" in families,
         detail="、".join(f"{m['name']}（{m['gb']}GB）" for m in models) or f"{MODELS_DIR} 下没有识别到模型",
-        fix="把 z-image-turbo / qwen-image-edit-2511 放到项目 models/ 目录。"))
+        fix="把 qwen-image-2.1 放到项目 models/ 目录。"))
     items.append(_item(
-        "edit_model", "编辑底座（参考图用）", "qwen_edit" in families,
-        detail="有参考图时自动路由到 Qwen-Image-Edit" if "qwen_edit" in families
-        else "未找到 qwen-image-edit-2511：参考图生成不可用",
-        fix="把 qwen-image-edit-2511 放到 models/，或只用无参考图的文生图。",
+        "edit_model", "编辑底座（参考图用）", "qwen21" in families or "qwen_edit" in families,
+        detail="有参考图时走 Qwen-Image-2.1 改图模式" if ("qwen21" in families or "qwen_edit" in families)
+        else "未找到 qwen-image-2.1：参考图生成不可用",
+        fix="把 qwen-image-2.1 放到 models/，或只用无参考图的文生图。",
         level="warn"))
 
     # ---- 数据目录 ----

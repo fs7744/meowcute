@@ -79,6 +79,12 @@ def main() -> int:
     check("doctor 有检查项", len(r.json().get("items", [])) >= 5)
     r = client.get("/api/models")
     check("models 200", r.status_code == 200)
+    r = client.get("/api/styles")
+    check("styles 200", r.status_code == 200)
+    bgs = r.json().get("backgrounds", [])
+    check("背景预设含透明", any(b.get("id") == "transparent" for b in bgs),
+          str([b.get("id") for b in bgs]))
+    check("背景预设 4 个", len(bgs) == 4, str(len(bgs)))
 
     print("== 模板 / 画风 ==")
     r = client.get("/api/templates")
@@ -185,6 +191,19 @@ def main() -> int:
         "prompt": "一只猫", "styleId": "pixel_16bit", "background": "none",
         "pixel": {"enabled": True, "gridSnap": True, "colors": 16, "palette": "auto"}})
     check("无背景不写背景句", "#00FF00" not in r.json()["prompt"] and "#808080" not in r.json()["prompt"])
+    # 透明背景：Qwen-Image-2.1 原生 RGBA 的官方双段式声明必须进提示词
+    r = client.post("/api/generate/preview", json={
+        "prompt": "一只猫", "styleId": "pixel_16bit", "background": "transparent",
+        "pixel": {"enabled": True, "gridSnap": True, "colors": 16, "palette": "auto"}})
+    tp = r.json()["prompt"]
+    check("透明背景带 RGBA 开头声明", tp.startswith("This is an RGBA image with transparency."), tp[:60])
+    check("透明背景带 alpha 结尾声明", "The image has alpha channel and the background is transparent." in tp)
+    check("透明背景有背景约束句", "背景完全透明" in tp)
+    check("像素契约不禁死 alpha", "禁止半透明像素" not in tp and "全透明或全不透明" in tp)
+    r = client.post("/api/generate/preview", json={
+        "prompt": "一只猫", "styleId": "pixel_16bit", "background": "gray",
+        "pixel": {"enabled": True, "gridSnap": True, "colors": 16, "palette": "auto"}})
+    check("中灰背景不误加 RGBA 声明", "RGBA" not in r.json()["prompt"])
     # 幂等：提示词里已含风格词不应重复
     r2 = client.post("/api/generate/preview", json={
         "prompt": pv["prompt"], "styleId": "pixel_16bit",

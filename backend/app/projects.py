@@ -60,7 +60,7 @@ DEFAULT_MATTE = {
     "bottomTrim": 0.0,
 }
 
-# 视角生成节点（三视图的侧/背视图）：enabled=False 时透传上游正视图。
+# 视角生成节点（四视图的侧/背/右视图）：enabled=False 时透传上游正视图。
 # view 固定 side | back——同一个组件、同一个接口，靠这个字段区分。
 DEFAULT_VIEWGEN = {
     "enabled": True,
@@ -73,7 +73,7 @@ DEFAULT_VIEWGEN = {
     "maxSeqLen": None,
 }
 
-# 三视图拼板节点：正/侧/背三路输入合成一张横向板。
+# 四视图拼板节点：正/侧/背/右四路输入合成一张横向板（右视图可选）。
 DEFAULT_THREEVIEW = {
     "enabled": True,
     "bg": "1B4332",
@@ -504,7 +504,7 @@ def _clean_viewgen(v: Any) -> Dict[str, Any]:
 
 
 def _clean_threeview(t: Any) -> Dict[str, Any]:
-    """三视图拼板参数：底板色只认 6 位十六进制，基线夹在 0.5-0.99。"""
+    """四视图拼板参数：底板色只认 6 位十六进制，基线夹在 0.5-0.99。"""
     t = t if isinstance(t, dict) else {}
 
     def _i(val, d, lo, hi):

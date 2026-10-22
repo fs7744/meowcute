@@ -102,6 +102,7 @@ export default function ResultNode({
         </div>
 
         {m.vramWarning ? <div className="warn">{m.vramWarning}</div> : null}
+        {m.bgWarning ? <div className="warn">{m.bgWarning}</div> : null}
 
         <div className="result-foot">
           {node.prompt ? (

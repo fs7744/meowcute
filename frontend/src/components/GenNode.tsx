@@ -258,7 +258,7 @@ export default function GenNode({
                 title={b.hint} onClick={() => patchParams({ background: b.id as any })}>
                 <i style={{
                   display: 'inline-block', width: 9, height: 9, marginRight: 5,
-                  background: b.id === 'none'
+                  background: b.swatch === 'transparent'
                     ? 'repeating-conic-gradient(#999 0% 25%, #444 0% 50%) 0 0 / 6px 6px'
                     : b.swatch,
                   boxShadow: '0 0 0 1px rgba(255,255,255,0.3)',

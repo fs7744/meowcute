@@ -10,8 +10,8 @@
 - /api/tasks/{id}/stream|/cancel                 进度与取消
 - /api/pixel/refine                              对已有原图重新精修
 - /api/matte                                     扣除背景（u2net → GrabCut → 颜色键）
-- /api/threeview/derive                          三视图：由正视图接力生成侧/背视图（任务制）
-- /api/threeview/compose                         三视图：正/侧/背拼成横向板
+- /api/threeview/derive                          四视图：由正视图接力生成侧/背/右视图（任务制）
+- /api/threeview/compose                         四视图：正/侧/背/右拼成横向板（3 张按老三视图）
 - /api/walkvideo                                 八方向行走：方向立绘 + Wan 行走视频（任务制）
 - /api/sequence                                  八方向行走：视频 → 抽帧去重抠图的序列帧（任务制）
 - /api/spritesheet                               八方向行走：序列帧 → 每方向精灵表 + 总览（任务制）
@@ -510,6 +510,14 @@ def _build_generation_prompt(prompt: str, style_id: Optional[str],
     settings = load_settings()
     base_neg = (settings.get("providers", {}).get("diffusers", {}) or {}).get("negativePrompt", "")
     built["negative"] = resolve_pixel_negative(base_neg, use_contract, material)
+    # 透明背景：Qwen-Image-2.1 原生 RGBA 的官方双段式声明。缺了这段，
+    # VAE 第 4 通道（alpha）不会激活，输出恒为不透明（实测）。
+    if background == "transparent":
+        built["prompt"] = (
+            "This is an RGBA image with transparency. "
+            + built["prompt"]
+            + " The image has alpha channel and the background is transparent."
+        )
     built["useContract"] = use_contract
     built["grid"] = grid
     built["background"] = background
@@ -624,6 +632,13 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
         pixel_on = bool(pixel.enabled and style_def and style_def.get("pixelClass"))
         meta["pixelOn"] = pixel_on
 
+        # 透明背景只有 Qwen-Image-2.1（qwen21 族）能原生输出；旧底座
+        # （Z-Image / Edit-2511）会忽略 RGBA 声明给出不透明图，必须明说。
+        if params.background == "transparent" and meta.get("family") != "qwen21":
+            meta["bgWarning"] = (
+                f"当前底座（{meta.get('family') or '未知'}）不支持原生透明输出，"
+                "本张图为不透明背景；请切换 models/qwen-image-2.1 后再选「透明」。")
+
         # ---- 像素精修 ----
         refined_meta: List[Dict[str, Any]] = []
         refined_images: List[Image.Image] = []
@@ -692,6 +707,7 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
                 "seconds": elapsed,
                 "autoRouted": bool(meta.get("autoRouted")),
                 "vramWarning": meta.get("vramWarning"),
+                "bgWarning": meta.get("bgWarning"),
                 # 峰值显存（GB）：显存是这条工具链最容易被抱怨的资源，报出来
                 "vram": meta.get("vram"),
                 "refCount": len(refs),
@@ -894,7 +910,7 @@ async def matte_existing(payload: MattePayload) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# 角色三视图
+# 角色四视图
 # --------------------------------------------------------------------------- #
 
 
@@ -905,7 +921,7 @@ class ViewDerivePayload(BaseModel):
     sourceKind: str = "images"
     sourceFile: Optional[str] = None
     origAssetId: str = ""
-    view: str = "side"                      # side | back
+    view: str = "side"                      # side | back | side_r
     styleId: Optional[str] = None
     steps: Optional[int] = None
     seed: Optional[int] = None
@@ -942,7 +958,7 @@ async def _run_view_derive(task_id: str, payload: ViewDerivePayload) -> None:
     try:
         if projects_mod.load_project(payload.projectId) is None:
             raise RuntimeError("项目不存在")
-        if payload.view not in ("side", "back"):
+        if payload.view not in ("side", "back", "side_r"):
             raise RuntimeError(f"未知视角：{payload.view}")
 
         src = ThreeViewSource(kind=payload.sourceKind,
@@ -991,8 +1007,10 @@ async def threeview_derive(payload: ViewDerivePayload) -> Dict[str, Any]:
 
 @app.post("/api/threeview/compose")
 async def threeview_compose(payload: ComposePayload) -> Dict[str, Any]:
-    if len(payload.sources) != 3:
-        raise HTTPException(400, f"三视图拼板需要 3 张图（正/侧/背），收到 {len(payload.sources)} 张")
+    if len(payload.sources) not in (3, 4):
+        raise HTTPException(
+            400, f"视图拼板需要 3 张（正/侧/背）或 4 张（正/侧/背/右），"
+                 f"收到 {len(payload.sources)} 张")
     imgs: List[Image.Image] = []
     for i, src in enumerate(payload.sources):
         img = _load_source(payload.projectId, src)
@@ -1034,7 +1052,7 @@ class WalkVideoSource(BaseModel):
 
 
 class WalkViewAsset(BaseModel):
-    """三视图锚点：角色（正/侧/背）→ 项目内图片文件。"""
+    """四视图锚点：角色（正/侧/背/右）→ 项目内图片文件。"""
     role: str                                   # front | side | back
     file: str = ""
 
@@ -1076,7 +1094,7 @@ class WalkVideoPayload(BaseModel):
     maxSeqLen: Optional[int] = None
     # 现成视频来源：这些方向跳过立绘推导 + Wan，直接用文件里的帧
     sources: List[WalkVideoSource] = Field(default_factory=list)
-    # 三视图锚点：有了它们，正/侧/背三个方向零推导，斜向只转 45 度
+    # 四视图锚点：有了它们，正/侧/背/右四个方向零推导，斜向只转 45 度
     viewAssets: List[WalkViewAsset] = Field(default_factory=list)
     # 用户为每个方向指定的立绘图
     dirImages: List[WalkDirImage] = Field(default_factory=list)
@@ -1124,7 +1142,7 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
         w_w = _clamp(payload.width, 128, 1024, 384)
         w_h = _clamp(payload.height, 128, 1024, 512)
 
-        # 三视图锚点：每个方向从离它最近的锚点推导（一致性 + 少推导两次）
+        # 四视图锚点：每个方向从离它最近的锚点推导（一致性 + 少推导）
         view_anchors: Dict[str, Any] = {}
         for va in payload.viewAssets:
             if va.role not in ("front", "side", "back") or not va.file:

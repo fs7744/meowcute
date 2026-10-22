@@ -743,8 +743,8 @@ button { cursor: pointer; }
 /* 拼板结果是横向长图，缩略图跟着放宽 */
 .matte-thumb.wide { width: 100%; height: 88px; }
 
-/* 三视图拼板节点的三路输入槽位 */
-.tv-slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+/* 四视图拼板节点的四路输入槽位（2×2，四列在 380px 节点里太窄） */
+.tv-slots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .tv-slot {
   position: relative; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3);
   aspect-ratio: 3 / 4; display: grid; place-items: center; overflow: hidden;

@@ -160,7 +160,7 @@ def _public(t: Dict[str, Any]) -> Dict[str, Any]:
     steps = []
     labels = {"input": "选择图片", "generate": "生成图", "refine": "像素精修",
               "matte": "扣除背景", "result": "图片结果",
-              "viewgen": "生成视角", "threeview": "三视图拼板",
+              "viewgen": "生成视角", "threeview": "四视图拼板",
               "walkvideo": "行走视频", "sequence": "序列帧",
               "spritesheet": "精灵整图", "play": "可操控预览"}
     for i, n in enumerate(nodes):

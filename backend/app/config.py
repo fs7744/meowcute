@@ -22,27 +22,30 @@ PROMPT_EXAMPLES_PATH = DATA_DIR / "prompt_examples.json"
 MODELS_DIR = ROOT / "models"
 
 # 已知底座目录名 → 族。用于设置页自动探测与下拉选择。
+# 2026-10-22 起主力底座为 Qwen-Image-2.1（文生图/改图/RGBA 三合一），
+# Z-Image 与 Qwen-Image-Edit-2511 退为可选旧档（权重已移归档目录）。
 KNOWN_MODELS: Dict[str, str] = {
+    "qwen-image-2.1": "qwen21",
+    "wan2.2-ti2v-5b": "wan",
     "z-image-turbo": "zimage",
     "qwen-image-edit-2511": "qwen_edit",
     "qwen-image-edit-2511-lightning": "qwen_edit_lora",
     "qwen-image-layered": "qwen_layered",
-    "wan2.2-ti2v-5b": "wan",
 }
 
-DEFAULT_EDIT_MODEL = "models/qwen-image-edit-2511"
+DEFAULT_EDIT_MODEL = "models/qwen-image-2.1"
 DEFAULT_VIDEO_MODEL = "models/wan2.2-ti2v-5b"
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
-    # 本地底座：Z-Image-Turbo（文生图）+ Qwen-Image-Edit-2511（指令编辑 / 参考图）
+    # 本地底座：Qwen-Image-2.1（文生图 + 指令编辑/参考图，2026-10-22 迁移）
     # + Wan2.2 TI2V-5B（图生视频，行走视频节点用）
     "activeProvider": "diffusers",
     "providers": {
         "diffusers": {
-            "label": "本地底座（Z-Image / Qwen-Edit / Wan 视频）",
+            "label": "本地底座（Qwen-Image-2.1 / Wan 视频）",
             "baseUrl": "",
             "apiKey": "",
-            "model": "models/z-image-turbo",
+            "model": "models/qwen-image-2.1",
             "editModel": DEFAULT_EDIT_MODEL,
             "videoModel": DEFAULT_VIDEO_MODEL,
             # 负面词带像素约束：AI 出图最常见的三类瑕疵，对像素风是致命伤
@@ -104,6 +107,8 @@ def scan_models() -> List[Dict[str, Any]]:
                     cls = str(json.loads(idx.read_text(encoding="utf-8")).get("_class_name") or "")
                     if "ZImage" in cls:
                         family = "zimage"
+                    elif "QwenImage21" in cls:
+                        family = "qwen21"
                     elif "QwenImageEdit" in cls:
                         family = "qwen_edit"
                     elif "QwenImageLayered" in cls:
