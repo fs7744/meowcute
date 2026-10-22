@@ -1,4 +1,4 @@
-import type { ViewGenNode as ViewGenNodeType } from '../types'
+import type { ResultImage, ViewGenNode as ViewGenNodeType } from '../types'
 
 type Props = {
   node: ViewGenNodeType
@@ -47,7 +47,7 @@ export default function ViewGenNode({
   // 老项目 / 旧模板里可能没有后加的字段，合并默认值避免控件拿到 undefined
   const DEFAULTS: ViewGenNodeType['viewgen'] = {
     enabled: true, view: 'side', styleId: null,
-    steps: null, seed: null, width: 512, height: 768, maxSeqLen: null,
+    steps: null, seed: null, width: 512, height: 768, maxSeqLen: null, pick: 0,
   }
   const v = { ...DEFAULTS, ...node.viewgen }
   const patch = (p: Partial<typeof v>) => onChange({ viewgen: { ...v, ...p } })
@@ -55,6 +55,17 @@ export default function ViewGenNode({
   const meta = node.result?.viewMeta
   const isBack = v.view === 'back'
   const isRight = v.view === 'side_r'
+  // 抽卡张数跟随正视图：正视图 n 张 → 本视角 n 张，逐张可看
+  const results: ResultImage[] = node.images?.length
+    ? node.images
+    : (node.result ? [node.result] : [])
+  const pick = Math.min(v.pick ?? 0, Math.max(0, results.length - 1))
+  const shown = results[pick] ?? null
+  const groupNo = (img: ResultImage, i: number) => (img.pairIndex ?? i) + 1
+  const choose = (i: number) => onChange({
+    viewgen: { ...v, pick: i },
+    result: results[i],
+  } as Partial<ViewGenNodeType>)
 
   return (
     <div className={`node viewgen ${v.enabled ? '' : 'off'}`}
@@ -103,6 +114,10 @@ export default function ViewGenNode({
           单侧配件（腰挎刀 / 单肩包 / 单侧护具）按「同一侧、同一高度、同样佩戴方式」
           保留；正视图的角色描述会作为部件清单一起交给模型，防止细长配件漏画。
         </div>
+        <div className="hint" style={{ marginTop: -4 }}>
+          正视图抽卡几张，这里就对每张各生成一张（第 k 张 ↔ 第 k 组），
+          角色不一致的那几张可以只在拼板里挑顺眼的一组。
+        </div>
 
         {inherit ? (
           <div className="param-grid">
@@ -131,18 +146,42 @@ export default function ViewGenNode({
           {running ? <><span className="spin" /> 生成中…</> : `运行生成${VIEW_CN[v.view]}`}
         </button>
 
-        {node.result ? (
+        {shown ? (
           <div style={{ marginTop: 10 }}>
             <button className="matte-thumb" title="点击放大"
-              onClick={() => onPreview(node.result!.url, `生成${VIEW_CN[v.view]}`)}>
-              <img src={node.result.url} alt={VIEW_CN[v.view]} />
+              onClick={() => onPreview(shown.url, `生成${VIEW_CN[v.view]}`)}>
+              <img src={shown.url} alt={VIEW_CN[v.view]} />
             </button>
             <div className="result-meta" style={{ borderTop: 0 }}>
-              <span className="meta-pill good">{node.result.width}×{node.result.height}</span>
+              <span className="meta-pill good">{shown.width}×{shown.height}</span>
               {meta?.mode ? <span className="meta-pill">编辑接力</span> : null}
               {meta?.steps ? <span className="meta-pill">{meta.steps} 步</span> : null}
               {meta?.seed != null ? <span className="meta-pill">种子 {meta.seed}</span> : null}
+              {results.length > 1
+                ? <span className="meta-pill">第 {groupNo(shown, pick)}/{results.length} 组</span>
+                : null}
             </div>
+            {results.length > 1 ? (
+              <>
+                <div className="tv-pick-row">
+                  {results.map((img, i) => (
+                    <button
+                      key={img.assetId}
+                      className={`tv-pick ${i === pick ? 'on' : ''}`}
+                      title={`第 ${groupNo(img, i)} 组（对应正视图第 ${groupNo(img, i)} 张）`}
+                      onClick={() => choose(i)}
+                    >
+                      <img src={img.url} alt={`第 ${groupNo(img, i)} 组`} />
+                      <span>{groupNo(img, i)}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="hint" style={{ marginTop: 2 }}>
+                  正视图抽了 {results.length} 张，本视角也生成了 {results.length} 张（第 k 组 ↔
+                  正视图第 k 张）。选哪张拼进四视图，在「四视图拼板」卡上逐格挑。
+                </div>
+              </>
+            ) : null}
             {meta?.autoRouted ? (
               <div className="hint" style={{ marginTop: 4 }}>
                 已自动路由到编辑底座（Qwen-Image-Edit）。

@@ -757,6 +757,27 @@ button { cursor: pointer; }
 
 /* 四视图拼板节点的四路输入槽位（2×2，四列在 380px 节点里太窄） */
 .tv-slots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.tv-slot-wrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* 多张候选的缩略图行：抽卡后逐视角挑「同一组」 */
+.tv-pick-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.tv-pick {
+  position: relative; width: 42px; height: 56px; padding: 0; cursor: pointer;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.32); overflow: hidden;
+}
+.tv-pick img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tv-pick span {
+  position: absolute; right: 0; bottom: 0; padding: 0 3px;
+  font-size: 9px; font-family: var(--chip); color: var(--white);
+  background: rgba(0, 0, 0, 0.66);
+}
+.tv-pick.on { border-color: var(--pink); box-shadow: 0 0 0 1px var(--pink) inset; }
+.tv-pick:hover { border-color: var(--line-strong); }
+.tv-group-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.tv-group-btn {
+  padding: 2px 8px; font-size: 11px; cursor: pointer;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.32); color: var(--white);
+}
+.tv-group-btn:hover { border-color: var(--pink); }
 .tv-slot {
   position: relative; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3);
   aspect-ratio: 3 / 4; display: grid; place-items: center; overflow: hidden;

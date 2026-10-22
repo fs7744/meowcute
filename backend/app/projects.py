@@ -71,6 +71,8 @@ DEFAULT_VIEWGEN = {
     "width": 512,
     "height": 768,
     "maxSeqLen": None,
+    # 多张候选里当前预览/下游默认使用的那张（数组下标）
+    "pick": 0,
 }
 
 # 四视图拼板节点：正/侧/背/右四路输入合成一张横向板（右视图可选）。
@@ -82,6 +84,9 @@ DEFAULT_THREEVIEW = {
     "gap": 12,
     "baseline": 0.93,
     "cell": None,
+    # 每个视角手动挑的那张（{view: assetId}）：多张候选时用户逐格选图，
+    # 空 = 按 pairIndex 自动取第一组
+    "picks": {},
 }
 
 # 行走视频节点（八方向第一步）：正视图 → 各方向立绘 + Wan 行走视频。
@@ -212,12 +217,16 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                               **(n.get("matte") if isinstance(n.get("matte"), dict) else {})}
             elif n["type"] == "viewgen":
                 n["result"] = None
+                n.pop("images", None)
                 n["viewgen"] = {**DEFAULT_VIEWGEN,
                                 **(n.get("viewgen") if isinstance(n.get("viewgen"), dict) else {})}
+                n["viewgen"]["pick"] = 0
             elif n["type"] == "threeview":
                 n["result"] = None
                 n["threeview"] = {**DEFAULT_THREEVIEW,
                                   **(n.get("threeview") if isinstance(n.get("threeview"), dict) else {})}
+                # 模板里没有产出图，选图记录一并清空（否则指向不存在的 assetId）
+                n["threeview"]["picks"] = {}
             elif n["type"] == "walkvideo":
                 n["result"] = None
                 n["walkvideo"] = {**DEFAULT_WALKVIDEO,
@@ -349,6 +358,9 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             item.update({
                 "viewgen": _clean_viewgen(n.get("viewgen")),
                 "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                # 多张候选（每张都和正视图的一组对应）：不落盘的话刷新页面
+                # 就只剩一张，拼板里的选图全丢
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
         elif n["type"] == "threeview":
@@ -490,7 +502,9 @@ def _clean_viewgen(v: Any) -> Dict[str, Any]:
             return d
 
     view = str(v.get("view") or "side")[:8]
-    if view not in ("side", "back"):
+    # side_r 必须放行：之前只认 side/back，右视图节点存盘后再读回来会被
+    # 改成侧视图（画布上凭空多一个「侧视图」节点，右视图永远拼不上板）
+    if view not in ("side", "back", "side_r"):
         view = "side"
     style_id = str(v.get("styleId") or "")[:40] or None
     return {
@@ -502,6 +516,7 @@ def _clean_viewgen(v: Any) -> Dict[str, Any]:
         "width": _i(v.get("width"), 512, 128, 1536),
         "height": _i(v.get("height"), 768, 128, 1536),
         "maxSeqLen": (_i(v.get("maxSeqLen"), 0, 256, 1536) or None) if v.get("maxSeqLen") else None,
+        "pick": _i(v.get("pick"), 0, 0, 8),
     }
 
 
@@ -534,6 +549,8 @@ def _clean_threeview(t: Any) -> Dict[str, Any]:
         "gap": _i(t.get("gap"), 12, 0, 64),
         "baseline": round(min(0.99, max(0.5, baseline)), 3),
         "cell": cell,
+        "picks": {k: str(v)[:40] for k, v in (t.get("picks") or {}).items()
+                  if k in ("front", "side", "back", "side_r") and v},
     }
 
 

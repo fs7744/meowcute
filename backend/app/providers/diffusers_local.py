@@ -196,6 +196,62 @@ def _normalize_refs(ref=None, refs=None) -> List[Any]:
     return out[:MAX_REFS]
 
 
+def _step_label(progress: Optional[Dict[str, Any]], i: int) -> str:
+    """步进回调里的标签：批量时带上「第 k/n 张」的前缀，单张不带。"""
+    label = str((progress or {}).get("label") or "")
+    return f"{label} 第 {i + 1} 张" if label else f"第 {i + 1} 张"
+
+
+def _ref_fill_color(rgba: Any) -> tuple:
+    """参考图透明区要铺什么色：先看边框实心像素的众数，全透明就退中灰。
+
+    中灰（#808080）不是随便挑的：实测这是模型最愿意当成「什么都没有」的
+    底色，边带不会被画成场景元素；白底则经常被理解成「白色地面/纸」。
+    """
+    import numpy as np
+
+    a = np.asarray(rgba)[:, :, 3]
+    solid = np.asarray(rgba)[:, :, :3][a > 32]
+    if solid.size < 96:
+        return (128, 128, 128)
+    q = (solid // 16 * 16)
+    colors, counts = np.unique(q, axis=0, return_counts=True)
+    return tuple(int(v) for v in colors[counts.argmax()] + 8)
+
+
+def _prep_ref_images(refs: List[Any], w: int, h: int,
+                     bg: Optional[Any] = None) -> List[Any]:
+    """参考图进编辑管线前的归一化：**等比缩放居中 + 透明区铺底色**。
+
+    这里修的是两个静默的图像条件 bug（比提示词更能决定角色像不像）：
+    1. `convert("RGB")` 会把 alpha=0 的区域压成黑色——透明底正视图喂进去，
+       模型看到的是「黑底上的角色」，它就会顺手把黑当背景画进结果（暗部、
+       底色、地面），和「透明背景」的指令直接打架。现在按参考图自己的
+       实心边框色（或调用方给的底色）铺平，模型看到的是一张完整的图。
+    2. `resize((w, h))` 是**拉伸**：512×768 的正视图转 768×768 时角色被横向
+       拉胖 1.5 倍，模型转完视角再按这个比例画，直接换了个体型。改成等比
+       缩放 + 居中留边（letterbox），参考图里的比例和位置才是真的。
+    """
+    from PIL import Image
+    out: List[Any] = []
+    for r in refs:
+        if r is None:
+            continue
+        im = r.convert("RGBA") if hasattr(r, "convert") else None
+        if im is None:
+            continue
+        fill = tuple(int(v) for v in bg[:3]) if bg is not None else _ref_fill_color(im)
+        scale = min(w / im.width, h / im.height)
+        nw = max(1, min(w, int(round(im.width * scale))))
+        nh = max(1, min(h, int(round(im.height * scale))))
+        small = im.resize((nw, nh), Image.LANCZOS)
+        canvas = Image.new("RGB", (w, h), fill)
+        # 带 alpha 贴入：半透明边缘与底色混合，和原图叠在底色上的观感一致
+        canvas.paste(small, ((w - nw) // 2, (h - nh) // 2), small)
+        out.append(canvas)
+    return out
+
+
 def _frames_to_pil(frames: Any) -> List[Any]:
     """把视频管线的输出统一成一维 PIL 列表（RGBA）。
 
@@ -627,7 +683,9 @@ class DiffusersProvider(BaseProvider):
                     width: int, height: int, steps: Optional[int],
                     seed: Optional[int], generator: Any, n: int,
                     refs: Optional[Any] = None, task_id: Optional[str] = None,
-                    max_seq_len: Optional[int] = None):
+                    max_seq_len: Optional[int] = None,
+                    ref_bg: Optional[Any] = None,
+                    progress: Optional[Dict[str, Any]] = None):
         """Qwen-Image-2.1 统一推理：带参考图 = 指令改图，不带 = 文生图。
 
         - true_cfg_scale=4.0 必须配 negative_prompt：管线是
@@ -645,9 +703,7 @@ class DiffusersProvider(BaseProvider):
         w = int(width or 512) // 16 * 16
         h = int(height or 512) // 16 * 16
 
-        srcs = [r.convert("RGB") for r in (refs or []) if r is not None]
-        if srcs:
-            srcs = [s.resize((w, h), _Image.LANCZOS) for s in srcs]
+        srcs = _prep_ref_images([r for r in (refs or []) if r is not None], w, h, ref_bg)
         image_arg = srcs[0] if len(srcs) == 1 else (srcs or None)
 
         images = []
@@ -666,7 +722,10 @@ class DiffusersProvider(BaseProvider):
                 true_cfg_scale=4.0,
                 generator=generator,
                 callback_on_step_end=progress_mod.make_step_callback(
-                    task_id, use_steps, label=f"第 {i + 1} 张"),
+                    task_id, use_steps,
+                    label=_step_label(progress, i),
+                    base=int((progress or {}).get("base") or 0),
+                    grand=int((progress or {}).get("grand") or 0)),
             )
             if image_arg is not None:
                 kw["image"] = image_arg
@@ -1148,7 +1207,9 @@ class DiffusersProvider(BaseProvider):
                        width: int, height: int, steps: Optional[int],
                        seed: Optional[int], generator: Any, n: int,
                        refs: Optional[Any] = None, task_id: Optional[str] = None,
-                       max_seq_len: Optional[int] = None):
+                       max_seq_len: Optional[int] = None,
+                       ref_bg: Optional[Any] = None,
+                       progress: Optional[Dict[str, Any]] = None):
         """Qwen-Image-Edit 指令式编辑：参考图（可多张）+ 中文指令 → 编辑图。
 
         - 必须传参考图（没有输入时直接报错，而不是静默出图）；
@@ -1169,12 +1230,10 @@ class DiffusersProvider(BaseProvider):
         pipe = self._load(model_id)
         use_steps = 40 if not steps else max(20, min(int(steps), 50))
         msl = _resolve_seq_len(prompt, max_seq_len)
-        from PIL import Image as _Image
 
-        srcs = [r.convert("RGB") for r in refs]
-        w = int(width or srcs[0].width) // 16 * 16
-        h = int(height or srcs[0].height) // 16 * 16
-        srcs = [s.resize((w, h), _Image.LANCZOS) for s in srcs]
+        w = int(width or refs[0].width) // 16 * 16
+        h = int(height or refs[0].height) // 16 * 16
+        srcs = _prep_ref_images(refs, w, h, ref_bg)
         # 单图传 Image，多图传 list（Plus 管线两者都吃）
         image_arg = srcs[0] if len(srcs) == 1 else srcs
         images = []
@@ -1198,7 +1257,10 @@ class DiffusersProvider(BaseProvider):
                 # 步进回调：40 步里每一步都报，长任务的进度条就靠它；
                 # 取消时抛 CancelledError 中止推理
                 callback_on_step_end=progress_mod.make_step_callback(
-                    task_id, use_steps, label=f"第 {i + 1} 张"),
+                    task_id, use_steps,
+                    label=_step_label(progress, i),
+                    base=int((progress or {}).get("base") or 0),
+                    grand=int((progress or {}).get("grand") or 0)),
             )
             images.append(out.images[0].convert("RGBA"))
             if generator is not None and seed is not None:
@@ -1227,7 +1289,9 @@ class DiffusersProvider(BaseProvider):
              steps: int, seed: Optional[int], n: int,
              ref: Optional[Any] = None, refs: Optional[Any] = None,
              task_id: Optional[str] = None,
-             max_seq_len: Optional[int] = None):
+             max_seq_len: Optional[int] = None,
+             ref_bg: Optional[Any] = None,
+             progress: Optional[Dict[str, Any]] = None):
         torch = _require_torch()
 
         # 先看显存够不够，再决定要不要让用户干等：桌面程序占着显存时，模型会被
@@ -1266,13 +1330,17 @@ class DiffusersProvider(BaseProvider):
                                             steps, seed, generator, n,
                                             refs=_normalize_refs(ref, refs),
                                             task_id=task_id,
-                                            max_seq_len=max_seq_len)
+                                            max_seq_len=max_seq_len,
+                                            ref_bg=ref_bg,
+                                            progress=progress)
         else:
             images, meta = self._run_qwen_edit(model_id, prompt, negative, width, height,
                                                steps, seed, generator, n,
                                                refs=_normalize_refs(ref, refs),
                                                task_id=task_id,
-                                               max_seq_len=max_seq_len)
+                                               max_seq_len=max_seq_len,
+                                               ref_bg=ref_bg,
+                                               progress=progress)
         if vram_note:
             meta["vramWarning"] = vram_note
         return images, meta
@@ -1290,6 +1358,8 @@ class DiffusersProvider(BaseProvider):
         task_id: Optional[str] = None,
         max_seq_len: Optional[int] = None,
         negative: Optional[str] = None,
+        ref_bg: Optional[Any] = None,
+        progress: Optional[Dict[str, Any]] = None,
     ) -> ProviderResult:
         # 入口先卡一次：缺 torch 时直接把安装指引抛给前端，
         # 而不是等 _run 里 import 出一句光秃秃的 "No module named 'torch'"
@@ -1332,7 +1402,7 @@ class DiffusersProvider(BaseProvider):
             images, meta = await asyncio.to_thread(
                 self._run, model_id, prompt, neg,
                 width, height, steps, seed, n, ref, all_refs or None,
-                task_id, max_seq_len,
+                task_id, max_seq_len, ref_bg, progress,
             )
         status = _torch_status()
         out_meta = {"provider": "diffusers", "model": model_id, "device": status.get("device"),

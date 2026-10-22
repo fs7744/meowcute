@@ -918,6 +918,12 @@ async def matte_existing(payload: MattePayload) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
+class ThreeViewSource(BaseModel):
+    """一路图片来源：拼板的一路输入，或视角推导的一个正视图候选。"""
+    kind: str = "images"                    # images | refs
+    file: str = ""                          # images 下是 assetId，refs 下是文件名
+
+
 class ViewDerivePayload(BaseModel):
     """由正视图接力生成侧/背视图。参考图就是上游那张正视图。"""
     projectId: str
@@ -925,6 +931,10 @@ class ViewDerivePayload(BaseModel):
     sourceKind: str = "images"
     sourceFile: Optional[str] = None
     origAssetId: str = ""
+    # 多张正视图（生成卡 n>1 时的全部候选）：**按顺序每张各出一张视角图**，
+    # 返回结果用 pairIndex 与源图一一对齐——抽卡抽到多张时，每张都有自己
+    # 一套侧/背/右，拼板时才能逐张挑「同一组」而不串角色。
+    sources: List[ThreeViewSource] = Field(default_factory=list)
     view: str = "side"                      # side | back | side_r
     styleId: Optional[str] = None
     steps: Optional[int] = None
@@ -938,12 +948,6 @@ class ViewDerivePayload(BaseModel):
     # 正视图那句角色描述原文：附在视角指令里当「部件清单」，防止腰挎的刀、
     # 背上的弓这类细长配件在重画身体时被漏掉（前端从上游生成卡带下来）
     character: str = ""
-
-
-class ThreeViewSource(BaseModel):
-    """拼板的一路输入：正/侧/背各一路，顺序即板上顺序。"""
-    kind: str = "images"                    # images | refs
-    file: str = ""                          # images 下是 assetId，refs 下是文件名
 
 
 class ComposePayload(BaseModel):
@@ -973,36 +977,71 @@ async def _run_view_derive(task_id: str, payload: ViewDerivePayload) -> None:
         if payload.view not in ("side", "back", "side_r"):
             raise RuntimeError(f"未知视角：{payload.view}")
 
-        src = ThreeViewSource(kind=payload.sourceKind,
-                              file=payload.origAssetId or payload.sourceFile or "")
-        base = _load_source(payload.projectId, src)
-        if base is None:
-            raise RuntimeError("正视图不存在：请先跑上游的「生成图」或「选择图片」节点")
+        # 单源老路径（sourceKind/origAssetId）与多源新路径合并成一张清单：
+        # 顺序 = 正视图候选顺序，返回的每张视角图都带 pairIndex 指回源图
+        srcs = list(payload.sources or [])
+        if not srcs:
+            srcs = [ThreeViewSource(kind=payload.sourceKind,
+                                    file=payload.origAssetId or payload.sourceFile or "")]
+        if len(srcs) > 8:
+            raise RuntimeError(f"一次最多推导 8 张，收到 {len(srcs)} 张")
+        srcs = [s for s in srcs if (s.file or "").strip()]
+        if not srcs:
+            raise RuntimeError("没有可用的正视图：请先跑上游的「生成图」或「选择图片」节点")
 
         provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
-        out, meta = await threeview_mod.derive_view(
-            payload.view, base,
-            style_id=payload.styleId,
-            steps=payload.steps, seed=payload.seed,
-            width=payload.width, height=payload.height,
-            max_seq_len=payload.maxSeqLen,
-            background=payload.background,
-            character=payload.character,
-            provider_cfg=provider_cfg, task_id=task_id)
-
-        info = storage.save_image(payload.projectId, out.convert("RGBA"),
-                                  kind="images", prefix=f"v{payload.view[0]}")
-        meta = dict(meta, seconds=round(time.time() - t0, 1))
-        task_results[task_id] = {
-            "taskId": task_id,
-            "image": {
+        images: List[Dict[str, Any]] = []
+        metas: List[Dict[str, Any]] = []
+        failed: List[str] = []
+        for i, src in enumerate(srcs):
+            progress_mod.check_cancel(task_id)
+            base = _load_source(payload.projectId, src)
+            if base is None:
+                if len(srcs) == 1:
+                    raise RuntimeError(
+                        "正视图不存在：请先跑上游的「生成图」或「选择图片」节点")
+                failed.append(f"{i + 1}: 源图不存在")
+                continue
+            out, meta = await threeview_mod.derive_view(
+                payload.view, base,
+                style_id=payload.styleId,
+                steps=payload.steps, seed=payload.seed,
+                width=payload.width, height=payload.height,
+                max_seq_len=payload.maxSeqLen,
+                background=payload.background,
+                character=payload.character,
+                provider_cfg=provider_cfg, task_id=task_id,
+                batch_index=i, batch_total=len(srcs))
+            info = storage.save_image(payload.projectId, out.convert("RGBA"),
+                                      kind="images",
+                                      # 文件名前缀区分视角：side→vs / back→vb /
+                                      # side_r→vr（原来取 view[0]，side 和 side_r
+                                      # 都是 vs，翻项目目录时分不清）
+                                      prefix={"side": "vs", "back": "vb",
+                                              "side_r": "vr"}[payload.view])
+            images.append({
                 "assetId": info["id"], "url": info["url"],
                 "width": out.width, "height": out.height,
-            },
+                # 与源图的对应关系：拼板按组挑图全靠它（第 k 张正视图 ↔ 第 k 张视角图）
+                "pairIndex": i,
+                "srcAssetId": src.file,
+            })
+            metas.append(dict(meta, pairIndex=i, srcAssetId=src.file))
+
+        if not images:
+            raise RuntimeError("所有正视图都未能生成：" + "；".join(failed[:4]))
+        progress_mod.report(task_id, len(images), len(srcs), "完成")
+        task_results[task_id] = {
+            "taskId": task_id,
+            "image": images[0],
+            "images": images,
             "view": payload.view,
-            "meta": meta,
+            # 单张时给扁平 meta（老布局读 meta.mode/steps/seed），
+            # 多张时给 batch 列表，每张一份
+            "meta": metas[0] if len(metas) == 1 else {"batch": metas},
+            "seconds": round(time.time() - t0, 1),
+            **({"failed": failed} if failed else {}),
         }
-        progress_mod.report(task_id, 1, 1, "完成")
         progress_mod.finish(task_id)
     except progress_mod.CancelledError:
         progress_mod.finish(task_id, "已取消")

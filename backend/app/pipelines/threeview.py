@@ -28,6 +28,11 @@ side_r = 角色面向画面右侧（与 walkvideo 的 right/270° 对应）。
   就是原图的脚掌颜色，不需要任何颜色猜测。上限后来从 2% 提到 8%：灰猫的
   **后脑勺整块是 7.0% 画布**（灰填充 #7C7879 与中灰底 #787878 只差 3 个色阶，
   u2net 必然判成背景），2% 补不到 → 拼板上出现「只剩黑描边的空心脑袋」。
+- 补「被轮廓围住、却和背景连成一片」的区域（`_restore_enclosed_flat`）：768²
+  的背视图里，头占 9% 画布且**不是封闭孔洞**（u2net 把描边一起啃了，头在
+  alpha 里和外部背景连通），按面积补洞补不到 → 拼板上是「没有脑袋的披风」。
+  判据换成轮廓边（Canny + 膨胀当墙），从四边 flood fill，够不着的区域就是
+  被轮廓围住的身体内部，恢复不透明（RGB 用抠图前的原色，不需要猜）。
 - 边缘溢色清洗（matte.clean_edge_spill）：描边外圈常带「黑+底色」的抗锯齿
   混色，抠完底色变透明就留下一圈异色边。判据是「比离自身内侧颜色更接近
   底色」，纯黑描边离内侧为 0 永远不会被洗掉。
@@ -64,6 +69,26 @@ side_r = 角色面向画面右侧（与 walkvideo 的 right/270° 对应）。
 不是参考图污染的问题）。可操作的解法在正视图那一侧：提示词里写清侧别
 （「左腰侧挎武士刀」而不是「腰挎武士刀」），出图时配件就会落在腰侧，后续
 推导才有一个明确的锚点。示例库的猫武士词条已按这个口径改过并写了原因。
+
+**第三轮：抽卡配对 + 背覆体积守恒 + 图像条件修正**
+
+1. **抽卡要成套**：正视图一次生成 n 张时，四个视角各只取 `images[0]` 是错的
+   ——用户在正视图里挑不出来的「好那几张」永远进不了四视图。现在
+   `ViewDerivePayload.sources` 收多张正视图，按顺序逐张接力，返回的每张视角图
+   带 `pairIndex` 指回源图；拼板节点逐视角选图，并能「按第 k 组」一键对齐
+   （第 k 张正视图 + 各视角第 k 张 = 同一套）。配对必须靠序号，不能靠看图猜。
+2. **背覆体积守恒**：模型对「正面只看见领口一条边、背面完全不知道长什么样」
+   的部件默认走省略——披风要么整个消失、要么缩成领口下一圈窄边。新增条款用
+   **几何位置**描述这一类部件（从肩背垂下、盖住后背、向两侧张开），给出可
+   验证的画面事实（连接点/下垂高度/张开宽度不变、至少与肩同宽、要有外表面
+   和褶皱），并且写成条件句——**不写「披风」这个名词**，否则没披风的角色
+   会凭空长一件（归档项目的坑）。
+3. **图像条件比文字更能决定「像不像」**：provider 里参考图原先被
+   `convert("RGB")`（alpha=0 压成黑底）和 `resize((w,h))`（拉伸变形）处理，
+   等于先把参考图弄坏再让模型照着画。现在统一走 `_prep_ref_images`
+   （等比缩放居中 + 按目标底色铺平）。这条对四视图和普通参考图生成同时生效。
+4. **背景句前置**：文本超长时截的是尾部，而透明双段式声明/纯色背景句恰恰
+   是最不能丢的。`_apply_background` 改成把背景要求拼在指令最前面。
 """
 from __future__ import annotations
 
@@ -116,10 +141,9 @@ VIEW_ORDER = ("front", "side", "back", "side_r")
 # 拼板必需的老三张（右视图可选：缺了按三视图拼板，向后兼容旧项目）
 REQUIRED_VIEWS = ("front", "side", "back")
 
-# 视角指令里那句「背景保持纯色不变」是 `_apply_background` 的替换锚点：
-# 透明底上它必须换成透明语义（否则模型会照抄参考图的地面）。写成常量，
-# 免得两句文案各自漂移后替换静默失效。
-BG_KEEP = "背景保持纯色不变，"
+# 背景要求现在前置拼在指令最前面（见 _apply_background），指令正文里不再含
+# 「背景保持纯色不变」这类锚点句——它曾经是字符串替换的锚点，模型偶尔会把
+# 这句当成「照抄参考图地面」的许可，透明底上直接长出投影。
 
 
 def _character_clause(character: str) -> str:
@@ -144,11 +168,11 @@ def _character_clause(character: str) -> str:
 def _view_instruction(view: str, character: str = "") -> str:
     """编辑底座的中文指令：只转视角，外观/服装/配色/画风零改动。
 
-    编辑器（Qwen-Image-Edit-2511 / Qwen-Image-2.1）吃中文指令。指令由六段
+    编辑器（Qwen-Image-Edit-2511 / Qwen-Image-2.1）吃中文指令。指令由八段
     组成，顺序即优先级：转到哪 → 这一侧能看到什么（自身左右锚定）→ 部件
-    清单 → 配件守恒 → 遮挡守恒 → 外观/姿势不变。除部件清单（来自用户自己的
-    角色描述）外全是通用几何约束，不点名任何具体道具与颜色（点名过的角色
-    造型会成为「凭空添加」的指令，见模块注释）。
+    清单 → 配件守恒 → 背覆体积守恒 → 遮挡守恒 → 身份锚点 → 外观/姿势不变。
+    除部件清单（来自用户自己的角色描述）外全是通用几何约束，不点名任何
+    具体道具与颜色（点名过的角色造型会成为「凭空添加」的指令，见模块注释）。
     """
     # 1) 转到哪个视角。说「像转身一样整体转 90 度、镜头不动」，避免模型换姿势
     turn = {
@@ -171,14 +195,12 @@ def _view_instruction(view: str, character: str = "") -> str:
     #    无法把参考图里的位置翻译成角色的左右，结果仍是靠猜。
     side_fact = {
         "side": "这个角度里离观众最近的是角色的左臂、左腿和左肩。正视图的画面右侧"
-                "就是角色的左侧：挂在那里的配件（比如一侧腰上的刀）在这个视角里离"
-                "观众最近、在这一侧的最外层，画在胳膊和腿的外面、不被它们挡住；"
-                "挂在角色右侧的配件被"
+                "就是角色的左侧：挂在那里的配件在这个视角里离观众最近、在这一侧的"
+                "最外层，画在胳膊和腿的外面、不被它们挡住；挂在角色右侧的配件被"
                 "身体挡住，只露出没被挡住的部分。",
         "side_r": "这个角度里离观众最近的是角色的右臂、右腿和右肩。正视图的画面左侧"
-                  "就是角色的右侧：挂在那里的配件（比如一侧腰上的刀）在这个视角里离"
-                  "观众最近、在这一侧的最外层，画在胳膊和腿的外面、不被它们挡住；"
-                  "挂在角色左侧的配件被"
+                  "就是角色的右侧：挂在那里的配件在这个视角里离观众最近、在这一侧的"
+                  "最外层，画在胳膊和腿的外面、不被它们挡住；挂在角色左侧的配件被"
                   "身体挡住，只露出没被挡住的部分。",
         "back": "背面看时角色的左右与画面左右一致，和正视图正好相反：正视图里"
                 "出现在画面右侧的配件，转到背面后会出现在画面左侧，反之亦然。"
@@ -189,41 +211,63 @@ def _view_instruction(view: str, character: str = "") -> str:
     # 3) 配件守恒。条件句「参考图里如果有」是在防「凭空添加」：不点颜色、
     #    不点件数，只说这类配件的固定方式必须原样保留。
     keep_props = (
-        "参考图里如果有只属于身体一侧的配件（挎在一侧腰间的刀剑、单肩背的包或"
-        "披挂、单侧护具、只戴在一只耳朵或一只手上的饰物），它必须仍然在角色的"
-        "同一侧、同一高度，用同样的方式穿戴和固定，形状、长度和相对身体的倾角"
-        "都不变，只是跟着身体一起转；不能换到另一侧、不能左右各出现一个、不能"
-        "从腰间挪到手上或从手上挂回腰间。配件在正视图里如果斜跨着身体、一眼看不"
-        "出偏向哪边，就按它固定的一端（系在腰带上、挂在肩上的那一头）所在的那侧"
-        "算，绝不能因为看不清就把它省掉。身体本身左右对称的部分（双肩、双臂、"
-        "双腿、衣摆两侧）按参考图的样式对称延续，不要一边一种。"
+        "只属于身体一侧的配件（挎在一侧腰间的刀剑、单肩的包、单侧护具、只戴在"
+        "一边的饰物）必须仍在同一侧、同一高度，用同样的方式固定，形状、长度和"
+        "倾角不变，只跟着身体转；不能换边、不能左右各一个、不能从腰间挪到手上。"
+        "正视图里如果斜跨着、看不出偏向哪边，就按固定的一端所在的那侧算，"
+        "绝不能省掉。左右对称的部分（双肩、双臂、双腿、衣摆两侧）按参考图对称延续。"
     )
 
     # 4) 遮挡守恒：模型倾向于把被挡住的配件「挪出来给人看」，或者因为
     #    看不见就整个删掉。两种情况都要在这一句里堵住。
     keep_occlusion = (
-        "露出多少由这个视角真实的三维关系决定：被身体挡住的部分就让它被挡住，"
-        "不要为了让配件完整就把它挪到身体另一侧、抬到轮廓外面，也不要挪动挡住它"
-        "的那条胳膊或那条腿。"
+        "被身体挡住的部分就让它被挡住，不要为了把配件画完整就挪到另一侧或"
+        "轮廓外面，也不要挪动挡住它的胳膊或腿。"
+    )
+
+    # 5) 背覆体积守恒（披风类单品在背视图最容易被抹掉）。
+    #    模型对「正面只看到一条边、背面完全不知道长什么样」的部件默认走省略：
+    #    实测红披风角色转背视图，模型直接画成光后背，或者把披风缩成领口下一
+    #    圈窄边。修法必须通用——**不写「披风」这个名词**（写死名词会给没有
+    #    披风的角色下「长一件出来」的指令，这是归档项目踩过的坑），只用几何
+    #    位置（从肩背垂下、盖住后背、向两侧张开）描述这一类部件，并给出可
+    #    验证的画面事实（至少与肩同宽、下摆高度不变、要有外表面和褶皱）。
+    keep_volume = (
+        "参考图里如果有从肩膀、领口或腰后垂下来、盖住后背、或向身体两侧张开的"
+        "成片/大体量部件，它必须原样保留：连接点仍在原来的肩或领口或腰后，下垂到"
+        "的高度不变，向外张开的宽度不变；侧面要画出它的厚度和前后伸出的范围，"
+        "不要贴着身体画成一层皮。背面看时它是背后面积最大的东西之一，至少与肩"
+        "同宽，下摆完整画出外表面和褶皱，不能缩成窄带、不能只留轮廓线、不能因为"
+        "正面只看见一条边就省掉；它挡住的后背就让它挡住，不要为了露出后背把它"
+        "变短、变窄或挪开。"
+    )
+
+    # 6) 身份锚点：换角度最容易「换一个长得像的角色」，把这些可逐项核对的
+    #    特征点名要求保持一致。仍然不点具体颜色，只说「以参考图为准」。
+    identity = (
+        "身份特征逐项一致：脸型、耳/角/触角的形状与位置、眼睛间距、尾巴的有无与"
+        "长度、毛色或花纹的分布走向、体型与四肢比例都以参考图为准，换个角度不能"
+        "换一套花纹或改一次比例。"
     )
 
     detail = {
         "side": "侧脸只露出一只眼睛和一只耳朵，鼻口在轮廓最前方凸出。",
         "side_r": "侧脸只露出一只眼睛和一只耳朵，鼻口在轮廓最前方凸出。",
-        "back": "脸、眼睛和鼻子完全不可见；头部的造型按参考图原样自然延续到后脑，"
-                "不要在后脑上保留五官。",
+        "back": "脸、眼睛和鼻子完全不可见；头部造型按参考图原样延续到后脑，"
+                "不要在后脑保留五官。整个背面轮廓（肩线、背脊、腰线、臀部、腿后侧）"
+                "按参考图里的体型推演；角色穿着从肩部垂下的外层布料时，背面看到的"
+                "是这层布料的外表面，不是裸露的后背。",
     }[view]
 
     keep_look = (
-        "外观以参考图为准：造型、配色、体型比例和画风全部保持原样，不新增也不"
-        "删除任何部件；站姿、重心、四肢张开的角度和头部朝向都不变，不要改成"
-        "走姿、不要抬手、不要换一个姿势重新构图。"
+        "造型、配色、比例和画风全部保持原样，站姿、重心、四肢张开的角度和头部"
+        "朝向都不变，不要改成走姿、不要抬手、不要重新构图。"
     )
 
-    tail = BG_KEEP + "角色居中站立，全身完整入画，画面中只有一个角色，不要添加文字和水印。"
+    tail = "角色居中站立，全身完整入画，画面中只有一个角色，不要添加文字和水印。"
 
     return (turn + detail + side_fact + _character_clause(character)
-            + keep_props + keep_occlusion + keep_look + tail)
+            + keep_props + keep_volume + keep_occlusion + identity + keep_look + tail)
 
 
 def front_view_prompt(subject: str, style_words: str = "") -> str:
@@ -306,6 +350,69 @@ def _fill_enclosed_holes(cut: Image.Image, max_ratio: float = 0.08
     return Image.fromarray(a, "RGBA"), filled
 
 
+def _restore_enclosed_flat(cut: Image.Image, source: Image.Image,
+                           max_ratio: float = 0.25,
+                           edge_lo: int = 30, edge_hi: int = 90,
+                           grow: int = 2) -> Tuple[Image.Image, int]:
+    """把「被角色轮廓围住、却和外部背景连成一片」的区域恢复成不透明。
+
+    为什么需要这一步（`_fill_enclosed_holes` 补不到的那类）：灰猫站在中灰底上，
+    头部填充色 #7B7777 和底色 #808080 只差 5-7 个色阶，u2net 直接判成背景；
+    描边只有 2px，语义掩码连描边一起啃掉，于是「头」在 alpha 里和外部背景连成
+    一片——它不是封闭孔洞，按面积补洞补不到，拼板上就是「没有脑袋的披风」
+    （实测 768² 背视图：头占 9% 画布，整块丢）。
+
+    判据换成**轮廓边**（Canny + 膨胀 2px 当墙）：从四边 flood fill 所有非边
+    像素，够不着的区域就是被轮廓围住的身体内部。只把「当前已判透明」的像素
+    恢复不透明，RGB 用抠图前原图的颜色（抠图本身不动 RGB，实测头像素仍是
+    #7B7777），所以补回来就是原色，不需要猜。
+    上限 25% 画布：头再大也在这个量级以内；更大的闭合区域（披风围出来的大环）
+    宁可不动，避免糊成一块底色补丁。
+    只在「大面积平涂底色」的图上启用（同为底色的像素 > 35%）：照片/场景图
+    的 Canny 边缘是细节不是轮廓，做了只会恢复出一堆噪点。
+    """
+    a = np.asarray(cut).copy()
+    src = source.convert("RGB")
+    bg = _border_bg(src)
+    rgb = np.asarray(src).astype(np.int16)
+    bg_like = (np.abs(rgb - np.array(bg, np.int16)).max(axis=2) <= 40)
+    if float(bg_like.mean()) < 0.35:
+        return cut, 0
+    try:
+        import cv2
+    except Exception:
+        return cut, 0
+    edges = cv2.dilate(cv2.Canny(np.asarray(src.convert("L")), edge_lo, edge_hi),
+                       np.ones((grow, grow), np.uint8))
+    free = (edges == 0).astype(np.uint8)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(free, connectivity=4)
+    if n <= 1:
+        return cut, 0
+    border_labels = set(lab[0, :].tolist()) | set(lab[-1, :].tolist())
+    border_labels |= set(lab[:, 0].tolist()) | set(lab[:, -1].tolist())
+    h, w = free.shape
+    limit = int(max_ratio * h * w)
+    keep = np.zeros((h, w), bool)
+    for i in range(1, n):
+        if i in border_labels:
+            continue  # 能连到画面边缘 = 外部背景
+        if int(stats[i, cv2.CC_STAT_AREA]) > limit:
+            continue
+        keep |= (lab == i)
+    if not keep.any():
+        return cut, 0
+    # 闭运算把「膨胀出来的 2px 边墙」一起补上：不然恢复出来的头内部会留下
+    # 一堆细白缝（实测头发高光/明暗交界处最明显），像被划了线
+    keep = cv2.morphologyEx(keep.astype(np.uint8), cv2.MORPH_CLOSE,
+                            np.ones((2 * grow + 1, 2 * grow + 1), np.uint8)).astype(bool)
+    comp = keep & (a[:, :, 3] <= 8)      # 只碰当前透明的像素
+    restored = int(comp.sum())
+    if not restored:
+        return cut, 0
+    a[comp, 3] = 255
+    return Image.fromarray(a, "RGBA"), restored
+
+
 def _matte_padded(img: Image.Image, pad_frac: float, tolerance: int
                   ) -> Tuple[Image.Image, dict]:
     """铺一圈底色边距后再抠图，裁回原尺寸（防踩边肢体被 u2net 截掉）。"""
@@ -320,8 +427,10 @@ def _matte_padded(img: Image.Image, pad_frac: float, tolerance: int
     cut = cut.crop((p, p, p + w, p + h))
     cut = matte_pipe.drop_bg_islands(cut)
     cut, filled = _fill_enclosed_holes(cut)
+    cut, enclosed = _restore_enclosed_flat(cut, img)
     cut, recolored = matte_pipe.clean_edge_spill(cut, bg)
-    meta = dict(meta, holesRestored=filled, edgePixelsRecolored=recolored)
+    meta = dict(meta, holesRestored=filled, enclosedRestored=enclosed,
+                edgePixelsRecolored=recolored)
     return cut, meta
 
 
@@ -472,32 +581,45 @@ def _fit_seq_len(instruction: str, requested: Optional[int]) -> int:
 # 单步执行：侧/背/右视图（编辑底座指令接力）
 # --------------------------------------------------------------------------- #
 def _apply_background(instruction: str, background: str) -> str:
-    """给视角指令拼上正视图的背景要求（侧/背/右复用正视图参数）。
+    """把背景要求**前置**到视角指令上（侧/背/右复用正视图参数）。
 
     各张图底色必须和正视图一致，拼板的抠底逻辑才对得上——正视图中灰底而
     侧视图被模型补了个场景背景，拼出来就是一块异色补丁。
+
+    为什么放最前而不是最后：文本编码超长时截的是**尾部**，而背景/透明声明
+    恰恰是最不能丢的一句（透明底双段式声明被截掉，alpha 直接不激活）。
+    放在开头还有一个好处：注意力权重更高，模型不会把背景当次要修饰。
+
     transparent 用 Qwen-Image-2.1 官方双段式 RGBA 声明激活 VAE 第 4 通道
     （只说「透明背景」实测 alpha 恒为 255，见 .verify/exp-b）。
     """
     if background == "transparent":
-        # 视角指令里那句「背景保持纯色不变」在透明底上是有害的：模型会理解成
-        # 「照抄参考图的地面/底色」→ 实测右视图脚下留了一个椭圆地面投影，
-        # 直接污染 alpha（精灵导入引擎后就是一坨紫椭圆）。这里换成透明语义，
-        # 并显式要求轮廓以外**全部**完全透明（只写「不要阴影」对蒸馏/编辑
-        # 底座都太弱，要把结果说成可验证的画面事实）。
-        body = instruction.replace(
-            BG_KEEP,
-            "背景完全透明、不画任何底色，角色轮廓以外的像素全部完全透明，"
-            "不要地面投影、不要阴影、不要环境元素，")
         return (
             "This is an RGBA image with transparency. "
-            + body
+            "背景完全透明、不画任何底色，角色轮廓以外的像素全部完全透明，"
+            "不要地面投影、不要阴影、不要环境元素。"
+            + instruction
             + " The image has alpha channel and the background is transparent."
         )
     phrase = background_phrase(background)
     if phrase:
-        return instruction + "背景要求：" + phrase + "。"
+        return "背景要求：" + phrase + "。" + instruction
     return instruction
+
+
+def _ref_fill(background: str) -> Optional[Tuple[int, int, int]]:
+    """参考图铺底用什么颜色：和正视图的底色对齐。
+
+    透明底也要铺一层（用中灰）：provider 里 `convert("RGB")` 会把 alpha=0 的
+    区域压成黑色，模型看到「黑底角色」就会顺手把黑当背景画进结果。铺中灰后
+    我们看到的是和灰底完全一样的一张图，只是输出仍要求 RGBA。
+    选「无」时返回 None，让 provider 按参考图自己的边框色判断。
+    """
+    return {
+        "gray": (128, 128, 128),
+        "green": (0, 255, 0),
+        "transparent": (128, 128, 128),
+    }.get(background)
 
 
 async def derive_view(
@@ -514,6 +636,8 @@ async def derive_view(
     character: str = "",
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
+    batch_index: int = 0,
+    batch_total: int = 1,
 ) -> Tuple[Image.Image, Dict[str, Any]]:
     """由正视图接力生成侧/背/右视图。
 
@@ -544,8 +668,15 @@ async def derive_view(
     # 背景选「无」时模型可以自由补场景，此时禁「地面」是自相矛盾的 → 不传，
     # 让 provider 回落到设置里的默认负面词。
     negative = None if background == "none" else VIEW_NEGATIVE
-    progress_mod.report(task_id, 0, 0,
-                        f"{_VIEW_META[view]['cn']}（编辑底座接力）…")
+    label = (f"{_VIEW_META[view]['cn']} {batch_index + 1}/{batch_total}"
+             if batch_total > 1 else _VIEW_META[view]['cn'])
+    # 批量时把进度映射到整批：第 2 张从 base=40 报到 80（grand=160），
+    # 进度条一路向前，不会每张图都从 0 冲到 100% 再退回去
+    use_steps = 40 if not steps else max(20, min(int(steps), 50))
+    grand = use_steps * max(1, batch_total)
+    prog = {"label": label, "base": use_steps * batch_index, "grand": grand}
+    progress_mod.report(task_id, use_steps * batch_index, grand,
+                        f"{label}（编辑底座接力）…")
 
     t = time.time()
     result = await provider.generate(
@@ -554,6 +685,10 @@ async def derive_view(
         height=max(64, int(height) // 8 * 8),
         steps=steps, seed=seed, n=1, refs=[base],
         negative=negative,
+        # 参考图铺底色：透明底不铺会被 convert("RGB") 压成黑底，
+        # 模型把黑色当背景画进结果（暗部/地面），和「透明背景」直接打架
+        ref_bg=_ref_fill(background),
+        progress=prog,
         task_id=task_id, max_seq_len=seq_len,
     )
     rmeta = dict(result.meta or {})

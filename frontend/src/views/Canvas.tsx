@@ -882,6 +882,13 @@ export default function Canvas({ projectId, onBack }: Props) {
     if (n.type === 'result') {
       return n.images?.length ? { images: n.images, kind: 'images', file: '' } : null
     }
+    // 视角节点：多张候选全给下游（拼板逐格挑图 / 按组对齐都靠这个列表）。
+    // 「生成图 → 侧视图 → 背视图」这条链上，背视图要的是正视图而不是侧视图，
+    // 上游取图由 resolveFrontSource 绕过视角节点，这里只影响下游。
+    if (n.type === 'viewgen') {
+      const images = n.images?.length ? n.images : (n.result ? [n.result] : [])
+      return images.length ? { images, kind: 'images', file: '' } : null
+    }
     if (n.type === 'input') {
       const r0 = n.refs?.[0]
       if (!r0) return null
@@ -1013,10 +1020,13 @@ export default function Canvas({ projectId, onBack }: Props) {
 
   const executeViewDerive = async (
     node: ViewGenNodeType, runtime?: Map<string, ResultImage[]>,
-  ): Promise<ResultImage> => {
+  ): Promise<ResultImage[]> => {
     if (!project) throw new Error('项目未加载')
     const { out: srcOut, src: srcNode } = resolveFrontSource(node, runtime)
     const im = srcOut.images[0]
+    // 抽卡：正视图有几张就接力几张（每张各出一张本视角），结果按 pairIndex
+    // 与源图对齐。以前只取 images[0]，抽 4 张里最好看的那张永远进不了四视图。
+    const candidates = srcOut.images.slice(0, 8)
     // 参数复用：侧/背/右只认正视图生成卡（画风/尺寸/步数/种子/质量/背景），
     // 用户只在生成卡上填一次。上游不是生成卡时（选择图片等直接喂图）没有参数
     // 可继承：尺寸跟随参考图、其余走默认，不再留节点级参数框。
@@ -1049,30 +1059,44 @@ export default function Canvas({ projectId, onBack }: Props) {
       maxSeqLen,
       background,
       character,
+      // 多源：refs 只能整批一张（上传的一张图），images 逐张传
+      sources: candidates.map((c, i) => (srcOut.kind === 'images'
+        ? { kind: 'images' as const, file: c.assetId }
+        : i === 0 ? { kind: 'refs' as const, file: srcOut.file } : null))
+        .filter((x): x is { kind: 'images' | 'refs'; file: string } => !!x),
     })
     activeTaskRef.current = taskId
     setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
     const r: any = await awaitTask<any>(taskId, node.id)
     if (activeTaskRef.current === taskId) activeTaskRef.current = null
-    const out: any = r.image
-    return {
-      assetId: out.assetId, url: out.url, width: out.width, height: out.height,
-      origAssetId: im.assetId, origUrl: im.url, origSize: [im.width, im.height],
-      view: r.view,
-      viewMeta: r.meta,
-    }
+    const outs: any[] = r.images?.length ? r.images : (r.image ? [r.image] : [])
+    const metas: any[] = r.meta?.batch ?? [r.meta]
+    return outs.map((out: any, i: number) => {
+      const src = candidates[out.pairIndex ?? i] ?? im
+      return {
+        assetId: out.assetId, url: out.url, width: out.width, height: out.height,
+        origAssetId: src.assetId, origUrl: src.url, origSize: [src.width, src.height],
+        view: r.view,
+        viewMeta: metas[out.pairIndex ?? i] ?? metas[0],
+        pairIndex: out.pairIndex ?? i,
+        srcAssetId: out.srcAssetId ?? src.assetId,
+      } as ResultImage
+    })
   }
 
-  const applyViewGenResult = (node: ViewGenNodeType, result: ResultImage) => {
+  const applyViewGenResult = (node: ViewGenNodeType, results: ResultImage[]) => {
+    const pick = Math.min(node.viewgen?.pick ?? 0, Math.max(0, results.length - 1))
+    const shown = results[pick] ?? results[0] ?? null
     setProject((p) => p ? {
       ...p,
       nodes: p.nodes.map((n) => n.id === node.id
-        ? ({ ...n, result } as CanvasNode) : n),
+        ? ({ ...n, result: shown, images: results } as CanvasNode) : n),
     } : p)
-    pushDownstreamResult(node.id, [result], {})
+    // 下游拿到全部候选：拼板逐格挑图要用整列，行走视频取第一张当锚点
+    pushDownstreamResult(node.id, results, {})
     // 链条末端（没有下游）才补一张结果卡：中间节点补卡会让四视图链上多出废卡
     if (!projectRef.current?.edges.some((e) => e.from === node.id)) {
-      ensureResultCard(node, [result], {})
+      ensureResultCard(node, results, {})
     }
   }
 
@@ -1108,11 +1132,20 @@ export default function Canvas({ projectId, onBack }: Props) {
         + '把对应节点的输出连到本节点左侧，或保证链条上能回溯到它。')
     }
     const t = node.threeview
+    // 逐视角选图：picks[view] 是用户在拼板卡上点选的那张 assetId；
+    // 没选过（或选中的图已经不在了）就按 pairIndex 取第一组。
+    const picks = t?.picks || {}
+    const pickOf = (k: 'front' | 'side' | 'back' | 'side_r', s: { images: ResultImage[] }) => {
+      const want = picks[k]
+      const hit = want ? s.images.find((i) => i.assetId === want) : undefined
+      return hit ?? s.images[0]
+    }
     const r = await api.threeviewCompose({
       projectId: project.id,
       sources: order.filter((k) => found[k]).map((k) => {
         const s = found[k]!
-        return { kind: s.kind, file: s.kind === 'images' ? s.images[0].assetId : s.file }
+        if (s.kind !== 'images') return { kind: s.kind, file: s.file }
+        return { kind: s.kind, file: pickOf(k, s).assetId }
       }),
       bg: t?.bg || '1B4332',
       transparentBg: !!t?.transparentBg,
@@ -1189,11 +1222,22 @@ export default function Canvas({ projectId, onBack }: Props) {
     const cn: Record<string, string> = {
       front: '正视图', side: '侧视图', back: '背视图', side_r: '右视图',
     }
-    return (['front', 'side', 'back', 'side_r'] as const).map((k) => ({
-      view: k, label: cn[k],
-      image: found[k]?.images[0] ?? null,
-      from: found[k]?.from ?? '',
-    }))
+    const picks = node.threeview?.picks || {}
+    return (['front', 'side', 'back', 'side_r'] as const).map((k) => {
+      const images = found[k]?.images ?? []
+      const want = picks[k]
+      const hit = want ? images.find((i) => i.assetId === want) : undefined
+      const image = hit ?? images[0] ?? null
+      return {
+        view: k, label: cn[k],
+        image,
+        // 全部候选：拼板卡上用缩略图行让用户逐视角挑图（抽卡后挑同一组）
+        images,
+        from: found[k]?.from ?? '',
+        /** 当前选中的是第几组（pairIndex）：一键「按第 k 组」用它对齐 */
+        pair: image?.pairIndex ?? 0,
+      }
+    })
   }
 
   // ---------- 八方向行走链 ----------
@@ -1743,7 +1787,7 @@ export default function Canvas({ projectId, onBack }: Props) {
           try {
             const result = await executeViewDerive(n, runtime)
             applyViewGenResult(n, result)
-            runtime.set(n.id, [result])
+            runtime.set(n.id, result)
           } catch (e: any) {
             throw new Error(`第 ${i + 1} 步（${kind}）：${e.message || e}`)
           }

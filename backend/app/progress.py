@@ -118,11 +118,18 @@ def unsubscribe(task_id: str, q: "asyncio.Queue") -> None:
         _WAITERS.pop(task_id, None)
 
 
-def make_step_callback(task_id: Optional[str], total: int, label: str = ""):
-    """diffusers callback_on_step_end：每步结束报一次进度 + 检查取消。"""
+def make_step_callback(task_id: Optional[str], total: int, label: str = "",
+                       base: int = 0, grand: int = 0):
+    """diffusers callback_on_step_end：每步结束报一次进度 + 检查取消。
+
+    base/grand 用来把「一批里的第 k 张」映射到整批的进度条上：批量跑 4 张
+    40 步时，第 2 张从 40 报到 80（grand=160），进度条一路向前，不会每张
+    图都从 0 冲到 100% 再退回去。
+    """
     def _cb(pipe, step_index, timestep, callback_kwargs):
         check_cancel(task_id)
-        report(task_id, step_index + 1, total, label or f"第 {step_index + 1}/{total} 步")
+        report(task_id, base + step_index + 1, grand or total,
+               label or f"第 {step_index + 1}/{total} 步")
         return callback_kwargs
     return _cb
 

@@ -193,6 +193,9 @@ export type ViewGenOptions = {
   width: number
   height: number
   maxSeqLen: number | null
+  /** 多张候选里当前预览的那张（数组下标）：正视图抽卡 n 张时，本视角
+   *  也生成 n 张，卡片里可以逐张看；拼板用哪张在拼板节点上选 */
+  pick?: number
 }
 
 /** 四视图拼板参数（对应后端 DEFAULT_THREEVIEW）。 */
@@ -207,6 +210,9 @@ export type ThreeViewOptions = {
   baseline: number
   /** 单格尺寸 [宽, 高]，null = 取所有张的最大值 */
   cell: [number, number] | null
+  /** 每个视角手动挑的那张（{view: assetId}）：多张候选时逐格选图；
+   *  空 = 按 pairIndex 自动取第一组（正视图第 k 张 ↔ 视角第 k 张） */
+  picks?: Partial<Record<'front' | 'side' | 'back' | 'side_r', string>>
 }
 
 /** 视角生成节点：以「正视图」为参考，用编辑底座指令接力生成侧/背视图。 */
@@ -217,6 +223,9 @@ export type ViewGenNode = {
   y: number
   viewgen: ViewGenOptions
   result?: ResultImage | null
+  /** 全部候选（每张与正视图的一组按 pairIndex 对齐）：正视图 n 张 →
+   *  本视角 n 张，拼板时逐张挑「同一组」才不串角色 */
+  images?: ResultImage[]
   createdAt?: number
 }
 
@@ -564,6 +573,10 @@ export type ResultImage = {
   threeview?: ThreeViewMeta
   /** 这张图属于哪个方向（八方向行走链） */
   walkDir?: WalkDir
+  /** 视角接力：对应正视图候选的序号（第 k 张正视图 ↔ 第 k 张视角图） */
+  pairIndex?: number
+  /** 视角接力：这张图的参考图 assetId（配对核对用） */
+  srcAssetId?: string
 }
 
 export type ResultMeta = {

@@ -4,6 +4,10 @@ type Slot = {
   view: 'front' | 'side' | 'back' | 'side_r'
   label: string
   image: ResultImage | null
+  /** 这个视角的全部候选（正视图抽卡 n 张 → 每个视角 n 张） */
+  images?: ResultImage[]
+  /** 当前选中的是第几组（pairIndex） */
+  pair?: number
   /** 这张图是从哪个节点收来的（UI 上给个来源说明） */
   from?: string
 }
@@ -41,7 +45,7 @@ export default function ThreeViewNode({
 }: Props) {
   const DEFAULTS: ThreeViewNodeType['threeview'] = {
     enabled: true, bg: '1B4332', transparentBg: false,
-    gap: 12, baseline: 0.93, cell: null,
+    gap: 12, baseline: 0.93, cell: null, picks: {},
   }
   const t = { ...DEFAULTS, ...node.threeview }
   const patch = (p: Partial<typeof t>) => onChange({ threeview: { ...t, ...p } })
@@ -50,6 +54,26 @@ export default function ThreeViewNode({
   // 右视图可选：缺它只提示、不阻塞；正/侧/背缺任一才阻塞
   const requiredMissing = slots.filter((s) => !s.image && s.view !== 'side_r')
   const optionalMissing = slots.filter((s) => !s.image && s.view === 'side_r')
+
+  // 逐视角选图：点缩略图 = 把这个视角的 picks 指向那张
+  const picks = t.picks || {}
+  const pickImage = (s: Slot, img: ResultImage) => patch({
+    picks: { ...picks, [s.view]: img.assetId },
+  })
+  /** 按第 k 组一键对齐：正视图第 k 张 + 各视角第 k 张（抽卡后挑顺眼的一整套）。
+   *  某个视角没有这一组时退回它能给的最近一组，不把整格清空。 */
+  const pickGroup = (k: number) => {
+    const next = { ...picks }
+    for (const s of slots) {
+      const list = s.images ?? []
+      if (!list.length) continue
+      const hit = list.find((im, i) => (im.pairIndex ?? i) === k) ?? list[Math.min(k, list.length - 1)]
+      if (hit) next[s.view] = hit.assetId
+    }
+    patch({ picks: next })
+  }
+  const maxGroups = Math.max(1, ...slots.map((s) => s.images?.length ?? 1))
+  const multi = maxGroups > 1
 
   return (
     <div className={`node threeview ${t.enabled ? '' : 'off'}`}
@@ -83,17 +107,55 @@ export default function ThreeViewNode({
 
         <div className="tv-slots">
           {slots.map((s) => (
-            <div className={`tv-slot ${s.image ? '' : 'empty'}`} key={s.view}
-              title={s.image ? `来自：${s.from || '画布'}` : `缺少${VIEW_CN[s.view]}`}>
-              {s.image ? (
-                <img src={s.image.url} alt={VIEW_CN[s.view]} />
-              ) : (
-                <span className="tv-slot-x">缺</span>
-              )}
-              <span className="tv-slot-t">{VIEW_CN[s.view]}</span>
+            <div className="tv-slot-wrap" key={s.view}>
+              <div className={`tv-slot ${s.image ? '' : 'empty'}`}
+                title={s.image ? `来自：${s.from || '画布'}` : `缺少${VIEW_CN[s.view]}`}
+                onClick={() => s.image
+                  ? onPreview(s.image.url, `${VIEW_CN[s.view]}（第 ${(s.pair ?? 0) + 1} 组）`)
+                  : undefined}>
+                {s.image ? (
+                  <img src={s.image.url} alt={VIEW_CN[s.view]} />
+                ) : (
+                  <span className="tv-slot-x">缺</span>
+                )}
+                <span className="tv-slot-t">
+                  {VIEW_CN[s.view]}{multi && s.image ? ` · 第${(s.pair ?? 0) + 1}组` : ''}
+                </span>
+              </div>
+              {/* 多张候选：逐张点选（抽卡时每个视角都要能挑「同一组」） */}
+              {(s.images?.length ?? 0) > 1 ? (
+                <div className="tv-pick-row">
+                  {s.images!.map((img, i) => (
+                    <button key={img.assetId}
+                      className={`tv-pick ${s.image?.assetId === img.assetId ? 'on' : ''}`}
+                      title={`${VIEW_CN[s.view]} · 第 ${(img.pairIndex ?? i) + 1} 组`}
+                      onClick={() => pickImage(s, img)}>
+                      <img src={img.url} alt="" />
+                      <span>{(img.pairIndex ?? i) + 1}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ))}
         </div>
+        {multi ? (
+          <div className="tv-group-row">
+            <span className="hint" style={{ margin: 0 }}>按组一键选齐：</span>
+            {Array.from({ length: maxGroups }, (_, i) => (
+              <button key={i} className="tv-group-btn" onClick={() => pickGroup(i)}
+                title={`正视图第 ${i + 1} 张 + 各视角第 ${i + 1} 组`}>
+                第 {i + 1} 组
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {multi ? (
+          <div className="hint" style={{ marginTop: -2 }}>
+            每个视角都抽了 {maxGroups} 张：逐格点缩略图挑，或点「第 k 组」一次性挑齐
+            同一套（角色一致性看的就是这一整套）。
+          </div>
+        ) : null}
         {requiredMissing.length ? (
           <div className="ref-note" style={{ marginTop: -4 }}>
             还缺：{requiredMissing.map((s) => VIEW_CN[s.view]).join('、')}。

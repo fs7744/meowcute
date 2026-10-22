@@ -426,8 +426,10 @@ def main() -> int:
           tr_instr[-140:])
     check("透明视角指令禁地面投影",
           "不要地面投影" in tr_instr and "不要阴影" in tr_instr, tr_instr[-140:])
-    check("灰底视角指令保留纯色背景句",
-          "背景保持纯色不变" in _apply_background(_view_instruction("side"), "gray"))
+    # 背景句必须前置：文本超长时截的是尾部，透明双段式声明被截掉 alpha 就不激活
+    check("背景句前置到指令最前",
+          tr_instr.startswith("This is an RGBA image with transparency.")
+          and _apply_background("把角色转成侧面。", "gray").startswith("背景要求："))
 
     print("== 视角指令：单侧配件守恒（腰挎刀类） ==")
     # 单侧配件（腰挎刀/单肩包/单侧护具）在侧/背/右视图里最容易镜像或消失：
@@ -435,7 +437,7 @@ def main() -> int:
     # 且不能点名任何具体道具（点名＝给所有角色下「必须长出来」的指令）。
     for v in ("side", "side_r", "back"):
         ins = _view_instruction(v)
-        check(f"{v} 指令含配件守恒", "同一侧" in ins and "不能换到另一侧" in ins)
+        check(f"{v} 指令含配件守恒", "同一侧" in ins and "不能换边" in ins)
         check(f"{v} 指令含遮挡守恒", "被身体挡住" in ins)
         check(f"{v} 指令不点名具体道具",
               all(w not in ins for w in ("武士刀", "披风", "法杖", "盾牌")), v)
@@ -444,6 +446,16 @@ def main() -> int:
           and "角色的右侧面" in _view_instruction("side_r"))
     check("背视图锚定左右镜像关系",
           "和正视图正好相反" in _view_instruction("back"))
+    # 背覆体积守恒：披风这类「正面只看见一条边」的部件在背视图最容易被抹掉。
+    # 修法必须是几何描述 + 条件句（不能点名「披风」，否则没披风的角色会长一件）
+    _bk = _view_instruction("back")
+    check("背视图有背覆体积守恒条款",
+          "盖住后背" in _bk and "至少与肩同宽" in _bk, _bk[200:260])
+    check("背覆条款是条件句（不凭空虚增部件）",
+          "参考图里如果有" in _bk and "披风" not in _bk)
+    check("指令含身份锚点条款",
+          "身份特征逐项一致" in _view_instruction("side")
+          and "花纹" in _view_instruction("side_r"))
     # 近侧配件必须在肢体最外层：漏了这句，左视图里腰挎的刀整把消失（实测）
     check("侧视图声明近侧配件在最外层",
           "最外层" in _view_instruction("side") and "画在胳膊和腿的外面" in _view_instruction("side_r"))
@@ -484,6 +496,58 @@ def main() -> int:
           ViewDerivePayload(projectId=pid, view="side", character="左腰挎刀").character
           == "左腰挎刀"
           and ViewDerivePayload(projectId=pid, view="side").character == "")
+    # 多张正视图候选 → 每张各出一张视角图（拼板时按 pairIndex 成组挑图）
+    _multi = ViewDerivePayload(projectId=pid, view="back",
+                               sources=[{"kind": "images", "file": "a1"},
+                                        {"kind": "images", "file": "a2"}])
+    check("derive payload 支持多张正视图", len(_multi.sources) == 2,
+          str(_multi.sources))
+    check("derive payload 默认单源为空",
+          ViewDerivePayload(projectId=pid, view="side").sources == [])
+
+    print("== 拼板抠图：底色与填充同色时补回身体 ==")
+    # 灰猫（#7B7777）站中灰底（#808080）上：u2net 必然把头判成背景，而且头在
+    # alpha 里和外部背景连成一片（不是封闭孔洞）→ 老版本拼出「没有脑袋的披风」。
+    # _restore_enclosed_flat 用轮廓边（Canny）把「被围住却没被判成主体的区域」
+    # 恢复不透明；这里用合成图直接验判定逻辑（不依赖 u2net 权重）。
+    from backend.app.pipelines.threeview import _restore_enclosed_flat
+    from PIL import Image as _Im, ImageDraw as _Draw
+    _src = _Im.new("RGB", (200, 200), (128, 128, 128))
+    _d = _Draw.Draw(_src)
+    _d.ellipse((50, 30, 150, 130), fill=(123, 119, 119), outline=(10, 10, 10), width=3)
+    # 模拟 u2net：只有描边被留下，头内部和外部背景都判成透明
+    _mask = _Im.new("L", (200, 200), 0)
+    _Draw.Draw(_mask).ellipse((50, 30, 150, 130), outline=255, width=3)
+    _cut = _src.convert("RGBA")
+    _cut.putalpha(_mask)
+    _fixed, _n = _restore_enclosed_flat(_cut, _src)
+    _fa = _fixed.load()
+    check("同色头被轮廓围住时补回不透明", _fa[100, 80][3] == 255, str(_fa[100, 80]))
+    check("轮廓外的底色保持透明", _fa[5, 5][3] == 0, str(_fa[5, 5]))
+    check("补回的像素是原色", _fa[100, 80][:3] == (123, 119, 119),
+          str(_fa[100, 80][:3]))
+
+    print("== 参考图预处理：等比缩放 + 透明铺底 ==")
+    # convert("RGB") 会把 alpha=0 压成黑色（模型把黑当背景画进结果）；
+    # resize((w,h)) 是拉伸（512×768 转 768² 时角色被拉胖 1.5 倍）。
+    from backend.app.providers.diffusers_local import _prep_ref_images
+    from PIL import Image as _Img
+    _tall = _Img.new("RGBA", (128, 192), (200, 30, 30, 0))
+    for _x in range(40, 88):
+        for _y in range(60, 150):
+            _tall.putpixel((_x, _y), (200, 30, 30, 255))
+    _out = _prep_ref_images([_tall], 128, 128, (128, 128, 128))[0]
+    _arr = _out.convert("RGB")
+    check("参考图输出目标尺寸", _out.size == (128, 128), str(_out.size))
+    check("透明参考图铺底色（不变黑）", _arr.getpixel((2, 2))[0] > 90,
+          str(_arr.getpixel((2, 2))))
+    # 等比缩放：128×192 放进 128×128 → 85×128（左右各留 21px 底色），
+    # 红色块宽度 48*0.667≈32px；若被拉伸则宽度仍是 48px（这就是「转视角后换体型」）
+    _cols = [x for x in range(128) if _arr.getpixel((x, 64))[0] > 150
+             and _arr.getpixel((x, 64))[1] < 90]
+    check("参考图等比缩放不拉伸", 28 <= len(_cols) <= 36, f"红色块宽 {len(_cols)}px")
+    check("等比缩放后多余边缘铺底色", _arr.getpixel((2, 64))[0] == 128,
+          str(_arr.getpixel((2, 64))))
 
     print("== 项目文件夹（输入与产出都落在项目目录） ==")
     from backend.app.config import PROJECTS_DIR

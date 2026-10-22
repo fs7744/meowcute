@@ -170,6 +170,9 @@ export const api = {
     background?: string
     /** 正视图的角色描述原文：视角指令会把它当「部件清单」，防止细长配件漏画 */
     character?: string
+    /** 多张正视图候选：按顺序每张各出一张视角图（抽卡 n 张 → n 张视角图），
+     *  返回的每张都带 pairIndex，拼板按组挑图靠它对齐 */
+    sources?: { kind: 'images' | 'refs'; file: string }[]
   }) =>
     fetch('/api/threeview/derive', jsonInit(payload)).then(j<{ taskId: string }>),
 
