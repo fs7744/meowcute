@@ -198,11 +198,21 @@ def resolve_palette(
     images: Optional[Sequence[Image.Image]] = None,
     ignore_background: bool = True,
 ) -> Tuple[str, List[RGB]]:
-    """解析色板选择：固定色板（gameboy/nes）或从图里提取（auto）。"""
+    """解析色板选择：固定色板（gameboy/nes）或从图里提取（auto）。
+
+    未知色板名**必须报错**而不是回落到 auto：以前这里对拼错的名字
+    （"gameboyy"）返回 ("auto", [])，调用方拿到空色板就整批不量化，
+    而 meta 回显 "auto"——用户以为用了 4 色 Game Boy 板，实际输出 624 色，
+    「限定 N 色」这类验收指标被悄悄绕过，且从回显里看不出任何异常。
+    """
     name = (palette_name or "auto").strip().lower()
+    if name in ("auto", ""):
+        imgs = list(images or [])
+        if not imgs:
+            return "auto", []
+        return "auto", extract_palette(imgs, colors, ignore_background=ignore_background)
     if name in FIXED_PALETTES:
         return name, list(FIXED_PALETTES[name])
-    imgs = list(images or [])
-    if not imgs:
-        return "auto", []
-    return "auto", extract_palette(imgs, colors, ignore_background=ignore_background)
+    raise ValueError(
+        f"未知色板：{palette_name}。可用：auto / "
+        + " / ".join(sorted(FIXED_PALETTES)))

@@ -86,18 +86,27 @@ export default function GenNode({
   const uploadRefs = async (files: FileList | null) => {
     if (!files || !files.length) return
     setUploading(true)
+    const all = Array.from(files)
+    const room = Math.max(0, 4 - node.refs.length)
+    if (all.length > room) {
+      // 以前超出名额的部分被 slice 静默丢掉，用户以为传上去了
+      alert(room > 0
+        ? `参考图最多 4 张，本次只会上传前 ${room} 张（已有 ${node.refs.length} 张）。`
+        : '参考图最多 4 张，请先删掉一张再上传。')
+    }
+    const picked = all.slice(0, room)
+    const added: RefAsset[] = []
     try {
-      const room = Math.max(0, 4 - node.refs.length)
-      const picked = Array.from(files).slice(0, room)
-      const added: RefAsset[] = []
       for (const f of picked) {
         const res = await api.uploadRef(projectId, f)
         added.push(res.ref)
       }
-      if (added.length) onChange({ refs: [...node.refs, ...added] })
     } catch (e: any) {
       alert(`参考图上传失败：${e.message || e}`)
     } finally {
+      // 中途失败也要把已经传成功的填回去：以前 catch 直接跳过 onChange，
+      // 前面成功的图既没进节点、又已经落在服务端目录里（成了无主文件）
+      if (added.length) onChange({ refs: [...node.refs, ...added] })
       setUploading(false)
       if (fileRef.current) fileRef.current.value = ''
     }

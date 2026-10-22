@@ -333,21 +333,18 @@ def _fill_enclosed_holes(cut: Image.Image, max_ratio: float = 0.08
         n = int(count) + 1
     h, w = kept.shape
     limit = int(max_ratio * h * w)
-    filled = 0
-    for i in range(1, n):
-        comp = lab == i
-        ys, xs = np.nonzero(comp)
-        if not len(ys):
-            continue
-        if ys.min() == 0 or xs.min() == 0 or ys.max() == h - 1 or xs.max() == w - 1:
-            continue  # 触边 = 外部背景
-        area = int(comp.sum())
-        if area > limit:
-            continue
-        a[comp, 3] = 255
-        filled += area
-    if not filled:
+    # 全向量化（面积 + 触边都走 bincount / unique，最后 LUT 映射）：
+    # 旧写法每个域扫一遍全图，孔洞多时直接把拼板拖慢（同 matte._fill_small_holes）。
+    areas = np.bincount(lab.ravel(), minlength=n)
+    border = np.zeros(n, bool)
+    for edge in (lab[0, :], lab[-1, :], lab[:, 0], lab[:, -1]):
+        border[np.unique(edge)] = True
+    ok = (areas > 0) & (areas <= limit) & ~border
+    ok[0] = False
+    if not ok.any():
         return cut, 0
+    filled = int(areas[ok].sum())
+    a[ok[lab], 3] = 255
     return Image.fromarray(a, "RGBA"), filled
 
 

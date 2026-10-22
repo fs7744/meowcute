@@ -107,7 +107,11 @@ export default function App() {
       </nav>
 
       {route.kind === 'canvas' ? (
-        <Canvas projectId={route.id} onBack={() => go({ kind: 'projects' })} />
+        <Canvas
+          key={route.id}
+          projectId={route.id}
+          onBack={() => go({ kind: 'projects' })}
+        />
       ) : route.kind === 'templates' ? (
         <Templates
           onOpenProject={(id) => go({ kind: 'canvas', id })}

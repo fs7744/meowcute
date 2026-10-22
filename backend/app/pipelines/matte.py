@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -157,7 +158,12 @@ def _rgb_to_hsv_u8(rgb: np.ndarray) -> np.ndarray:
     h[idx] = ((b[idx] - r[idx]) / diff[idx]) + 2.0
     idx = (mx == b) & mask
     h[idx] = ((r[idx] - g[idx]) / diff[idx]) + 4.0
-    h = h * 30.0 / 2.0                       # 0-360 → OpenCV 的 0-180
+    # h 是「六分之一圈」（0-6）：×60 得角度（0-360），再 ÷2 得 OpenCV 的
+    # uint8 量纲（0-180）。**这里曾经写成 *30/2（等于 ×15）**，所有色相被拦腰
+    # 砍半：纯绿算出 H=30（应为 60），于是 _hue_spill 的目标表一个都匹配不上
+    # （|30-60|=30 > 容差 26）——绿幕/蓝幕的暗部溢色整套判定静默失效，
+    # residualKeyPixels 还虚报「很干净」。现在与 cv2.cvtColor 逐像素比对过。
+    h = h * 30.0
     s = np.where(mx > 1e-6, diff / np.maximum(mx, 1e-6), 0.0)
     hsv = np.stack([h, s * 255.0, mx * 255.0], axis=-1)
     return np.clip(hsv, 0, 255).astype(np.uint8)
@@ -263,17 +269,20 @@ def _fill_small_holes(kept: np.ndarray, max_area_ratio: float = 0.002) -> Tuple[
         return kept, 0
     h, w = kept.shape
     max_area = int(max(4, max_area_ratio * h * w))
-    filled = 0
-    for i in range(1, n):
-        comp = lab == i
-        area = int(comp.sum())
-        if area == 0 or area > max_area:
-            continue
-        ys, xs = np.nonzero(comp)
-        if ys.min() == 0 or xs.min() == 0 or ys.max() == h - 1 or xs.max() == w - 1:
-            continue
-        kept |= comp
-        filled += area
+    # 全向量化：面积/触边都用 bincount 一次算完，最后用 LUT 一次映射回掩码。
+    # 旧写法 `for i: comp = lab == i` 是「每个域扫一遍全图」——u2net 掩码常有
+    # 几千个噪点连通域，5000 域 × 25M 像素 = 10^9 级操作，实测把抠图拖到分钟级。
+    # 且预筛面积**救不了**这种场景：噪点域恰恰都是小域，全都会通过预筛。
+    areas = np.bincount(lab.ravel(), minlength=n)
+    border = np.zeros(n, bool)
+    border[np.unique(lab[0, :])] = True
+    border[np.unique(lab[-1, :])] = True
+    border[np.unique(lab[:, 0])] = True
+    border[np.unique(lab[:, -1])] = True
+    ok = (areas > 0) & (areas <= max_area) & ~border
+    ok[0] = False
+    filled = int(areas[ok].sum())
+    kept |= ok[lab]
     return kept, filled
 
 
@@ -313,15 +322,16 @@ def drop_bg_islands(cut: Image.Image, tol: float = 70.0) -> Image.Image:
         return cut
     subject_area = int(kept.sum())
     max_area = max(48, min(int(0.02 * subject_area), 3000))
+    # 全向量化（同 _fill_small_holes）：域内背景色像素数也用 bincount 统计，
+    # 「90% 以上是背景色」按标签一次判完，最后 LUT 映射置 alpha。
+    areas = np.bincount(lab.ravel(), minlength=n)
+    bg_counts = np.bincount(lab[bg_like], minlength=n)
+    ok = (areas > 0) & (areas <= max_area) & (bg_counts >= 0.9 * areas)
+    ok[0] = False
+    if not ok.any():
+        return cut
     out = arr.copy()
-    for i in range(1, n):
-        comp = lab == i
-        area = int(comp.sum())
-        if area == 0 or area > max_area:
-            continue
-        if (bg_like & comp).sum() < 0.9 * area:
-            continue
-        out[comp, 3] = 0
+    out[ok[lab], 3] = 0
     return Image.fromarray(out, "RGBA")
 
 
@@ -337,8 +347,6 @@ def clean_edge_spill(cut: Image.Image, bg: Tuple[int, int, int], depth: int = 2)
     偏底色像素再从最近的干净邻居取色。只改 RGB，不动 alpha 形状——所以不会
     啃掉胡须、触角这类 1px 结构。
     """
-    import numpy as np
-
     arr = np.asarray(cut).copy()
     if arr.shape[2] < 4:
         return cut, 0
@@ -383,12 +391,19 @@ _SESSION = None
 _U2NET_ERR: Optional[str] = None
 _U2NET_HOME = os.path.expanduser(os.getenv("U2NET_HOME", "~/.u2net"))
 _U2NET_ONNX = os.path.join(_U2NET_HOME, "u2net.onnx")
+# 懒加载锁：FastAPI 的 to_thread 会并发调 remove_background，两个请求同时
+# 首次进入时都会通过 `_SESSION is None` 检查，然后各 new_session 一份
+# 176MB 模型——内存翻倍、加载时间也翻倍。用一把锁把初始化串起来。
+_U2NET_LOCK = threading.Lock()
 
 
 def _u2net_session():
     global _SESSION, _U2NET_ERR
     if _SESSION is not None or _U2NET_ERR is not None:
         return _SESSION
+    with _U2NET_LOCK:
+        if _SESSION is not None or _U2NET_ERR is not None:
+            return _SESSION
     # 关键：权重文件不存在时 **绝不** 触发 rembg 的联网下载（会卡死数十分钟，
     # 直接拖垮整个请求）。只有本地权重就绪才尝试 new_session。
     if not os.path.exists(_U2NET_ONNX):
@@ -590,11 +605,30 @@ def _grabcut_keep(rgb: np.ndarray, shadow_pass: bool = True, iters: int = 5) -> 
 # --------------------------------------------------------------------------- #
 # 路径 3：颜色键兜底
 # --------------------------------------------------------------------------- #
-def _key_keep(rgb: np.ndarray, palette: List[np.ndarray], tolerance: float,
-              edge_grow: int, grow_passes: int) -> Tuple[np.ndarray, int, int]:
-    h, w = rgb.shape[:2]
-    dist = _palette_dist(rgb, palette)
-    match = dist <= float(tolerance)
+def _flood_from_border(match: np.ndarray) -> Tuple[np.ndarray, int]:
+    """从画面四边向内泛洪 `match`，返回 (与边框连通的像素, 个数)。
+
+    等价于「四邻域 BFS，只走 match 像素」，但走连通域而不是逐像素 Python 循环：
+    cv2.connectedComponents 是 C 实现，5000² 也是毫秒级；旧 BFS 在 2000² 上要
+    140 万次解释器迭代（秒级）、5000² 上 2500 万次（分钟级），而没有 u2net 权重
+    或用户明确选「颜色键」时，每次抠图都走这条路。
+    没有 cv2 时退回原来的 deque BFS（结果完全一致）。
+    """
+    h, w = match.shape
+    labels = np.zeros((h, w), np.uint8)
+    try:
+        import cv2
+        n, lab = cv2.connectedComponents(match.astype(np.uint8), connectivity=4)
+        if n <= 1:
+            return labels.astype(bool), 0
+        border = np.zeros(n, bool)
+        for edge in (lab[0, :], lab[-1, :], lab[:, 0], lab[:, -1]):
+            border[np.unique(edge)] = True
+        border[0] = False           # 0 = 非 match 像素
+        visited = border[lab]
+        return visited, int(visited.sum())
+    except Exception:
+        pass
 
     visited = np.zeros((h, w), dtype=bool)
     dq: deque = deque()
@@ -608,16 +642,23 @@ def _key_keep(rgb: np.ndarray, palette: List[np.ndarray], tolerance: float,
             if match[y, x] and not visited[y, x]:
                 visited[y, x] = True
                 dq.append((y, x))
-
-    removed = 0
     while dq:
         y, x = dq.popleft()
-        removed += 1
         for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             ny, nx = y + dy, x + dx
             if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx] and match[ny, nx]:
                 visited[ny, nx] = True
                 dq.append((ny, nx))
+    return visited, int(visited.sum())
+
+
+def _key_keep(rgb: np.ndarray, palette: List[np.ndarray], tolerance: float,
+              edge_grow: int, grow_passes: int) -> Tuple[np.ndarray, int, int]:
+    h, w = rgb.shape[:2]
+    dist = _palette_dist(rgb, palette)
+    match = dist <= float(tolerance)
+
+    visited, removed = _flood_from_border(match)
 
     grown = 0
     if edge_grow > 0:
@@ -669,12 +710,15 @@ def remove_background(
     used = "key"
     chain: List[str] = []
     if method == "auto":
-        chain = ["u2net", "grabcut", "key"] if hard else ["key"]
+        # 软边（hard=False）也走语义分割：分割本身与是否硬边无关，羽化只是
+        # 最后对 alpha 做一次模糊。以前这里 `else ["key"]` 把 u2net/grabcut
+        # 整个跳过，用户对一张非纯色背景的照片选「羽化」，结果是什么都没抠掉
+        # （只有 keptRatio>0.97 的 warning 间接提示，绝大多数人看不出）。
+        chain = ["u2net", "grabcut", "key"]
     else:
         chain = [method]
 
     kept = None
-    removed = 0
     grown = 0
     holes_filled = 0
     specks_removed = 0
@@ -683,15 +727,14 @@ def remove_background(
 
     def _try(cand: str):
         if cand == "u2net":
-            if not hard or min(h, w) < 32 or not u2net_available():
+            if min(h, w) < 32 or not u2net_available():
                 return None
             return _mask_keep(arr[:, :, :3])
         if cand == "grabcut":
-            if not hard or min(h, w) < 96:
+            if min(h, w) < 96:
                 return None
             return _grabcut_keep(arr[:, :, :3])
-        k, rem, gr = _key_keep(rgb, palette, tolerance, edge_grow, grow_passes)
-        return k
+        return None
 
     # 逐级尝试；每一级都过一遍合理性检查，不合格就换下一条更保守的路径。
     # first 记住第一个跑出来的结果：全都「看起来不对」时宁可用首选（语义分割）也不换成
@@ -699,7 +742,7 @@ def remove_background(
     first = None
     for cand in chain:
         if cand == "key":
-            got, rem, gr = _key_keep(rgb, palette, tolerance, edge_grow, grow_passes)
+            got, _rem, _gr = _key_keep(rgb, palette, tolerance, edge_grow, grow_passes)
         else:
             try:
                 got = _try(cand)
@@ -710,12 +753,10 @@ def remove_background(
             if got is None:
                 continue
         if first is None:
-            first = (got, cand, rem, gr)
+            first = (got, cand)
         ok, why = _plausible(got)
         if ok:
             kept, used = got, cand
-            if cand == "key":
-                removed, grown = rem, gr
             break
         # 不合理：记下原因，继续试下一条更保守的路径
         retry_reason = why
@@ -723,10 +764,10 @@ def remove_background(
 
     if kept is None:
         if first is not None:
-            kept, used, removed, grown = first
+            kept, used = first
             retry_reason = retry_reason or "分割结果不可靠，已保留首选结果"
         else:  # 一条路径都没跑起来
-            kept, removed, grown = _key_keep(rgb, palette, tolerance, edge_grow, grow_passes)
+            kept, _rem, _gr = _key_keep(rgb, palette, tolerance, edge_grow, grow_passes)
             used = "key"
 
     kept = kept & ~already_clear
@@ -735,8 +776,7 @@ def remove_background(
         kept = _edge_offset(kept, edge)
         grown += max(0, int(kept.sum()) - before)
     if bottom_trim > 0:
-        kept, cut = _trim_bottom(kept, bottom_trim)
-        removed += cut
+        kept, _cut = _trim_bottom(kept, bottom_trim)
     if hard:
         kept, specks_removed = _clean_alpha_specks(kept)
         if used != "key":
@@ -784,7 +824,9 @@ def remove_background(
         "edgeOffset": int(edge),
         "bottomTrim": round(float(bottom_trim), 3),
         "edgeGrowPixels": grown,
-        "removedRatio": round(removed / float(h * w), 4),
+        # 键名是透明像素占比（含输入图自带的透明区），不是「本次抠掉的比例」：
+        # 早先两处 removed 赋值互相覆盖，报出来的数名字段对不上，读的人会误判。
+        "transparentRatio": round(removed / float(h * w), 4),
         "keptRatio": kept_ratio,
         "residualKeyPixels": residual,
     }

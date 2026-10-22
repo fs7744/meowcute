@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image
 
 from .config import PROJECTS_DIR, ensure_dirs
+from .pipelines.walkvideo import DIR_LABELS as _WALK_DIR_LABELS
 
 ALLOWED_KINDS = {"images", "refs", "thumbs"}
 
@@ -63,14 +64,17 @@ def new_asset_id(prefix: str = "a") -> str:
 
 
 def asset_stem(prefix: str = "out", seq: Optional[int] = None) -> str:
-    """可读的文件名主干：<前缀>-<年月日>-<时分秒>[-<序号>]-<4位随机>。
+    """可读的文件名主干：<前缀>-<年月日>-<时分秒>[-<序号>]-<8位随机>。
 
-    例：out-20261020-210533-1-a1b2.png
+    例：out-20261020-210533-1-a1b2c3d4.png
     序号让同一次生成的多张图在文件夹里天然按 1/2/3/4 排好。
+    随机位要 8 位（16.7M 空间）：4 位时一批 8 张同一秒保存的碰撞概率约
+    0.05%，而碰撞意味着 img.save **直接覆盖**已有文件——后存的资产顶掉
+    前一张，project.json 里两条引用指向同一个文件，用户看到「少了一张图」。
     """
     p = SAFE_PREFIX.sub("", (prefix or "out").lower())[:12] or "out"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    tail = uuid.uuid4().hex[:4]
+    tail = uuid.uuid4().hex[:8]
     mid = f"-{int(seq)}" if seq is not None else ""
     return f"{p}-{ts}{mid}-{tail}"
 
@@ -165,8 +169,10 @@ def load_gif(pid: str, kind: str, filename: str
             meta = {"frames": len(frames), "size": [img.width, img.height],
                     "loop": img.info.get("loop", 0)}
         return frames, durations, meta
-    except Exception:
-        return [], [], {}
+    except Exception as e:
+        # 与 cv2 分支对齐：区分「文件不存在」和「解码失败」，
+        # 别让调用方把损坏的 GIF 也报成「不存在」
+        return [], [], {"error": f"GIF 解码失败：{e}"}
 
 
 def load_video_frames(pid: str, kind: str, filename: str,
@@ -200,7 +206,12 @@ def load_video_frames(pid: str, kind: str, filename: str,
         cap = cv2.VideoCapture(str(p))
         if not cap.isOpened():
             return [], 0.0, {}
-        fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+        # NaN 是 truthy，`or 24.0` 拦不住它；而 NaN 进了 meta 会让
+        # FastAPI 序列化出字面 NaN（不是合法 JSON），前端整条响应解析失败。
+        # `fps == fps` 是排 NaN 的最短写法。
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not (fps and fps == fps and 0 < fps < 1000):
+            fps = 24.0
         frames: List[Image.Image] = []
         scaled = False
         while len(frames) < max_frames:
@@ -271,14 +282,19 @@ def list_videos(pid: str, kind: str = "images") -> List[Dict[str, Any]]:
     d = assets_dir(pid, kind)
     if not d.is_dir():
         return []
+    # 方向名按「最长前缀」匹配：walk-down-left-… 用 split("-")[1] 取会把
+    # down-left / down-right / up-left / up-right 四个方向全截成 down/up
+    # （用户在「选择现成视频」里就会选错方向的片段）。方向键长度差 3 倍以上，
+    # 固定下标切法必错，只有最长匹配能同时容纳 down 和 down-left。
+    dir_keys = sorted(_WALK_DIR_LABELS, key=len, reverse=True)
     out: List[Dict[str, Any]] = []
     for f in sorted(d.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
         if not f.is_file() or f.suffix.lower() not in VIDEO_EXTS:
             continue
         stem = f.stem
         if stem.startswith("walk-"):
-            parts = stem.split("-")
-            src_dir = parts[1] if len(parts) > 1 else None
+            src_dir = next((k for k in dir_keys
+                            if stem.startswith(f"walk-{k}-")), None)
             origin = "generated"
         elif stem.startswith("vidsrc-"):
             src_dir = None

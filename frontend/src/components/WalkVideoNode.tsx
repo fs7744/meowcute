@@ -108,7 +108,7 @@ export default function WalkVideoNode({
         .map((f) => f.path.split('/').pop() || f.path)
       setImgFiles(list)
     } catch {
-      setImgFiles([])
+      setImgFiles(null)      // null = 加载失败（和空列表区分开）
     }
   }
   const openImgPicker = async (d: WalkDir) => {
@@ -163,9 +163,15 @@ export default function WalkVideoNode({
   const upload = async (files: FileList | null) => {
     const dir = uploadFor
     if (!files?.length || !dir) return
+    // 一次只能给一个方向传一段视频：以前多选时每个文件都写同一个 key，
+    // 先传的会被后传的静默覆盖（白上传 + 用户以为传了两个）
+    const list = Array.from(files)
+    if (list.length > 1) {
+      alert(`一次只给一个方向上传一段视频，本次只使用第 1 个文件（共 ${list.length} 个）。`)
+    }
     setBusy(true)
     try {
-      for (const f of Array.from(files)) {
+      for (const f of list.slice(0, 1)) {
         const res = await api.uploadProjectVideo(projectId, f)
         setSource(dir, res.video.file)
         await refreshVideos()
@@ -283,7 +289,15 @@ export default function WalkVideoNode({
                         <img src={`/api/projects/${projectId}/images/${f}`} alt={f} />
                         <span>项目图片<i>{shortName(f)}</i></span>
                       </button>
-                    )) : (
+                    )) : imgFiles === null ? (
+                      // 拉列表失败和「真的没有图片」不能混成一句话：
+                      // 前者要用户点刷新重试，后者要用户去跑上游
+                      <div className="warn" style={{ margin: 0 }}>
+                        图片列表加载失败（后端可能没连上）。
+                        <button className="btn btn-sm" style={{ marginLeft: 6, height: 22 }}
+                          onClick={() => void refreshImages()}>重试</button>
+                      </div>
+                    ) : (
                       <div className="hint" style={{ margin: 0 }}>
                         项目里还没有图片。先跑上游的「生成图」或上传一张。
                       </div>

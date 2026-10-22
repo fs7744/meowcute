@@ -278,8 +278,21 @@ def find_best_grid(origin, range_val_min, range_val_max, grad_mag, thr=0):
 
 
 def refine_grids(image, grid_x, grid_y, refine_intensity=0.25):
-    """从图像中心向两侧逐格步行，每条网格线在 ±cell×intensity 内吸附梯度峰。"""
+    """从图像中心向两侧逐格步行，每条网格线在 ±cell×intensity 内吸附梯度峰。
+
+    两个必须防的输入（都是用户可经 API 直达的 `pixel.gridSize`）：
+    - `grid <= 0`：`cell_w = W / grid_x` 除零，或负网格让 `x` 单向递减、
+      循环条件永真 → **死循环 + x_coords 无限增长直到 OOM**；
+    - `grid` 远大于边长：`cell_w < 0.5` 时 `find_best_grid` 找不到峰会
+      `round(origin)` 把小数进度抹掉，`x` 每轮被打回同一个整数，永远推不动
+      → 同样是死循环（实测 64×64 图 grid=2000 卡死 5600+ 迭代）。
+    所以在入口校验，并给四个 while 都加「本伦没推进就 break」的保险。
+    """
     H, W = image.shape[:2]
+    # 网格必须在 [1, 边长] 内：再密就没有「每格一个像素」的意义，精修直接
+    # 退化成按像素取样（调用方此时应走降采样路径，见 refine.refine_one）
+    if not (1 <= grid_x <= W and 1 <= grid_y <= H):
+        return [], []
     cell_w = W / grid_x
     cell_h = H / grid_y
 
@@ -291,27 +304,36 @@ def refine_grids(image, grid_x, grid_y, refine_intensity=0.25):
     x_coords: List[int] = []
     y_coords: List[int] = []
 
-    x = find_best_grid(W / 2, cell_w, cell_w, grad_x_sum)
-    while x < W + cell_w / 2:
-        x = find_best_grid(x, cell_w * refine_intensity, cell_w * refine_intensity, grad_x_sum)
-        x_coords.append(x)
-        x += cell_w
-    x = find_best_grid(W / 2, cell_w, cell_w, grad_x_sum) - cell_w
-    while x > -cell_w / 2:
-        x = find_best_grid(x, cell_w * refine_intensity, cell_w * refine_intensity, grad_x_sum)
-        x_coords.append(x)
-        x -= cell_w
+    def _walk(start: float, step: float, limit: float, forward: bool,
+              grad: Any, out: List[int]) -> None:
+        """向一侧逐格步行。连续两轮落到同一个整数线即停——吸附失败也不许空转。
 
-    y = find_best_grid(H / 2, cell_h, cell_h, grad_y_sum)
-    while y < H + cell_h / 2:
-        y = find_best_grid(y, cell_h * refine_intensity, cell_h * refine_intensity, grad_y_sum)
-        y_coords.append(y)
-        y += cell_h
-    y = find_best_grid(H / 2, cell_h, cell_h, grad_y_sum) - cell_h
-    while y > -cell_h / 2:
-        y = find_best_grid(y, cell_h * refine_intensity, cell_h * refine_intensity, grad_y_sum)
-        y_coords.append(y)
-        y -= cell_h
+        判据必须比「取整后的线号」而不是浮点位置：`find_best_grid` 无峰时返回
+        `round(origin)`，浮点位置每轮都在变（32.032 → 32 → 32.032…），比浮点
+        永远判不出停滞；比线号才能识别「小数点后在原地打转」的死循环。
+        """
+        pos = float(start)
+        last_line: Optional[int] = None
+        stalled = 0
+        while (pos < limit if forward else pos > limit):
+            line = int(find_best_grid(pos, step * refine_intensity,
+                                      step * refine_intensity, grad))
+            if last_line is not None and line == last_line:
+                stalled += 1
+                if stalled >= 2:
+                    break
+            else:
+                stalled = 0
+            last_line = line
+            out.append(line)
+            pos = line + step if forward else line - step
+
+    mid_x = find_best_grid(W / 2, cell_w, cell_w, grad_x_sum)
+    mid_y = find_best_grid(H / 2, cell_h, cell_h, grad_y_sum)
+    _walk(mid_x, cell_w, W + cell_w / 2, True, grad_x_sum, x_coords)
+    _walk(mid_x - cell_w, cell_w, -cell_w / 2, False, grad_x_sum, x_coords)
+    _walk(mid_y, cell_h, H + cell_h / 2, True, grad_y_sum, y_coords)
+    _walk(mid_y - cell_h, cell_h, -cell_h / 2, False, grad_y_sum, y_coords)
 
     return sorted(x_coords), sorted(y_coords)
 
@@ -417,17 +439,6 @@ def sample_median(image, x_coords, y_coords):
     return out
 
 
-def _fix_square(scaled_image: np.ndarray, refined_x: int, refined_y: int) -> np.ndarray:
-    """宽高差 1 时删/复制行列强制正方（利于精灵帧）。"""
-    if refined_x > refined_y:
-        if refined_x % 2 == 1:
-            return scaled_image[:, :-1]
-        return np.concatenate([scaled_image[:1, :], scaled_image], axis=0)
-    if refined_y % 2 == 1:
-        return scaled_image[:-1, :]
-    return np.concatenate([scaled_image[:, :1], scaled_image], axis=1)
-
-
 def perfect_pixel(
     image: np.ndarray,
     sample_method: str = "majority",
@@ -435,7 +446,6 @@ def perfect_pixel(
     min_size: float = 4.0,
     peak_width: int = 6,
     refine_intensity: float = 0.25,
-    fix_square: bool = True,
     return_coords: bool = False,
 ):
     """主入口：返回 (refined_w, refined_h, scaled_image[, x_coords, y_coords])。
@@ -472,8 +482,6 @@ def perfect_pixel(
     else:
         scaled_image = sample_center(image, x_coords, y_coords)
 
-    if fix_square and abs(refined_size_x - refined_size_y) == 1:
-        scaled_image = _fix_square(scaled_image, refined_size_x, refined_size_y)
     refined_size_y, refined_size_x = scaled_image.shape[:2]
 
     # 手动指定网格是「契约」：坐标行走在边界处可能多/少一格，这里用最近邻

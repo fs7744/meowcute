@@ -68,7 +68,16 @@ def make_fake_pixel_art(size: int = 512, block: int = 8) -> Image.Image:
 
 
 def main() -> int:
-    client = TestClient(app)
+    # 必须用 with：TestClient 不加 with 时**每个请求都新建一个事件循环**，
+    # 请求返回后循环即销毁 → asyncio.create_task 起的后台任务被取消，
+    # 任何真正跨请求的后台任务（序列帧 / 精灵整图 / 生成）都永远完不成。
+    # 以前 run_sequence 是「async 壳、同步肉身」，从不让出循环所以恰好躲过；
+    # 改成 asyncio.to_thread（修事件循环阻塞）后第一次让出就露馅。
+    with TestClient(app) as client:
+        return _run_checks(client)
+
+
+def _run_checks(client) -> int:
 
     print("== 基础 / 环境 ==")
     r = client.get("/api/health")
@@ -407,6 +416,92 @@ def main() -> int:
         check("透明输入跳过抠图",
               all(v["matte"] == "alpha" for v in tviews),
               str([v["matte"] for v in tviews]))
+
+    print("== 参数校验：恶意输入不许打挂服务 ==")
+    import time as _time
+    from backend.app import projects as _pj
+    # pixel.gridSize 是用户可经 API 直达的参数，之前完全没有校验：
+    #   [0,8]  → cell_w = W/0 除零
+    #   [-8,8] → x 单向递减，while 条件永真 → 死循环
+    #   [2000,2000] → cell_w<0.5 时 find_best_grid 把小数进度抹掉 → 原地打转 + OOM
+    # 现在 refine_grids 入口校验 + 每侧步行加「连续两轮同线即停」保险。
+    import numpy as _np
+    from PIL import Image as _PILImage
+    from backend.app.pipelines import refine as _refine
+    _base = _PILImage.fromarray(
+        _np.tile(_np.arange(64, dtype=_np.uint8).reshape(1, 64, 1), (64, 1, 3)), "RGB")
+    _t0 = _time.time()
+    _bad_results = []
+    for _gs in ([0, 8], [-8, 8], [2000, 2000], [1, 1]):
+        _r = _refine.refine_one(_base, grid_snap=True, grid_size=_gs)
+        _bad_results.append((_gs, _r["image"].size, _r["meta"].get("gridFailed")))
+    _dt = _time.time() - _t0
+    check("恶意 gridSize 全部快速返回（不死循环/不除零）", _dt < 5.0,
+          f"{_dt:.2f}s {_bad_results}")
+    check("恶意 gridSize 走降级而不是崩", all(r[1] == (64, 64) or r[1][0] > 0
+                                          for r in _bad_results), str(_bad_results))
+    # targetSize 无 clamp 时 99999 会让 PIL 去分配约 30GB（实测 120s 挂死）
+    _t0 = _time.time()
+    _r = _refine.refine_one(_base, grid_snap=False, target_size=[99999, 99999])
+    check("恶意 targetSize 被夹到原图尺寸",
+          _r["image"].size == (64, 64) and _time.time() - _t0 < 2.0,
+          f"{_r['image'].size} {_time.time() - _t0:.2f}s")
+    # 未知色板名必须报错：静默回落到 auto 会让「限定 N 色」被悄悄绕过
+    try:
+        _refine.refine_batch([_base], grid_snap=False, palette_name="gameboyy")
+        check("未知色板名报错", False, "没有报错")
+    except ValueError as _e:
+        check("未知色板名报错", "未知色板" in str(_e), str(_e)[:60])
+
+    print("== 抠图：色相判定与性能 ==")
+    # _rgb_to_hsv_u8 曾写成 h*30/2（=h*15），所有色相减半：
+    # 纯绿算成 30（应为 60），_hue_spill 的目标表一个都匹配不上 →
+    # 绿幕/蓝幕的暗部溢色判定静默失效，residualKeyPixels 还虚报「干净」。
+    from backend.app.pipelines import matte as _matte
+    _hsv = _matte._rgb_to_hsv_u8(_np.array([[[0, 255, 0], [0, 0, 255], [255, 255, 0]]],
+                                          dtype=_np.uint8))
+    check("纯绿/纯蓝/纯黄色相与 OpenCV 量纲一致",
+          [int(v) for v in _hsv[0, :, 0]] == [60, 120, 30],
+          str(_hsv[0, :, 0].tolist()))
+    _spill = _matte._hue_spill(_np.array([[[20, 80, 30]]], dtype=_np.uint8), 1)
+    check("暗部绿丝能被色相判定抓到", bool(_spill[0, 0]))
+    # 颜色键洪泛从 Python BFS 换成 connectedComponents：结果必须逐像素一致
+    _m = _np.zeros((64, 64), bool)
+    _m[:20] = True
+    _m[:, -10:] = True
+    _from_border, _cnt = _matte._flood_from_border(_m)
+    check("边框洪泛像素数与连通域一致", _cnt == int(_from_border.sum()) and _cnt > 0,
+          f"{_cnt} vs {int(_from_border.sum())}")
+    check("洪泛不会越过非 match 像素", not _from_border[32, 32])
+
+    print("== 保存白名单：参数不再丢 ===")
+    # 这两处白名单漏字段 = 用户改了参数、保存刷新后静默重置回默认值
+    from backend.app.projects import _clean_params, _clean_walkvideo
+    _cp = _clean_params({"width": 768, "height": 768, "n": 2,
+                         "maxSeqLen": 1024, "background": "transparent"})
+    check("生成参数保留 maxSeqLen（质量档位）", _cp.get("maxSeqLen") == 1024, str(_cp))
+    _cw = _clean_walkvideo({
+        "dirImages": {"left": "a.png"}, "pixelArt": True,
+        "guidanceScale": 7.5, "motionThreshold": 9.0, "retries": 3,
+    })
+    check("行走参数保留 dirImages/pixelArt/CFG/合格线/重试",
+          _cw.get("dirImages") == {"left": "a.png"} and _cw.get("pixelArt") is True
+          and _cw.get("guidanceScale") == 7.5 and _cw.get("motionThreshold") == 9.0
+          and _cw.get("retries") == 3, str(_cw))
+    check("行走参数拒收路径穿越的文件名",
+          _clean_walkvideo({"dirImages": {"left": "../x.png"}}).get("dirImages") == {})
+
+    print("== 视频列表：方向名按最长前缀 ==")
+    # walk-down-left-… 用 split("-")[1] 取会把四个斜向全截成 down/up
+    from backend.app import storage as _st
+    _pv = _pj.create_project("方向名测试", "dir_walk", {}, None)["id"]
+    _dir = _st.assets_dir(_pv, "images")
+    _expect = {"down": "walk-down-x", "down-left": "walk-down-left-x",
+               "up-right": "walk-up-right-x", "left": "walk-left-x"}
+    for _d, _stem in _expect.items():
+        (_dir / f"{_stem}-20261023-000000.mp4").write_bytes(b"x")
+    _got = {v["dir"] for v in _st.list_videos(_pv)}
+    check("斜向方向名不被截断", _got == set(_expect), str(_got))
 
     print("== 底座统一：图片侧只有 Qwen-Image-2.1 ==")
     # 2026-10-23：Z-Image / Edit-2511 / Layered 的 loader 与设置项全部删除。
@@ -756,10 +851,11 @@ def main() -> int:
             out.append(img)
         return out
 
-    _dirs, _meta = _asyncio.run(sheet_mod.run_sheets(
+    # run_sheets 已改成普通函数（丢线程池由调用方负责），直接调即可
+    _dirs, _meta = sheet_mod.run_sheets(
         [{"dir": "down", "frames": body_frames(180)},
          {"dir": "left", "frames": body_frames(90)}],
-        size=128, shared_scale=True, anchor="bottom"))
+        size=128, shared_scale=True, anchor="bottom")
     _scales = [d["normalize"]["scaleRange"][0] for d in _dirs]
     check("体型不同的方向缩放系数一致", abs(_scales[0] - _scales[1]) < 1e-6,
           f"{_scales}")

@@ -7,7 +7,6 @@ type Props = {
   onDelete: () => void
   onDragStart: (e: React.MouseEvent) => void
   onPreview: (img: ResultImage, meta: ResultMeta) => void
-  onCopyPrompt: () => void
   onFinishLink?: (id: string) => void
 }
 
@@ -15,7 +14,7 @@ const fmtTime = (ts?: number) =>
   ts ? new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : ''
 
 export default function ResultNode({
-  node, index, onDelete, onDragStart, onPreview, onCopyPrompt, onFinishLink,
+  node, index, onDelete, onDragStart, onPreview, onFinishLink,
 }: Props) {
   const [showOrig, setShowOrig] = useState<Record<string, boolean>>({})
   const [copied, setCopied] = useState(false)
@@ -27,7 +26,6 @@ export default function ResultNode({
       setCopied(true)
       setTimeout(() => setCopied(false), 1400)
     } catch { /* 忽略 */ }
-    onCopyPrompt()
   }
 
   return (

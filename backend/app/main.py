@@ -1331,13 +1331,21 @@ async def _run_sequence(task_id: str, payload: SequencePayload) -> None:
 
         src_dirs = []
         for d in payload.directions:
-            frames, _durations, _meta = storage.load_gif(payload.projectId, "images", d.gif)
+            frames, _durations, gmeta = storage.load_gif(payload.projectId, "images", d.gif)
             if not frames:
-                raise RuntimeError(f"方向 {d.dir} 的视频不存在或读不出来：{d.gif or '（未指定）'}")
+                # 把解码错误原文带出来：吞掉异常时坏 GIF 和文件不存在
+                # 返回完全一样，用户只看到「不存在」，无从排查
+                why = gmeta.get("error") or "文件不存在"
+                raise RuntimeError(
+                    f"方向 {d.dir} 的视频读不出来（{why}）：{d.gif or '（未指定）'}")
             src_dirs.append({"dir": d.dir, "label": walkvideo_mod.DIR_LABELS.get(d.dir, d.dir),
                              "frames": frames, "fps": payload.fps})
 
-        directions, meta = await sequence_mod.run_sequence(
+        # 丢线程池：run_sequence 是纯 CPU（8 方向 × N 帧抠图，分钟级），
+        # 直接 await 会把事件循环堵死——那期间所有 HTTP 请求停摆，
+        # 前端 SSE 收不到进度、点取消没响应、开第二个任务没响应。
+        directions, meta = await asyncio.to_thread(
+            sequence_mod.run_sequence,
             src_dirs,
             frames_per_dir=_clamp(payload.framesPerDir, 2, 24, 8),
             matte=payload.matte,
@@ -1424,7 +1432,8 @@ async def _run_sheets(task_id: str, payload: SheetPayload) -> None:
                 raise RuntimeError(f"方向 {d.dir} 没有序列帧")
             src_dirs.append({"dir": d.dir, "frames": frames})
 
-        directions, meta = await spritesheet_mod.run_sheets(
+        directions, meta = await asyncio.to_thread(
+            spritesheet_mod.run_sheets,
             src_dirs,
             size=_clamp(payload.size, 16, 512, 128),
             cols=_clamp(payload.cols, 0, 64, 0),

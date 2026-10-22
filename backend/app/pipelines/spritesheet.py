@@ -119,6 +119,12 @@ def normalize_frames(
 # --------------------------------------------------------------------------- #
 # 拼板（移植自归档 sheet.py）
 # --------------------------------------------------------------------------- #
+# 单元格外沿留白（像素）：normalize_frames 按它算内容区，run_sheets 算全局
+# 缩放系数时也要用同一个值。以前这里写死 `size - 4`，与 normalize_frames 的
+# pad=2 相隔 170 行靠注释维持一致——任何一边改默认值，角色整体缩放会静默算错。
+FRAME_PAD = 2
+
+
 def zero_transparent_rgb(img: Image.Image) -> Image.Image:
     """把全透明像素的 RGB 置 0（alpha 不动）。没有透明像素时原样返回。"""
     rgba = img if img.mode == "RGBA" else img.convert("RGBA")
@@ -130,8 +136,13 @@ def zero_transparent_rgb(img: Image.Image) -> Image.Image:
     return Image.fromarray(arr, "RGBA")
 
 
-def compose_sheet(frames: List[Image.Image], cols: int) -> Tuple[Image.Image, Dict[str, Any]]:
-    """横排拼板 + 引擎索引 JSON（帧下标/坐标/尺寸）。"""
+def compose_sheet(frames: List[Image.Image], cols: int, *,
+                  sanitized: bool = False) -> Tuple[Image.Image, Dict[str, Any]]:
+    """横排拼板 + 引擎索引 JSON（帧下标/坐标/尺寸）。
+
+    sanitized=True 表示调用方已经跑过 zero_transparent_rgb：run_sheets 在
+    规整后清过一次，这里不再全图重扫（64 帧 × 3 遍全图拷贝纯属浪费）。
+    """
     if not frames:
         raise ValueError("没有可合成的帧")
     cols = max(1, int(cols))
@@ -142,7 +153,7 @@ def compose_sheet(frames: List[Image.Image], cols: int) -> Tuple[Image.Image, Di
     index = []
     for i, f in enumerate(frames):
         c, r = i % cols, i // cols
-        frame = zero_transparent_rgb(f)
+        frame = f if sanitized else zero_transparent_rgb(f)
         sheet.alpha_composite(frame, (c * fw, r * fh))
         index.append({"i": i, "x": c * fw, "y": r * fh, "w": fw, "h": fh})
     return sheet, {
@@ -154,8 +165,12 @@ def compose_sheet(frames: List[Image.Image], cols: int) -> Tuple[Image.Image, Di
     }
 
 
-def verify_composed(sheet: Image.Image, frames: List[Image.Image], cols: int) -> Dict[str, Any]:
-    """自检合成表：每个单元格与源帧逐位一致，空白区全透明。"""
+def verify_composed(sheet: Image.Image, frames: List[Image.Image], cols: int, *,
+                    sanitized: bool = False) -> Dict[str, Any]:
+    """自检合成表：每个单元格与源帧逐位一致，空白区全透明。
+
+    sanitized 同 compose_sheet：源帧已清零时直接比，不再扫第三遍。
+    """
     cols = max(1, int(cols))
     if not frames:
         return {"cellsMatchFrames": False, "reason": "没有帧"}
@@ -168,7 +183,7 @@ def verify_composed(sheet: Image.Image, frames: List[Image.Image], cols: int) ->
     for i, f in enumerate(frames):
         c, r = i % cols, i // cols
         cell = s[r * fh:(r + 1) * fh, c * fw:(c + 1) * fw]
-        src = np.asarray(zero_transparent_rgb(f))
+        src = np.asarray(f if sanitized else zero_transparent_rgb(f))
         if not np.array_equal(cell[:src.shape[0], :src.shape[1]], src):
             return {"cellsMatchFrames": False, "mismatchAt": i}
         rest = cell[src.shape[0]:, :]
@@ -223,7 +238,7 @@ def overview(sheets: Dict[str, Image.Image], *, cols: int = 4, gap: int = 10,
 # --------------------------------------------------------------------------- #
 # 阶段入口
 # --------------------------------------------------------------------------- #
-async def run_sheets(
+def run_sheets(
     directions: List[Dict[str, Any]],
     *,
     size: int = 128,
@@ -247,10 +262,15 @@ async def run_sheets(
         max_w = max_h = 1
         for d in directions:
             for f in (d.get("frames") or []):
-                t, _ = trim_alpha(f)
-                max_w = max(max_w, t.width)
-                max_h = max(max_h, t.height)
-        inner = max(1, int(size) - 4)          # 与 normalize_frames 的 pad=2 一致
+                # 只取 alpha 包围盒的尺寸，不真的裁：这一阶段只需要尺寸，
+                # 裁剪会为每帧多一次全图拷贝，而 normalize_frames 随后还会
+                # 再裁一遍（64 帧就是 128 次多余的拷贝）。
+                box = f.getchannel("A").getbbox()
+                if not box:
+                    continue
+                max_w = max(max_w, box[2] - box[0])
+                max_h = max(max_h, box[3] - box[1])
+        inner = max(1, int(size) - FRAME_PAD * 2)
         global_scale = min(inner / max(1, max_w), inner / max(1, max_h))
 
     for d in directions:
@@ -263,11 +283,12 @@ async def run_sheets(
                             f"{d.get('label') or DIR_LABELS.get(d.get('dir'), '')}：拼板中…")
         norm, nmeta = normalize_frames(
             frames, shared_scale=shared_scale, size=int(size), anchor=anchor,
-            scale=global_scale)
+            scale=global_scale, pad=FRAME_PAD)
+        # 清零只做一次，后面 compose / verify 都信任这个结果
         norm = [zero_transparent_rgb(f) for f in norm]
-        sheet, index = compose_sheet(norm, n_cols)
+        sheet, index = compose_sheet(norm, n_cols, sanitized=True)
         warnings = frame_warnings(norm)
-        checks = verify_composed(sheet, norm, n_cols)
+        checks = verify_composed(sheet, norm, n_cols, sanitized=True)
         done += 1
         progress_mod.report(task_id, done, total,
                             f"{d.get('label') or DIR_LABELS.get(d.get('dir'), '')}：精灵表完成")

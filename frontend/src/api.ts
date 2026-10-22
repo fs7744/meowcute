@@ -277,18 +277,35 @@ export function subscribeTask(
     } catch { /* 忽略心跳/坏帧 */ }
   }
   es.onerror = () => {
-    // 流断了不代表任务失败：关掉连接，查一次任务状态兜底。
-    // 不做这一步的话，一键工作流会永远等在这个节点上。
+    // 流断了不代表任务失败：关掉连接，查一次真实状态再决定。
+    // 旧写法的坑：无条件把 doneAt 补成 now 并回调 onDone，于是
+    //   - 后端还在跑 → result 是 null → 上层 reject 成「任务失败」，图随后还是会出来；
+    //   - 用户点取消 → cancelled 且没有 error → 也报成「任务失败」。
+    // 现在只在**确实终态**（doneAt / cancelled / error 有值）时才 onDone，
+    // 否则把状态当进度继续等，必要时退化成轮询。
     close()
     if (finished) return
-    fetch(`/api/tasks/${taskId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!data) return
-        const prog = data.progress || {}
-        onDone(data.result ?? null, { ...prog, doneAt: prog.doneAt ?? Date.now() } as TaskProgress)
-      })
-      .catch(() => undefined)
+    let polls = 0
+    const poll = () => {
+      fetch(`/api/tasks/${taskId}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!data) return
+          const prog = (data.progress || {}) as TaskProgress
+          const done = prog.doneAt != null || !!prog.cancelled || !!prog.error
+          if (!done) {
+            if (polls++ < 600) {          // 最多再等 10 分钟（1s 一次）
+              onProgress(prog)
+              setTimeout(poll, 1000)
+            }
+            return
+          }
+          finished = true
+          onDone((data.result as GenerateResult) ?? null, prog)
+        })
+        .catch(() => undefined)
+    }
+    poll()
   }
   return close
 }

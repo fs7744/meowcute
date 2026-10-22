@@ -10,6 +10,8 @@ type Slot = {
   pair?: number
   /** 这张图是从哪个节点收来的（UI 上给个来源说明） */
   from?: string
+  /** 之前点选的那张已不在候选里（重跑过），已按组自动重选 */
+  stale?: boolean
 }
 
 type Props = {
@@ -154,6 +156,12 @@ export default function ThreeViewNode({
           <div className="hint" style={{ marginTop: -2 }}>
             每个视角都抽了 {maxGroups} 张：逐格点缩略图挑，或点「第 k 组」一次性挑齐
             同一套（角色一致性看的就是这一整套）。
+          </div>
+        ) : null}
+        {slots.some((s) => s.stale) ? (
+          <div className="warn" style={{ marginTop: 2 }}>
+            有视角之前挑的那张已不在候选里（重新生成过），已按「同一组」自动重选；
+            点一下缩略图可以重新确认。
           </div>
         ) : null}
         {requiredMissing.length ? (

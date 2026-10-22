@@ -27,7 +27,6 @@ import type {
 type Props = {
   projectId: string
   onBack: () => void
-  onDirtyChange?: (dirty: boolean) => void
 }
 
 type TaskState = { taskId: string; progress: TaskProgress | null; error: string | null }
@@ -201,6 +200,14 @@ export default function Canvas({ projectId, onBack }: Props) {
   const [linkFrom, setLinkFrom] = useState<string | null>(null)
   const [refining, setRefining] = useState<Record<string, boolean>>({})
   const [matting, setMatting] = useState<Record<string, boolean>>({})
+  /** 「这个节点正在跑」的独立标记：跨 POST 在途 → SSE 完成全过程。
+   *  不能只看 tasks[id].progress：请求还没回来时它是 null，按钮就不禁用，
+   *  用户双击会起两个任务、两条 SSE（closers 被覆盖 → 前一条泄漏）。 */
+  const [busy, setBusy] = useState<Record<string, boolean>>({})
+  const markBusy = (id: string, on: boolean) =>
+    setBusy((b) => (b[id] === on ? b : { ...b, [id]: on }))
+  const isRunning = (id: string) =>
+    !!busy[id] || (!!tasks[id]?.progress && !tasks[id]?.progress?.doneAt)
   // 右键菜单：屏幕坐标定位，世界坐标用于在该处创建节点
   const [ctxMenu, setCtxMenu] = useState<{
     sx: number; sy: number; wx: number; wy: number
@@ -244,15 +251,22 @@ export default function Canvas({ projectId, onBack }: Props) {
   // ---------- 加载 ----------
   useEffect(() => {
     let alive = true
+    // 项目本体失败才是致命的；画风/示例/模板/设置只是辅助数据，
+    // 任何一个挂了都不该把整块画布拖成错误页（旧写法是一个 Promise.all）。
+    const optional = <T,>(pr: Promise<T>, fallback: T) =>
+      pr.catch(() => fallback)
     Promise.all([
       api.getProject(projectId),
-      api.styles(),
-      api.promptExamples(),
-      api.templates(),
-      api.settings(),
+      optional(api.styles(), { styles: [], backgrounds: [] } as any),
+      optional(api.promptExamples(), { examples: [], categories: [] } as any),
+      optional(api.templates(), { templates: [] } as any),
+      optional(api.settings(), { settings: { defaults: {} }, models: [] } as any),
     ]).then(([pr, st, ex, tp, se]) => {
       if (!alive) return
-      const tpl = tp.templates.find((t) => t.id === pr.project.templateId) || null
+      // 模板被删过（自定义模板可以删）时不能把项目卡死在「加载中」：
+      // 模板只用来给空画布补第一张卡 + 提供默认值，缺了照常用默认值。
+      const tpl = (tp.templates as Template[]).find((t) => t.id === pr.project.templateId)
+        || { id: pr.project.templateId, name: '（模板已删除）', defaults: {}, graph: undefined } as any
       setProject(pr.project)
       setViewport(pr.project.viewport || { x: 80, y: 60, z: 1 })
       setStyles(st.styles)
@@ -325,8 +339,23 @@ export default function Canvas({ projectId, onBack }: Props) {
     return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current) }
   }, [project?.nodes, project?.edges, project?.name, viewport, doSave, project])
 
-  // 离开时把未保存的改动压一次
+  // 离开画布：关掉所有 SSE + **把未保存的改动压一次**。
+  // 800ms 防抖窗口内点「← 项目」或刷新，改动本来会直接丢（注释写了要 flush，
+  // 代码只关了 SSE）。这里用 sendBeacon 走同步语义：页面卸载后 fetch 会被取消，
+  // beacon 不会。体量只有几十 KB 的 JSON，远小于 64KB 上限。
+  const saveBeaconRef = useRef<() => void>(() => undefined)
+  saveBeaconRef.current = () => {
+    const p = projectRef.current
+    if (!p) return
+    const payload = { name: p.name, nodes: p.nodes, edges: p.edges, viewport }
+    const json = JSON.stringify(payload)
+    if (json === lastPayload.current) return
+    lastPayload.current = json
+    const body = new Blob([JSON.stringify(payload)], { type: 'application/json' })
+    navigator.sendBeacon?.(`/api/projects/${p.id}`, body)
+  }
   useEffect(() => () => {
+    saveBeaconRef.current()
     Object.values(closers.current).forEach((f) => f())
   }, [])
 
@@ -1019,7 +1048,7 @@ export default function Canvas({ projectId, onBack }: Props) {
             [nodeId]: { taskId, progress: prog, error: prog.error || result?.error || null },
           }))
           if (result && !result.error) resolve(result as unknown as T)
-          else reject(new Error(prog.error || result?.error || '任务失败'))
+          else reject(new Error(prog.error || result?.error || (prog.cancelled ? '已取消' : '任务失败')))
         },
       )
       closers.current[nodeId] = close
@@ -1109,6 +1138,8 @@ export default function Canvas({ projectId, onBack }: Props) {
 
   const runViewDerive = async (node: ViewGenNodeType) => {
     if (!node.viewgen?.enabled) return
+    if (isRunning(node.id)) return          // 在途时忽略重复点击
+    markBusy(node.id, true)
     setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
     try {
       const result = await executeViewDerive(node)
@@ -1119,6 +1150,8 @@ export default function Canvas({ projectId, onBack }: Props) {
         ...t,
         [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
       }))
+    } finally {
+      markBusy(node.id, false)
     }
   }
 
@@ -1142,11 +1175,11 @@ export default function Canvas({ projectId, onBack }: Props) {
     // 逐视角选图：picks[view] 是用户在拼板卡上点选的那张 assetId；
     // 没选过（或选中的图已经不在了）就按 pairIndex 取第一组。
     const picks = t?.picks || {}
-    const pickOf = (k: 'front' | 'side' | 'back' | 'side_r', s: { images: ResultImage[] }) => {
-      const want = picks[k]
-      const hit = want ? s.images.find((i) => i.assetId === want) : undefined
-      return hit ?? s.images[0]
-    }
+    // 与 threeViewSlots 用同一套解析：缩略图上看到哪张，拼进去的就是哪张
+    const frontPair = resolveViewPick('front', found.front?.images ?? [], picks, 0)
+      .image?.pairIndex ?? 0
+    const pickOf = (k: 'front' | 'side' | 'back' | 'side_r', s: { images: ResultImage[] }) =>
+      resolveViewPick(k, s.images, picks, frontPair).image ?? s.images[0]
     const r = await api.threeviewCompose({
       projectId: project.id,
       sources: order.filter((k) => found[k]).map((k) => {
@@ -1209,6 +1242,8 @@ export default function Canvas({ projectId, onBack }: Props) {
 
   const runCompose = async (node: ThreeViewNodeType) => {
     if (!node.threeview?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
     setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
     try {
       const result = await executeCompose(node)
@@ -1219,7 +1254,26 @@ export default function Canvas({ projectId, onBack }: Props) {
         ...t,
         [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
       }))
+    } finally {
+      markBusy(node.id, false)
     }
+  }
+
+  /** 每个视角最终用哪张：先认用户点选的 assetId，认不到（重跑后 assetId 变了）
+   *  就按 pairIndex 对齐到正视图那一组，最后才回落第一张。
+   *  只按 assetId 会在重跑后静默退回第 1 组——用户挑的「第 3 组整套」白挑了。 */
+  const resolveViewPick = (
+    k: 'front' | 'side' | 'back' | 'side_r',
+    images: ResultImage[],
+    picks: Partial<Record<'front' | 'side' | 'back' | 'side_r', string>>,
+    frontPair: number,
+  ): { image: ResultImage | null, stale: boolean } => {
+    if (!images.length) return { image: null, stale: false }
+    const want = picks[k]
+    const hit = want ? images.find((i) => i.assetId === want) : undefined
+    if (hit) return { image: hit, stale: false }
+    const byPair = images.find((im, i) => (im.pairIndex ?? i) === frontPair)
+    return { image: byPair ?? images[0], stale: !!want }
   }
 
   /** 拼板节点要显示的四路输入（缺的也会列出来，让用户知道缺谁；
@@ -1230,11 +1284,12 @@ export default function Canvas({ projectId, onBack }: Props) {
       front: '正视图', side: '侧视图', back: '背视图', side_r: '右视图',
     }
     const picks = node.threeview?.picks || {}
+    const frontImgs = found.front?.images ?? []
+    const frontPick = resolveViewPick('front', frontImgs, picks, 0)
+    const frontPair = frontPick.image?.pairIndex ?? 0
     return (['front', 'side', 'back', 'side_r'] as const).map((k) => {
       const images = found[k]?.images ?? []
-      const want = picks[k]
-      const hit = want ? images.find((i) => i.assetId === want) : undefined
-      const image = hit ?? images[0] ?? null
+      const { image, stale } = resolveViewPick(k, images, picks, frontPair)
       return {
         view: k, label: cn[k],
         image,
@@ -1243,6 +1298,8 @@ export default function Canvas({ projectId, onBack }: Props) {
         from: found[k]?.from ?? '',
         /** 当前选中的是第几组（pairIndex）：一键「按第 k 组」用它对齐 */
         pair: image?.pairIndex ?? 0,
+        /** 之前选中的那张已经不在候选里（重跑过），已按组自动重选 */
+        stale,
       }
     })
   }
@@ -1348,6 +1405,8 @@ export default function Canvas({ projectId, onBack }: Props) {
 
   const runWalkVideo = async (node: WalkVideoNodeType) => {
     if (!node.walkvideo?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
     setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
     try {
       const { images, meta } = await executeWalkVideo(node)
@@ -1358,6 +1417,8 @@ export default function Canvas({ projectId, onBack }: Props) {
         ...t,
         [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
       }))
+    } finally {
+      markBusy(node.id, false)
     }
   }
 
@@ -1420,6 +1481,8 @@ export default function Canvas({ projectId, onBack }: Props) {
 
   const runSequence = async (node: SequenceNodeType) => {
     if (!node.sequence?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
     setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
     try {
       const { images, meta } = await executeSequence(node)
@@ -1430,6 +1493,8 @@ export default function Canvas({ projectId, onBack }: Props) {
         ...t,
         [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
       }))
+    } finally {
+      markBusy(node.id, false)
     }
   }
 
@@ -1493,6 +1558,8 @@ export default function Canvas({ projectId, onBack }: Props) {
 
   const runSpriteSheet = async (node: SpriteSheetNodeType) => {
     if (!node.spritesheet?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
     setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
     try {
       const { images, meta } = await executeSpriteSheet(node)
@@ -1503,6 +1570,8 @@ export default function Canvas({ projectId, onBack }: Props) {
         ...t,
         [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
       }))
+    } finally {
+      markBusy(node.id, false)
     }
   }
 
@@ -1549,15 +1618,22 @@ export default function Canvas({ projectId, onBack }: Props) {
 
   const runPlay = async (node: PlayNodeType) => {
     if (!node.play?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
     try {
       const { images, meta } = await executePlay(node)
       applyPlayResult(node, images, meta)
     } catch (e: any) {
       alert(`预览组装失败：${e.message || e}`)
+    } finally {
+      markBusy(node.id, false)
     }
   }
 
   const deleteNode = (id: string) => {
+    // 先掐掉这个节点的 SSE：否则任务结束时还会往已删除的节点写进度
+    closers.current[id]?.()
+    delete closers.current[id]
     const node = project?.nodes.find((n) => n.id === id)
     if (!node) return
     if (node.type === 'generate') {
@@ -1696,7 +1772,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               [node.id]: { taskId, progress: prog, error: prog.error || result?.error || null },
             }))
             if (result && !result.error && result.images?.length) resolve(result)
-            else reject(new Error(prog.error || result?.error || '生成失败'))
+            else reject(new Error(prog.error || result?.error || (prog.cancelled ? '已取消' : '生成失败')))
           },
         )
         closers.current[node.id] = close
@@ -1708,6 +1784,8 @@ export default function Canvas({ projectId, onBack }: Props) {
    *  下游的视角 / 拼板节点各自带运行按钮，想跑哪个点哪个；
    *  想一次跑完全部，用顶部「运行工作流」。 */
   const generate = async (node: GenNodeType) => {
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
     try {
       const result = await executeGenerate(node)
       addResultNode(node, result.images, result.prompt, result.negative,
@@ -1717,6 +1795,8 @@ export default function Canvas({ projectId, onBack }: Props) {
         ...t,
         [node.id]: { ...(t[node.id] || { taskId: '', progress: null }), error: String(e.message || e) },
       }))
+    } finally {
+      markBusy(node.id, false)
     }
   }
 
@@ -1789,6 +1869,8 @@ export default function Canvas({ projectId, onBack }: Props) {
             const front = resolveFrontOutput(n, runtime)
             runtime.set(n.id, front.images)
             pushDownstreamResult(n.id, front.images, {})
+            // 链条末端的关闭节点也要有一张结果卡，否则跑完什么都看不到
+            if (front.images.length) ensureResultCard(n, front.images, {})
             continue
           }
           try {
@@ -1803,7 +1885,12 @@ export default function Canvas({ projectId, onBack }: Props) {
         if (n.type === 'threeview') {
           if (!n.threeview?.enabled) {
             const up = collectThreeViewOutputs(n, runtime)
-            runtime.set(n.id, up.back?.images || up.front?.images || [])
+            const passed = up.back?.images || up.front?.images || []
+            runtime.set(n.id, passed)
+            if (passed.length) {
+              pushDownstreamResult(n.id, passed, {})
+              ensureResultCard(n, passed, {})
+            }
             continue
           }
           try {
@@ -1826,7 +1913,10 @@ export default function Canvas({ projectId, onBack }: Props) {
             const up = inEdge ? runtime.get(inEdge.from) || [] : []
             runtime.set(n.id, up)
             metaRuntime.set(n.id, metaRuntime.get(inEdge?.from || '') ?? null)
-            if (up.length) pushDownstreamResult(n.id, up, {})
+            if (up.length) {
+              pushDownstreamResult(n.id, up, {})
+              ensureResultCard(n, up, {})
+            }
             continue
           }
           // 行走视频关掉 = 整条链没有方向视频可用，下游三步必失败。
@@ -1897,7 +1987,10 @@ export default function Canvas({ projectId, onBack }: Props) {
           if (!n.matte?.enabled) {
             const up = upstream || []
             runtime.set(n.id, up)
-            if (up.length) pushDownstreamResult(n.id, up, {})
+            if (up.length) {
+              pushDownstreamResult(n.id, up, {})
+              ensureResultCard(n, up, {})
+            }
             continue
           }
           setMatting((s) => ({ ...s, [n.id]: true }))
@@ -2185,7 +2278,19 @@ export default function Canvas({ projectId, onBack }: Props) {
       </div>
     )
   }
-  if (!project || !template) {
+  if (loadError) {
+    return (
+      <div className="page">
+        <div className="err">打不开这个项目：{loadError}</div>
+        {onBack ? (
+          <button className="btn btn-sm" style={{ marginTop: 12 }} onClick={onBack}>
+            ← 返回项目列表
+          </button>
+        ) : null}
+      </div>
+    )
+  }
+  if (!project) {
     return <div className="page"><div className="hint">加载中…</div></div>
   }
 
@@ -2319,7 +2424,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               key={n.id}
               node={n}
               index={i}
-              running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              running={isRunning(n.id)}
               sourceLabel={frontLabel(n.id)}
               inherit={frontInherit(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
@@ -2340,7 +2445,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               key={n.id}
               node={n}
               index={i}
-              running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              running={isRunning(n.id)}
               slots={threeViewSlots(n)}
               onChange={(patch) => patchNode(n.id, patch)}
               onDelete={() => deleteNode(n.id)}
@@ -2361,7 +2466,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               node={n}
               index={i}
               projectId={project.id}
-              running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              running={isRunning(n.id)}
               progress={tasks[n.id]?.progress?.label}
               sourceLabel={frontLabel(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
@@ -2379,7 +2484,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               key={n.id}
               node={n}
               index={i}
-              running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              running={isRunning(n.id)}
               progress={tasks[n.id]?.progress?.label}
               upstreamLabel={upstreamLabel(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
@@ -2397,7 +2502,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               key={n.id}
               node={n}
               index={i}
-              running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
+              running={isRunning(n.id)}
               progress={tasks[n.id]?.progress?.label}
               upstreamLabel={upstreamLabel(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
@@ -2440,7 +2545,6 @@ export default function Canvas({ projectId, onBack }: Props) {
                 title: `${meta.model ? String(meta.model).split('/').pop() : '结果'} · ${img.width}×${img.height}`,
                 pixelSize: [img.width, img.height],
               })}
-              onCopyPrompt={() => undefined}
               onFinishLink={finishLink}
             />
           ))}
@@ -2456,7 +2560,7 @@ export default function Canvas({ projectId, onBack }: Props) {
           onChange={(e) => setProject({ ...project, name: e.target.value })}
           onBlur={() => { if (!project.name.trim()) setProject({ ...project, name: '未命名项目' }) }}
         />
-        <span className="tpl-tag">{template.name}</span>
+        <span className="tpl-tag">{template?.name || '未知模板'}</span>
         <span className="save-state">
           {saveState === 'saving' ? '保存中…'
             : saveState === 'dirty' ? '未保存'

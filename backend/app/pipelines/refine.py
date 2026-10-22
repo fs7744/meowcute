@@ -123,7 +123,7 @@ def refine_one(
             gs = (int(grid_size[0]), int(grid_size[1]))
         gw, gh, sampled, xs, ys = perfect_pixel.perfect_pixel(
             rgb, sample_method=sample_method, grid_size=gs,
-            fix_square=False, return_coords=True,
+            return_coords=True,
         )
         if gw is None or gh is None:
             meta["gridFailed"] = True
@@ -155,7 +155,11 @@ def refine_one(
 
     # 目标尺寸：检测结果与用户要求不一致时缩到目标
     if target_size and len(target_size) == 2:
-        tw, th = int(target_size[0]), int(target_size[1])
+        # 必须夹在 [1, 当前尺寸]：target_size 来自用户输入且无取值校验，
+        # 传个 99999 就让 PIL 去分配约 30GB（实测 120s 无输出，工作线程挂死）。
+        # 精修是**缩小**语义，不允许放大——放大只会让像素块发虚。
+        tw = max(1, min(int(target_size[0]), w))
+        th = max(1, min(int(target_size[1]), h))
         if (tw, th) != (rgb.shape[1], rgb.shape[0]):
             # 缩小用 BOX（块平均）而不是 NEAREST：128→64 的 NEAREST 只取
             # 每 2×2 块的左上角，等于丢掉四分之三的像素；块平均保住整体

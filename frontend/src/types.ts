@@ -85,7 +85,8 @@ export type MatteMeta = {
   hard?: boolean
   despilledPixels?: number
   holesFilled?: number
-  removedRatio?: number
+  /** 抠完的透明像素占比（含输入图自带透明区） */
+  transparentRatio?: number
   keptRatio?: number
   residualKeyPixels?: number
   warning?: string

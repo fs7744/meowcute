@@ -214,7 +214,7 @@ def contact_strip(frames: List[Image.Image], *, thumb_w: int = 96,
 # --------------------------------------------------------------------------- #
 # 阶段入口
 # --------------------------------------------------------------------------- #
-async def run_sequence(
+def run_sequence(
     directions: List[Dict[str, Any]],
     *,
     frames_per_dir: int = 8,
@@ -256,7 +256,7 @@ async def run_sequence(
                 cut, m = f.convert("RGBA"), {"matte": False}
                 matte_errors += 1
             prepared.append(cut)
-            removed.append(float(m.get("removedRatio", 0)))
+            removed.append(float(m.get("transparentRatio", 0)))
         done += 1
         progress_mod.report(task_id, done, total,
                             f"{d.get('label') or DIR_LABELS.get(d.get('dir'), '')}：{len(prepared)} 帧")

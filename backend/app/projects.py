@@ -458,6 +458,9 @@ def _clean_params(p: Any) -> Dict[str, Any]:
         "steps": (_i(p.get("steps"), 0, 4, 50) or None) if p.get("steps") else None,
         "seed": (_i(p.get("seed"), 0, 0, 2**31 - 1)) if p.get("seed") not in (None, "") else None,
         "background": str(p.get("background") or "gray")[:16],
+        # 提示词质量档位（文本序列长度）。白名单漏了它 → 用户在生成卡上选了
+        # 「高质量」，保存刷新后静默回到「自动」，且没有任何提示。
+        "maxSeqLen": (_i(p.get("maxSeqLen"), 0, 256, 1536) or None) if p.get("maxSeqLen") else None,
     }
 
 
@@ -568,7 +571,7 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
     if mode not in ("eight", "four", "single"):
         mode = "eight"
 
-    # 现成视频来源：{方向: 文件名}，白名单方向 + 文件名形状（防路径穿越）
+    # 现成视频来源 / 方向立绘：{方向: 文件名}，白名单方向 + 文件名形状（防路径穿越）
     srcs: Dict[str, str] = {}
     raw_srcs = w.get("sources") if isinstance(w.get("sources"), dict) else {}
     for d, f in (raw_srcs or {}).items():
@@ -576,6 +579,13 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
         f = str(f or "")[:120]
         if d in _WALK_DIRS and f and "/" not in f and "\\" not in f and ".." not in f:
             srcs[d] = f
+    dir_imgs: Dict[str, str] = {}
+    raw_imgs = w.get("dirImages") if isinstance(w.get("dirImages"), dict) else {}
+    for d, f in (raw_imgs or {}).items():
+        d = str(d)[:12]
+        f = str(f or "")[:120]
+        if d in _WALK_DIRS and f and "/" not in f and "\\" not in f and ".." not in f:
+            dir_imgs[d] = f
     return {
         "enabled": bool(w.get("enabled", True)),
         "dirMode": mode,
@@ -590,6 +600,14 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
         "fps": _i(w.get("fps"), 24, 8, 30),
         "maxSide": _i(w.get("maxSide"), 512, 256, 1024),
         "maxSeqLen": (_i(w.get("maxSeqLen"), 0, 256, 1536) or None) if w.get("maxSeqLen") else None,
+        # 下面五个字段以前不在白名单里：UI 上能改、推理时也认，但一保存刷新就
+        # 静默重置回默认值——用户以为「设置丢了」，其实是根本没存。
+        "dirImages": dir_imgs,
+        "pixelArt": bool(w.get("pixelArt", False)),
+        "guidanceScale": (round(float(w["guidanceScale"]), 2)
+                          if w.get("guidanceScale") not in (None, "") else None),
+        "motionThreshold": round(max(0.0, min(float(w.get("motionThreshold") or 6.0), 60.0)), 2),
+        "retries": _i(w.get("retries"), 2, 0, 5),
     }
 
 
