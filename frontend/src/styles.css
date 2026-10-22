@@ -575,6 +575,18 @@ button { cursor: pointer; }
 .meta-pill.bad { color: var(--yellow); border-color: rgba(255, 213, 0, 0.4); }
 .result-foot { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
+/* ---------- 结果卡提示词区 ---------- */
+.result-prompt { border-top: 1px solid var(--line); padding: 7px 8px; }
+.result-prompt > summary { font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; }
+.result-prompt > summary:hover { color: var(--white); }
+.result-prompt .prompt-text {
+  margin-top: 6px; font-size: 12px; line-height: 1.65; color: var(--white);
+  white-space: pre-wrap; word-break: break-word;
+  background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line);
+  border-radius: 6px; padding: 7px 9px; max-height: 180px; overflow-y: auto;
+}
+.result-prompt .prompt-text.neg { color: var(--muted); }
+
 /* ---------- 预览遮罩（放大查看） ---------- */
 .pv-mask { position: fixed; inset: 0; z-index: 300; background: rgba(6, 6, 8, 0.95); display: flex; flex-direction: column; user-select: none; }
 .pv-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #1c1c22; background: #0e0e12; flex: 0 0 auto; }

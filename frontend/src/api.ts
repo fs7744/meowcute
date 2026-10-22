@@ -155,7 +155,8 @@ export const api = {
     u2net: boolean; cv2: boolean; u2netError: string | null
   }>),
 
-  /** 四视图：由正视图接力生成侧/背/右视图（任务制，跑编辑底座）。 */
+  /** 四视图：由正视图接力生成侧/背/右视图（任务制，跑编辑底座）。
+   *  background 等参数复用正视图（生成卡）的设置，节点上不重复填写。 */
   threeviewDerive: (payload: {
     projectId: string
     origAssetId?: string
@@ -166,6 +167,7 @@ export const api = {
     seed?: number | null
     width?: number; height?: number
     maxSeqLen?: number | null
+    background?: string
   }) =>
     fetch('/api/threeview/derive', jsonInit(payload)).then(j<{ taskId: string }>),
 

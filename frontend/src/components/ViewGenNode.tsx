@@ -6,6 +6,17 @@ type Props = {
   running?: boolean
   /** 参考的正视图来自哪个节点（链条最上游那张） */
   sourceLabel?: string | null
+  /** 复用的正视图参数摘要（画风/尺寸/步数/种子/背景）——有它就不用在
+   *  本节点重复填写；null = 正视图不是生成卡（如选择图片），回退节点自身参数 */
+  inherit?: {
+    styleName: string | null
+    width: number
+    height: number
+    steps: number | null
+    seed: number | null
+    maxSeqLen: number | null
+    background: string | null
+  } | null
   onChange: (patch: Partial<ViewGenNodeType>) => void
   onDelete: () => void
   onDragStart: (e: React.MouseEvent) => void
@@ -21,14 +32,16 @@ const VIEW_CN = { side: '侧视图', side_r: '右视图', back: '背视图' } as
  * 视角生成节点（四视图的第 2/3/4 步）：以「正视图」为参考，用编辑底座指令接力
  * 生成侧视图、右视图或背视图。
  *
- * 两个关键设计：
+ * 三个关键设计：
  * 1. 参考永远是最上游那张正视图——链条中间隔着别的视角节点也会自动往前找，
  *    所以「生成图 → 侧视图 → 背视图」这条直线里，背视图不会拿侧视图当参考。
- * 2. 指令只描述「视角怎么变」，不点名任何服装/配件/颜色：点名会直接变成
+ * 2. 参数全部继承正视图（画风 / 尺寸 / 步数 / 种子 / 背景）：用户只在生成卡上
+ *    填一次，侧/背/右自动复用——各张图底色一致，拼板抠底才不会咬出异色边。
+ * 3. 指令只描述「视角怎么变」，不点名任何服装/配件/颜色：点名会直接变成
  *    「给角色加一件」的生成指令（归档项目踩过的坑）。
  */
 export default function ViewGenNode({
-  node, index, running, sourceLabel, onChange, onDelete, onDragStart,
+  node, index, running, sourceLabel, inherit, onChange, onDelete, onDragStart,
   onRun, onStartLink, onFinishLink, onPreview,
 }: Props) {
   // 老项目 / 旧模板里可能没有后加的字段，合并默认值避免控件拿到 undefined
@@ -77,6 +90,9 @@ export default function ViewGenNode({
           参考：{sourceLabel ? <b>{sourceLabel}</b> : '未连线（把「生成图」或「选择图片」连到左侧端口）'}
         </div>
         <div className="hint" style={{ marginTop: -4 }}>
+          画风 / 尺寸 / 步数 / 种子 / 背景全部复用正视图，无需重复填写。
+        </div>
+        <div className="hint" style={{ marginTop: -4 }}>
           {isBack
             ? '角色旋转 180° 背对观众：脸部不可见，不新增任何衣物配件。'
             : isRight
@@ -84,30 +100,50 @@ export default function ViewGenNode({
               : '角色整体转向画面左侧：展现完整侧面轮廓，造型以正视图为准。'}
         </div>
 
-        <label className="gen-field">
-          <span className="gen-field-label">输出尺寸</span>
+        {inherit ? (
           <div className="param-grid">
-            <input className="input" type="number" min={128} max={1536} step={8}
-              value={v.width} onChange={(e) => patch({ width: Number(e.target.value) })} />
-            <input className="input" type="number" min={128} max={1536} step={8}
-              value={v.height} onChange={(e) => patch({ height: Number(e.target.value) })} />
+            <label className="gen-field">
+              <span className="gen-field-label">参数（复用正视图）</span>
+              <div className="hint" style={{ lineHeight: 1.7 }}>
+                画风：{inherit.styleName ?? '未选'} · {inherit.width}×{inherit.height}
+                <br />
+                步数：{inherit.steps ?? '自动'} · 种子：{inherit.seed ?? '随机'}
+                <br />
+                背景：{inherit.background ?? '中灰'} · 质量：
+                {inherit.maxSeqLen ? { 512: '快速', 768: '标准', 1024: '高质量' }[inherit.maxSeqLen as 512 | 768 | 1024] ?? '自定义' : '自动'}
+              </div>
+            </label>
           </div>
-        </label>
-
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label">步数（空=默认 40）</span>
-            <input className="input" type="number" min={4} max={60}
-              value={v.steps ?? ''} placeholder="40"
-              onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label">种子（空=随机）</span>
-            <input className="input" type="number" min={0}
-              value={v.seed ?? ''} placeholder="随机"
-              onChange={(e) => patch({ seed: e.target.value ? Number(e.target.value) : null })} />
-          </label>
-        </div>
+        ) : (
+          <>
+            <div className="hint">
+              未找到正视图生成卡（上游是选择图片等节点）：使用下面的节点参数。
+            </div>
+            <label className="gen-field">
+              <span className="gen-field-label">输出尺寸</span>
+              <div className="param-grid">
+                <input className="input" type="number" min={128} max={1536} step={8}
+                  value={v.width} onChange={(e) => patch({ width: Number(e.target.value) })} />
+                <input className="input" type="number" min={128} max={1536} step={8}
+                  value={v.height} onChange={(e) => patch({ height: Number(e.target.value) })} />
+              </div>
+            </label>
+            <div className="param-grid">
+              <label className="gen-field">
+                <span className="gen-field-label">步数（空=默认 40）</span>
+                <input className="input" type="number" min={4} max={60}
+                  value={v.steps ?? ''} placeholder="40"
+                  onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
+              </label>
+              <label className="gen-field">
+                <span className="gen-field-label">种子（空=随机）</span>
+                <input className="input" type="number" min={0}
+                  value={v.seed ?? ''} placeholder="随机"
+                  onChange={(e) => patch({ seed: e.target.value ? Number(e.target.value) : null })} />
+              </label>
+            </div>
+          </>
+        )}
 
         <button className="btn btn-sm" onClick={onRun} disabled={running}
           style={{ marginTop: 8, width: '100%' }}>
@@ -130,6 +166,9 @@ export default function ViewGenNode({
               <div className="hint" style={{ marginTop: 4 }}>
                 已自动路由到编辑底座（Qwen-Image-Edit）。
               </div>
+            ) : null}
+            {(meta as any)?.bgWarning ? (
+              <div className="warn" style={{ marginTop: 4 }}>{(meta as any).bgWarning}</div>
             ) : null}
           </div>
         ) : (

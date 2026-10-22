@@ -92,6 +92,20 @@ def main() -> int:
     check("模板列表非空", len(ts) >= 1)
     check("第一个模板可用", ts[0]["status"] == "available")
     check("模板有步骤", len(ts[0].get("steps", [])) >= 3)
+    # 四视图模板必须带右视图节点：缺了它拼板只能出三视图
+    tv = next((t for t in ts if t.get("id") == "char_three_view"), None)
+    check("有四视图模板", tv is not None)
+    if tv:
+        vgs = [n for n in tv["graph"]["nodes"] if n.get("type") == "viewgen"]
+        views = sorted(n["viewgen"]["view"] for n in vgs)
+        check("四视图模板含右视图节点", views == ["back", "side", "side_r"], str(views))
+        check("四视图模板含拼板节点",
+              any(n.get("type") == "threeview" for n in tv["graph"]["nodes"]))
+    dw = next((t for t in ts if t.get("id") == "dir_walk"), None)
+    if dw:
+        views = sorted(n["viewgen"]["view"] for n in dw["graph"]["nodes"]
+                       if n.get("type") == "viewgen")
+        check("八方向模板四视图锚点齐全", views == ["back", "side", "side_r"], str(views))
     r = client.get("/api/styles")
     st = r.json().get("styles", [])
     check("画风 15 个", len(st) == 15, str(len(st)))
@@ -327,6 +341,39 @@ def main() -> int:
     r = client.post("/api/threeview/compose", json={
         "projectId": pid, "sources": [{"kind": "images", "file": view_ids[0]}]})
     check("少给图报 400", r.status_code == 400, str(r.status_code))
+    # 底板色禁透明：只认 6 位十六进制，transparent/none/乱码都要被挡下；
+    # 空串则回落默认底板色（用户在框里清空不该直接把拼板卡死）
+    for bad_bg in ("transparent", "none", "GGGGGG", "ZZZ", "1B43"):
+        r = client.post("/api/threeview/compose", json={
+            "projectId": pid,
+            "sources": [{"kind": "images", "file": i} for i in view_ids],
+            "bg": bad_bg})
+        check(f"底板色拒绝 {bad_bg!r}", r.status_code == 400, str(r.status_code))
+    r = client.post("/api/threeview/compose", json={
+        "projectId": pid,
+        "sources": [{"kind": "images", "file": i} for i in view_ids],
+        "bg": ""})
+    check("底板色空串回落默认", r.status_code == 200, r.text[:120])
+
+    print("== 视角生成：参数复用正视图 ==")
+    from backend.app.pipelines.threeview import _apply_background
+    instr = _apply_background("把角色转成侧面。", "gray")
+    check("视角指令带正视图背景句", "#808080" in instr, instr[-80:])
+    instr = _apply_background("把角色转成侧面。", "none")
+    check("无背景不加背景句", "背景要求" not in instr, instr[-80:])
+    instr = _apply_background("把角色转成侧面。", "transparent")
+    check("透明背景带双段式声明",
+          instr.startswith("This is an RGBA image with transparency.")
+          and "The image has alpha channel and the background is transparent." in instr)
+    # derive 要认 background 字段（pydantic 不认会 422，前端任务起不来）。
+    # 不真的 POST：那会 create_task 跑模型，冒烟测试不该碰 GPU。
+    from backend.app.main import ViewDerivePayload
+    dp = ViewDerivePayload(projectId=pid, view="side_r", background="gray")
+    check("derive payload 认 background", dp.background == "gray")
+    dp = ViewDerivePayload(projectId=pid, view="side", background="transparent")
+    check("derive payload 支持透明背景", dp.background == "transparent")
+    check("derive payload 默认背景中灰",
+          ViewDerivePayload(projectId=pid, view="back").background == "gray")
 
     print("== 项目文件夹（输入与产出都落在项目目录） ==")
     from backend.app.config import PROJECTS_DIR
@@ -394,16 +441,16 @@ def main() -> int:
     wpid = r.json()["project"]["id"]
     check("八方向模板建项目", r.status_code == 200 and wpid)
     wnodes = r.json()["project"]["nodes"]
-    # 八方向链的前置是三视图：正/侧/背出完再进行走视频，这样正、正左、背面
-    # 三个方向零推导，斜向只转 45 度
-    check("模板链含三视图",
-          [n["type"] for n in wnodes] == ["generate", "viewgen", "viewgen",
+    # 八方向链的前置是四视图：正/侧/背/右出完再进行走视频，这样正、正左、背面、
+    # 正右四个方向零推导，斜向只转 45 度
+    check("模板链含四视图",
+          [n["type"] for n in wnodes] == ["generate", "viewgen", "viewgen", "viewgen",
                                           "walkvideo", "sequence",
                                           "spritesheet", "play", "result"],
           str([n["type"] for n in wnodes]))
-    check("三视图是侧 + 背",
+    check("四视图是侧 + 右 + 背",
           [n.get("viewgen", {}).get("view") for n in wnodes
-           if n["type"] == "viewgen"] == ["side", "back"],
+           if n["type"] == "viewgen"] == ["side", "side_r", "back"],
           str([n.get("viewgen", {}).get("view") for n in wnodes
                if n["type"] == "viewgen"]))
 

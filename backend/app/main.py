@@ -928,6 +928,9 @@ class ViewDerivePayload(BaseModel):
     width: int = 512
     height: int = 768
     maxSeqLen: Optional[int] = None
+    # 正视图的背景（gray/green/none/transparent）：侧/背/右复用同一背景，
+    # 拼板时各张底色才一致，抠底不会把角色咬出异色边
+    background: str = "gray"
 
 
 class ThreeViewSource(BaseModel):
@@ -974,6 +977,7 @@ async def _run_view_derive(task_id: str, payload: ViewDerivePayload) -> None:
             steps=payload.steps, seed=payload.seed,
             width=payload.width, height=payload.height,
             max_seq_len=payload.maxSeqLen,
+            background=payload.background,
             provider_cfg=provider_cfg, task_id=task_id)
 
         info = storage.save_image(payload.projectId, out.convert("RGBA"),

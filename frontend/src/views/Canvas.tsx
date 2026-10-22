@@ -903,8 +903,9 @@ export default function Canvas({ projectId, onBack }: Props) {
 
   /** 视角生成节点的参考图：沿链条回溯到最上游的「正视图」。
    *  中间隔着视角节点要穿过去——「生成图 → 侧视图 → 背视图」这条直线里，
-   *  背视图不能拿侧视图当参考；精修 / 抠图这类透传节点取它们的结果。 */
-  const resolveFrontOutput = (node: CanvasNode, runtime?: Map<string, ResultImage[]>) => {
+   *  背视图不能拿侧视图当参考；精修 / 抠图这类透传节点取它们的结果。
+   *  同时返回源节点：侧/背/右要复用正视图（生成卡）的画风/尺寸/背景等参数。 */
+  const resolveFrontSource = (node: CanvasNode, runtime?: Map<string, ResultImage[]>) => {
     const p = projectRef.current
     if (!p) throw new Error('项目未加载')
     const seen = new Set<string>([node.id])
@@ -918,13 +919,16 @@ export default function Canvas({ projectId, onBack }: Props) {
         if (!src) continue
         if (src.type !== 'viewgen') {
           const out = outputOf(src.id, runtime)
-          if (out?.images.length) return out
+          if (out?.images.length) return { out, src }
         }
         queue.push(src.id)
       }
     }
     throw new Error('找不到正视图：请把「生成图」或「选择图片」连到链条最上游，并确认它已经跑出结果。')
   }
+
+  const resolveFrontOutput = (node: CanvasNode, runtime?: Map<string, ResultImage[]>) =>
+    resolveFrontSource(node, runtime).out
 
   /** 节点的视角角色：视角节点看自己的 view，生成/选图就是正视图，
    *  其余（精修/抠图/结果）透传——角色由它自己的上游决定。
@@ -1010,22 +1014,37 @@ export default function Canvas({ projectId, onBack }: Props) {
     node: ViewGenNodeType, runtime?: Map<string, ResultImage[]>,
   ): Promise<ResultImage> => {
     if (!project) throw new Error('项目未加载')
-    const src = resolveFrontOutput(node, runtime)
-    const im = src.images[0]
+    const { out: srcOut, src: srcNode } = resolveFrontSource(node, runtime)
+    const im = srcOut.images[0]
+    // 参数复用：侧/背/右继承正视图（生成卡）的画风/尺寸/步数/种子/质量/背景，
+    // 用户只在正视图上填一次。正视图不是生成卡时（选择图片等）才回退到
+    // 视角节点自身的老字段（兼容旧项目数据）。
+    const gen = srcNode.type === 'generate' ? (srcNode as GenNodeType) : null
+    const gp = gen?.params
+    const styleId = gen ? gen.styleId : (node.viewgen?.styleId ?? null)
+    const width = gp?.width ?? node.viewgen?.width ?? 512
+    const height = gp?.height ?? node.viewgen?.height ?? 768
+    const steps = gp && gp.steps != null ? gp.steps : (node.viewgen?.steps ?? null)
+    const seed = gp && gp.seed != null ? gp.seed : (node.viewgen?.seed ?? null)
+    const maxSeqLen = gp && gp.maxSeqLen != null
+      ? gp.maxSeqLen : (node.viewgen?.maxSeqLen ?? null)
+    // 背景必须跟正视图一致：拼板按各张底色抠图，底色不同就会咬出异色边
+    const background = gp?.background ?? 'gray'
     const { taskId } = await api.threeviewDerive({
       projectId: project.id,
-      origAssetId: src.kind === 'images' ? im.assetId : '',
-      sourceKind: src.kind, sourceFile: src.kind === 'refs' ? src.file : undefined,
+      origAssetId: srcOut.kind === 'images' ? im.assetId : '',
+      sourceKind: srcOut.kind, sourceFile: srcOut.kind === 'refs' ? srcOut.file : undefined,
       view: (() => {
         const vw = node.viewgen?.view
         return vw === 'back' ? 'back' : vw === 'side_r' ? 'side_r' : 'side'
       })(),
-      styleId: node.viewgen?.styleId ?? null,
-      steps: node.viewgen?.steps ?? null,
-      seed: node.viewgen?.seed ?? null,
-      width: node.viewgen?.width ?? 512,
-      height: node.viewgen?.height ?? 768,
-      maxSeqLen: node.viewgen?.maxSeqLen ?? null,
+      styleId,
+      steps,
+      seed,
+      width,
+      height,
+      maxSeqLen,
+      background,
     })
     activeTaskRef.current = taskId
     setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
@@ -1629,156 +1648,14 @@ export default function Canvas({ projectId, onBack }: Props) {
     })
   }
 
-  /** 点生成卡上的「生成」时，把下游链条一并跑完（抠图 → 视角 → 拼板）。
-   *  模板里预置了默认开启的链路，点一次生成就该直接拿到最终产物，
-   *  而不是必须再点「运行工作流」。关掉的节点按透传处理，不断链。 */
-  const autoDownstream = async (gen: GenNodeType, images: ResultImage[]) => {
-    const p = projectRef.current
-    if (!p) return { images, fromId: gen.id }
-    const runtime = new Map<string, ResultImage[]>([[gen.id, images]])
-    const metaRuntime = new Map<string, any>()
-    let cur = images
-    let fromId = gen.id
-    const seen = new Set<string>([gen.id])
-    for (;;) {
-      const next = p.nodes.find((n): n is MatteNodeType | ViewGenNodeType | ThreeViewNodeType
-        | WalkVideoNodeType | SequenceNodeType | SpriteSheetNodeType | PlayNodeType =>
-        !seen.has(n.id)
-        && p.edges.some((e) => e.from === fromId && e.to === n.id)
-        && (n.type === 'matte' || n.type === 'viewgen' || n.type === 'threeview'
-          || n.type === 'walkvideo' || n.type === 'sequence'
-          || n.type === 'spritesheet' || n.type === 'play'))
-      if (!next) break
-      seen.add(next.id)
-      if (next.type === 'matte') {
-        if (!next.matte?.enabled) { fromId = next.id; continue }
-        setMatting((s) => ({ ...s, [next.id]: true }))
-        try {
-          const out: ResultImage[] = []
-          for (const im of cur) out.push(await executeMatte(next, im))
-          applyMatteResult(next, out)
-          cur = out
-          runtime.set(next.id, out)
-          fromId = next.id
-        } finally {
-          setMatting((s) => ({ ...s, [next.id]: false }))
-        }
-      } else if (next.type === 'viewgen') {
-        if (!next.viewgen?.enabled) {
-          runtime.set(next.id, cur)
-          pushDownstreamResult(next.id, cur, {})
-          fromId = next.id
-          continue
-        }
-        try {
-          const r = await executeViewDerive(next, runtime)
-          applyViewGenResult(next, r)
-          cur = [r]
-          runtime.set(next.id, cur)
-          fromId = next.id
-        } catch (e: any) {
-          throw new Error(`生成视角失败：${e.message || e}`)
-        }
-      } else if (next.type === 'threeview') {
-        if (!next.threeview?.enabled) {
-          runtime.set(next.id, cur)
-          fromId = next.id
-          continue
-        }
-        try {
-          const r = await executeCompose(next, runtime)
-          applyComposeResult(next, r)
-          cur = [r]
-          runtime.set(next.id, cur)
-          fromId = next.id
-        } catch (e: any) {
-          throw new Error(`四视图拼板失败：${e.message || e}`)
-        }
-      } else if (next.type === 'walkvideo') {
-        if (!next.walkvideo?.enabled) {
-          runtime.set(next.id, cur)
-          pushDownstreamResult(next.id, cur, {})
-          fromId = next.id
-          continue
-        }
-        try {
-          const { images: imgs, meta } = await executeWalkVideo(next, runtime)
-          applyWalkVideoResult(next, imgs, meta)
-          cur = imgs
-          runtime.set(next.id, imgs)
-          metaRuntime.set(next.id, meta)
-          fromId = next.id
-        } catch (e: any) {
-          throw new Error(`行走视频失败：${e.message || e}`)
-        }
-      } else if (next.type === 'sequence') {
-        if (!next.sequence?.enabled) {
-          runtime.set(next.id, cur)
-          pushDownstreamResult(next.id, cur, {})
-          fromId = next.id
-          continue
-        }
-        try {
-          const { images: imgs, meta } = await executeSequence(next, runtime, metaRuntime)
-          applySequenceResult(next, imgs, meta)
-          cur = imgs
-          runtime.set(next.id, imgs)
-          metaRuntime.set(next.id, meta)
-          fromId = next.id
-        } catch (e: any) {
-          throw new Error(`序列帧失败：${e.message || e}`)
-        }
-      } else if (next.type === 'spritesheet') {
-        if (!next.spritesheet?.enabled) {
-          runtime.set(next.id, cur)
-          pushDownstreamResult(next.id, cur, {})
-          fromId = next.id
-          continue
-        }
-        try {
-          const { images: imgs, meta } = await executeSpriteSheet(next, runtime, metaRuntime)
-          applySpriteSheetResult(next, imgs, meta)
-          cur = imgs
-          runtime.set(next.id, imgs)
-          metaRuntime.set(next.id, meta)
-          fromId = next.id
-        } catch (e: any) {
-          throw new Error(`精灵整图失败：${e.message || e}`)
-        }
-      } else {
-        if (!next.play?.enabled) {
-          runtime.set(next.id, cur)
-          pushDownstreamResult(next.id, cur, {})
-          fromId = next.id
-          continue
-        }
-        try {
-          const { images: imgs, meta } = await executePlay(next, runtime, metaRuntime)
-          applyPlayResult(next, imgs, meta)
-          cur = imgs
-          runtime.set(next.id, imgs)
-          metaRuntime.set(next.id, meta)
-          fromId = next.id
-        } catch (e: any) {
-          throw new Error(`可操控预览失败：${e.message || e}`)
-        }
-      }
-    }
-    return { images: cur, fromId }
-  }
-
+  /** 点生成卡上的「生成」：只跑正视图这一步。
+   *  下游的视角 / 拼板节点各自带运行按钮，想跑哪个点哪个；
+   *  想一次跑完全部，用顶部「运行工作流」。 */
   const generate = async (node: GenNodeType) => {
     try {
       const result = await executeGenerate(node)
-      // 模板默认带的链路（扣背景 / 视角 / 拼板）跟着一起跑完
-      const hasDownstream = !!projectRef.current?.edges.some((e) => e.from === node.id)
-      const run = hasDownstream ? await autoDownstream(node, result.images) : null
-      addResultNode(node, run?.images ?? result.images, result.prompt, result.negative,
-                    result.meta, {
-                      fromId: run?.fromId ?? node.id,
-                      lastImages: result.images,
-                      deferCreate: hasDownstream,
-                    })
+      addResultNode(node, result.images, result.prompt, result.negative,
+                    result.meta, { lastImages: result.images })
     } catch (e: any) {
       setTasks((t) => ({
         ...t,
@@ -1836,7 +1713,9 @@ export default function Canvas({ projectId, onBack }: Props) {
           : n.type === 'refine' ? '精修'
           : n.type === 'matte' ? (n.matte?.enabled ? '扣背景' : '跳过扣背景')
           : n.type === 'viewgen' ? (n.viewgen?.enabled
-            ? (n.viewgen?.view === 'back' ? '背视图' : '侧视图') : '跳过视角')
+            ? (n.viewgen?.view === 'back' ? '背视图'
+              : n.viewgen?.view === 'side_r' ? '右视图' : '侧视图')
+            : '跳过视角')
           : n.type === 'threeview' ? (n.threeview?.enabled ? '四视图拼板' : '跳过拼板')
           : n.type === 'walkvideo' ? (n.walkvideo?.enabled ? '行走视频' : '跳过行走视频')
           : n.type === 'sequence' ? (n.sequence?.enabled ? '序列帧' : '跳过序列帧')
@@ -2107,6 +1986,34 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is ThreeViewNodeType => n.type === 'threeview'),
     [project?.nodes],
   )
+  /** 画布上有没有四视图拼板节点：有的话生成卡禁选透明背景——
+   *  拼板会把各张图抠底后统一贴到底板色上，透明底与之互斥 */
+  const boardMode = useMemo(
+    () => (project?.nodes || []).some((n) => n.type === 'threeview'),
+    [project?.nodes],
+  )
+  /** 视角节点复用的正视图参数摘要：节点卡上展示「继承正视图」的明细，
+   *  让用户知道画风/尺寸/背景这些值从哪来，不用再填一遍 */
+  const frontInherit = useCallback((id: string) => {
+    const p = project
+    if (!p) return null
+    try {
+      const node = p.nodes.find((n) => n.id === id)
+      if (!node) return null
+      const { src } = resolveFrontSource(node)
+      if (src.type !== 'generate') return null
+      const g = src as GenNodeType
+      const st = styles.find((s) => s.id === g.styleId)
+      const bg = backgrounds.find((b) => b.id === g.params.background)
+      return {
+        styleName: st?.name ?? null,
+        width: g.params.width, height: g.params.height,
+        steps: g.params.steps, seed: g.params.seed,
+        maxSeqLen: g.params.maxSeqLen,
+        background: bg?.label ?? null,
+      }
+    } catch { return null }
+  }, [project, styles, backgrounds])
   const walkVideoNodes = useMemo(
     () => (project?.nodes || []).filter((n): n is WalkVideoNodeType => n.type === 'walkvideo'),
     [project?.nodes],
@@ -2295,6 +2202,9 @@ export default function Canvas({ projectId, onBack }: Props) {
               categories={categories}
               projectId={project.id}
               task={tasks[n.id] || null}
+              /** 画布上存在四视图拼板节点时，生成卡禁选透明背景：
+               *  拼板会把各张图抠底后统一贴到底板色上，透明底与之互斥 */
+              boardMode={boardMode}
               onChange={(patch) => patchNode(n.id, patch)}
               onGenerate={() => generate(n)}
               onPreview={() => openPromptPreview(n)}
@@ -2349,6 +2259,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               index={i}
               running={!!tasks[n.id]?.progress && !tasks[n.id]?.progress?.doneAt}
               sourceLabel={frontLabel(n.id)}
+              inherit={frontInherit(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
               onDelete={() => deleteNode(n.id)}
               onDragStart={startDragNode(n.id)}

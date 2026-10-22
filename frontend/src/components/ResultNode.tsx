@@ -104,6 +104,16 @@ export default function ResultNode({
         {m.vramWarning ? <div className="warn">{m.vramWarning}</div> : null}
         {m.bgWarning ? <div className="warn">{m.bgWarning}</div> : null}
 
+        {node.prompt ? (
+          <details className="result-prompt" open>
+            <summary>提示词（{node.prompt.length} 字）</summary>
+            <div className="prompt-text">{node.prompt}</div>
+            {node.negative ? (
+              <div className="prompt-text neg">反向提示词：{node.negative}</div>
+            ) : null}
+          </details>
+        ) : null}
+
         <div className="result-foot">
           {node.prompt ? (
             <button className="btn btn-sm" onClick={copy}>{copied ? '已复制' : '复制提示词'}</button>

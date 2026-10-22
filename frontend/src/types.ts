@@ -183,6 +183,10 @@ export type ViewGenOptions = {
   /** 使用开关：关掉时透传上游正视图，节点仍留在链上 */
   enabled: boolean
   view: 'side' | 'back' | 'side_r'
+  /** 以下参数全部继承正视图（生成卡）：画风 / 尺寸 / 步数 / 种子 / 质量 /
+   *  背景都在正视图上填一次，侧/背/右自动复用，节点上不再重复填写。
+   *  字段保留是为了兼容旧项目数据；执行时以正视图的值为准，
+   *  仅当正视图不是生成卡（如选择图片）时才回退到这里的值。 */
   styleId: string | null
   steps: number | null
   seed: number | null

@@ -111,7 +111,9 @@ export default function ThreeViewNode({
               <input type="color" value={`#${t.bg}`}
                 onChange={(e) => patch({ bg: e.target.value.replace('#', '').toUpperCase() })} />
               <input className="input" value={t.bg} maxLength={6}
-                onChange={(e) => patch({ bg: e.target.value.replace('#', '').toUpperCase().slice(0, 6) })} />
+                onChange={(e) => patch({
+                  bg: e.target.value.replace(/[^0-9A-Fa-f]/g, '').toUpperCase().slice(0, 6),
+                })} />
             </div>
           </label>
           <label className="gen-field">
@@ -119,6 +121,10 @@ export default function ThreeViewNode({
             <input type="range" min={0} max={48} step={2} value={t.gap}
               onChange={(e) => patch({ gap: Number(e.target.value) })} />
           </label>
+        </div>
+        <div className="hint" style={{ marginTop: -4 }}>
+          底板色必须是不透明纯色（6 位十六进制）：拼板会把每张图抠底后贴到底板上，
+          透明底与之互斥——需要透明背景的场合请直接用各视角单图。
         </div>
 
         <label className="gen-field">

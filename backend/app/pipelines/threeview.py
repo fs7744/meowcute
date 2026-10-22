@@ -46,6 +46,7 @@ import numpy as np
 from PIL import Image
 
 from . import matte as matte_pipe
+from ..styles import background_phrase
 
 # 统一底板色：暗绿 #1B4332（与归档项目模板/工作流提示词里的「暗绿色纯色背景」一致）
 DEFAULT_BG = (27, 67, 50)
@@ -220,7 +221,18 @@ def compose_view_board(
     - 抠空（背景没识别出来）时退回原图等比贴入，绝不丢视图；
     - 张数不限（3=老三视图，4=四视图），按传入顺序排列。
     """
-    imgs = [v.convert("RGB") for v in views]
+    # 透明输入先与底板色合成再转 RGB：直接 convert("RGB") 会把 alpha=0 的
+    # 区域抹成黑色，_border_bg 随后把黑色当底色，整块板跟着发黑
+    flat: List[Image.Image] = []
+    for v in views:
+        rv = v.convert("RGBA")
+        if rv.mode == "RGBA" and np.asarray(rv)[:, :, 3].min() < 255:
+            canvas = Image.new("RGBA", rv.size, bg + (255,))
+            canvas.alpha_composite(rv)
+            flat.append(canvas.convert("RGB"))
+        else:
+            flat.append(rv.convert("RGB"))
+    imgs = flat
     if not 2 <= len(imgs) <= 4:
         raise ValueError(f"视图板需要 2~4 张图，收到 {len(imgs)} 张")
     order = VIEW_ORDER[:len(imgs)]
@@ -288,6 +300,26 @@ def cell_size(width: int, height: int) -> Tuple[int, int]:
 # --------------------------------------------------------------------------- #
 # 单步执行：侧/背/右视图（编辑底座指令接力）
 # --------------------------------------------------------------------------- #
+def _apply_background(instruction: str, background: str) -> str:
+    """给视角指令拼上正视图的背景要求（侧/背/右复用正视图参数）。
+
+    各张图底色必须和正视图一致，拼板的抠底逻辑才对得上——正视图中灰底而
+    侧视图被模型补了个场景背景，拼出来就是一块异色补丁。
+    transparent 用 Qwen-Image-2.1 官方双段式 RGBA 声明激活 VAE 第 4 通道
+    （只说「透明背景」实测 alpha 恒为 255，见 .verify/exp-b）。
+    """
+    if background == "transparent":
+        return (
+            "This is an RGBA image with transparency. "
+            + instruction
+            + " The image has alpha channel and the background is transparent."
+        )
+    phrase = background_phrase(background)
+    if phrase:
+        return instruction + "背景要求：" + phrase + "。"
+    return instruction
+
+
 async def derive_view(
     view: str,
     base: Image.Image,
@@ -298,14 +330,19 @@ async def derive_view(
     width: int = 512,
     height: int = 768,
     max_seq_len: Optional[int] = None,
+    background: str = "gray",
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
 ) -> Tuple[Image.Image, Dict[str, Any]]:
     """由正视图接力生成侧/背/右视图。
 
-    走编辑底座（Qwen-Image-Edit-2511）的指令接力：外观保持最好，且不需要
-    重新描述角色。provider 带 refs 时会自动路由到编辑底座，Z-Image 纯文生图
+    走编辑底座（Qwen-Image-Edit-2511 / Qwen-Image-2.1）的指令接力：外观保持最好，
+    且不需要重新描述角色。provider 带 refs 时会自动路由到编辑底座，Z-Image 纯文生图
     底座不支持参考图，会直接抛出可读的配置提示。
+
+    background 复用正视图的背景设置：侧/背/右必须和正视图同底色，拼板时
+    抠底逻辑才对得上——正视图中灰底而侧视图被模型补了个场景背景，拼出来
+    就是一块异色补丁。transparent 走 Qwen-Image-2.1 原生 RGBA 双段式声明。
     """
     from .. import progress as progress_mod
     from ..providers.diffusers_local import DiffusersProvider
@@ -314,7 +351,7 @@ async def derive_view(
         raise ValueError(f"未知视角：{view}")
 
     provider = DiffusersProvider(provider_cfg or {})
-    instruction = _view_instruction(view)
+    instruction = _apply_background(_view_instruction(view), background)
     progress_mod.report(task_id, 0, 0,
                         f"{_VIEW_META[view]['cn']}（编辑底座接力）…")
 
@@ -327,15 +364,23 @@ async def derive_view(
         task_id=task_id, max_seq_len=max_seq_len,
     )
     rmeta = dict(result.meta or {})
-    img = result.images[0].convert("RGB")
+    # 保留 alpha：正视图是透明底时（选图上传 RGBA / 旧项目数据），强制转 RGB
+    # 会把透明区抹成黑色，拼板的边框取色再把黑色当底色，整块板发黑
+    img = result.images[0].convert("RGBA")
     out = {
         "view": view, "name": _VIEW_META[view]["cn"], "mode": "edit",
         "instruction": instruction,
         "steps": rmeta.get("steps"), "seed": seed,
         "model": rmeta.get("model"),
+        "background": background,
         "autoRouted": bool(rmeta.get("autoRouted")),
         "seconds": round(time.time() - t, 1),
     }
+    # 透明背景只有 Qwen-Image-2.1（qwen21 族）能原生输出；旧底座会忽略
+    # RGBA 声明给出不透明图，在 meta 里明说，别让用户对着黑底纳闷
+    if background == "transparent" and rmeta.get("family") != "qwen21":
+        out["bgWarning"] = ("当前底座不支持原生透明输出，已按不透明图处理；"
+                            "透明背景需要 Qwen-Image-2.1 底座")
     if rmeta.get("vram"):
         out["vram"] = rmeta["vram"]
     return img, out
