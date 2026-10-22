@@ -200,11 +200,29 @@ def _matte_padded(img: Image.Image, pad_frac: float, tolerance: int
     return cut, meta
 
 
+def _place(canvas: Image.Image, im: Image.Image, pos: Tuple[int, int]) -> None:
+    """按自身 alpha 把部件叠到画布上（越界部分裁掉）。
+
+    透明画布必须走 alpha_composite 的 over 合成：paste(im, pos, im) 会把
+    alpha 再乘一次自身，半透明边缘被二次压暗、描边发硬。
+    """
+    x, y = int(pos[0]), int(pos[1])
+    if canvas.mode != "RGBA":
+        canvas.paste(im, (x, y), im)
+        return
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(canvas.width, x + im.width), min(canvas.height, y + im.height)
+    if x1 <= x0 or y1 <= y0:
+        return
+    src = im.crop((x0 - x, y0 - y, x1 - x, y1 - y))
+    canvas.alpha_composite(src, dest=(x0, y0))
+
+
 def compose_view_board(
     views: List[Image.Image],
     *,
     cell: Optional[Tuple[int, int]] = None,
-    bg: Tuple[int, int, int] = DEFAULT_BG,
+    bg: Optional[Tuple[int, int, int]] = DEFAULT_BG,
     gap: int = 12,
     baseline: float = 0.93,
     tolerance: int = 40,
@@ -216,26 +234,19 @@ def compose_view_board(
       （u2net 语义 → grabcut → 颜色键）：实测颜色键容差 72 会把「深色裤子/
       黑披风」这类与暗绿底距离近的配件当成背景咬掉，优先语义抠图；
       key 兜底容差收紧到 40，保住深色小配件；抠图前先铺边距，防踩边肢体被截；
+    - 已经自带透明背景的输入（生成时选了「透明」或上游扣过底）**直接用它的
+      alpha**，不再抠一次：二次抠底会把已成立的边缘啃掉，也白白浪费语义抠图；
     - 主体底部对齐到共同基线、水平居中——模型出图的角色高低不齐，
       平移对齐后才是可用的视图基准；
     - 抠空（背景没识别出来）时退回原图等比贴入，绝不丢视图；
+    - `bg=None` 输出 RGBA 透明视图板（底板全透明，主体 alpha 保留）：
+      每条 alpha 硬边原样带过去，下游引擎可直接用，不必再抠一次底；
     - 张数不限（3=老三视图，4=四视图），按传入顺序排列。
     """
-    # 透明输入先与底板色合成再转 RGB：直接 convert("RGB") 会把 alpha=0 的
-    # 区域抹成黑色，_border_bg 随后把黑色当底色，整块板跟着发黑
-    flat: List[Image.Image] = []
-    for v in views:
-        rv = v.convert("RGBA")
-        if rv.mode == "RGBA" and np.asarray(rv)[:, :, 3].min() < 255:
-            canvas = Image.new("RGBA", rv.size, bg + (255,))
-            canvas.alpha_composite(rv)
-            flat.append(canvas.convert("RGB"))
-        else:
-            flat.append(rv.convert("RGB"))
-    imgs = flat
-    if not 2 <= len(imgs) <= 4:
-        raise ValueError(f"视图板需要 2~4 张图，收到 {len(imgs)} 张")
-    order = VIEW_ORDER[:len(imgs)]
+    if not 2 <= len(views) <= 4:
+        raise ValueError(f"视图板需要 2~4 张图，收到 {len(views)} 张")
+    order = VIEW_ORDER[:len(views)]
+    imgs = [v.convert("RGBA") for v in views]
 
     if cell is None:
         cw = max(i.width for i in imgs)
@@ -245,20 +256,42 @@ def compose_view_board(
 
     mats: List[Tuple[Image.Image, Optional[Tuple[int, int, int, int]], str]] = []
     for im in imgs:
-        try:
-            cut, mmeta = _matte_padded(im, pad_frac, tolerance)
+        # 透明像素占比超 2% 即视为「已带透明背景」：真透明图整片是 0，
+        # 不透明图只有边缘零星抗锯齿像素，两者不会误判
+        has_alpha = float((np.asarray(im)[:, :, 3] < 16).mean()) > 0.02
+        cut: Optional[Image.Image] = None
+        method = "alpha"
+        if not has_alpha:
+            method = "raw"
+            try:
+                cut, mmeta = _matte_padded(im.convert("RGB"), pad_frac, tolerance)
+                method = mmeta.get("method", "key")
+            except Exception:
+                cut = None
+        if cut is not None:
             a = np.asarray(cut)[:, :, 3]
             ys, xs = np.where(a > 8)
-            if len(xs) == 0:
-                raise ValueError("matte empty")
-            mats.append((cut, (int(xs.min()), int(ys.min()),
-                               int(xs.max()), int(ys.max())), mmeta.get("method", "key")))
-        except Exception:
+            if len(xs):
+                mats.append((cut, (int(xs.min()), int(ys.min()),
+                                   int(xs.max()), int(ys.max())), method))
+                continue
+        if has_alpha:
+            # alpha 输入抠空只可能是整张全透明，仍按原图贴入，不静默丢视图
+            a = np.asarray(im)[:, :, 3]
+            ys, xs = np.where(a > 8)
+            box = None if len(xs) == 0 else (int(xs.min()), int(ys.min()),
+                                             int(xs.max()), int(ys.max()))
+            mats.append((im, box, "alpha"))
+        else:
             # 抠空兜底：整图当主体（不裁不缩放，只做平移对齐）
-            mats.append((im.convert("RGBA"), None, "raw"))
+            mats.append((im, None, "raw"))
 
     baseline_y = int(ch * baseline)
-    strip = Image.new("RGB", (cw * len(imgs) + gap * (len(imgs) - 1), ch), bg)
+    width = cw * len(imgs) + gap * (len(imgs) - 1)
+    if bg is None:
+        strip = Image.new("RGBA", (width, ch), (0, 0, 0, 0))
+    else:
+        strip = Image.new("RGB", (width, ch), bg)
     infos: List[Dict[str, Any]] = []
     for i, (rgba, box, method) in enumerate(mats):
         x0 = i * (cw + gap)
@@ -267,7 +300,7 @@ def compose_view_board(
             scale = min((cw - 8) / rgba.width, (ch - 8) / rgba.height, 1.0)
             nw, nh = max(1, int(rgba.width * scale)), max(1, int(rgba.height * scale))
             small = rgba.resize((nw, nh), Image.LANCZOS)
-            strip.paste(small, (x0 + (cw - nw) // 2, (ch - nh) // 2), small)
+            _place(strip, small, (x0 + (cw - nw) // 2, (ch - nh) // 2))
             infos.append({"view": order[i], "matte": method, "bbox": None,
                           "offset": [(cw - nw) // 2, (ch - nh) // 2], "scaled": [nw, nh]})
             continue
@@ -278,12 +311,13 @@ def compose_view_board(
         # 钳位：任何情况下不许把主体推出画布
         dx = max(min(dx, cw - bx1 - 1), -bx0)
         dy = max(min(dy, ch - by1 - 1), -by0)
-        strip.paste(rgba, (x0 + dx, dy), rgba)
+        _place(strip, rgba, (x0 + dx, dy))
         infos.append({"view": order[i], "matte": method, "bbox": list(box),
                       "offset": [dx, dy]})
     return strip, {
         "cell": [cw, ch], "gap": gap, "baseline": baseline_y,
-        "bg": "#%02X%02X%02X" % tuple(int(v) for v in bg),
+        "bg": "transparent" if bg is None else "#%02X%02X%02X" % tuple(int(v) for v in bg),
+        "alpha": bg is None,
         "size": list(strip.size), "views": infos,
     }
 
@@ -309,9 +343,16 @@ def _apply_background(instruction: str, background: str) -> str:
     （只说「透明背景」实测 alpha 恒为 255，见 .verify/exp-b）。
     """
     if background == "transparent":
+        # 视角指令里那句「背景保持纯色不变」在透明底上是有害的：模型会理解成
+        # 「照抄参考图的地面/底色」→ 实测右视图脚下留了一个椭圆地面投影，
+        # 直接污染 alpha（精灵导入引擎后就是一坨紫椭圆）。这里换成透明语义，
+        # 并显式禁掉投影/阴影/环境元素。
+        body = instruction.replace(
+            "背景保持纯色不变，",
+            "背景完全透明、不画任何底色，不要地面投影、不要阴影、不要环境元素，")
         return (
             "This is an RGBA image with transparency. "
-            + instruction
+            + body
             + " The image has alpha channel and the background is transparent."
         )
     phrase = background_phrase(background)

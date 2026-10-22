@@ -337,13 +337,17 @@ def main() -> int:
     check("拼板是三格宽", strip.width == 256 * 3 + 12 * 2, str(strip.size))
     check("拼板高度不变", strip.height == 384, str(strip.size))
     check("拼板带 meta", im.get("threeview", {}).get("baseline") is not None)
+    check("不透明底板 meta 标记",
+          im["threeview"].get("alpha") is False
+          and im["threeview"].get("bg") == "#1B4332",
+          f"{im['threeview'].get('alpha')}/{im['threeview'].get('bg')}")
     # 拼错的张数要明确报错，而不是拼出一张怪板
     r = client.post("/api/threeview/compose", json={
         "projectId": pid, "sources": [{"kind": "images", "file": view_ids[0]}]})
     check("少给图报 400", r.status_code == 400, str(r.status_code))
-    # 底板色禁透明：只认 6 位十六进制，transparent/none/乱码都要被挡下；
+    # 底板色：乱码一律 400，别静默回落到暗绿拼出一张错板；
     # 空串则回落默认底板色（用户在框里清空不该直接把拼板卡死）
-    for bad_bg in ("transparent", "none", "GGGGGG", "ZZZ", "1B43"):
+    for bad_bg in ("GGGGGG", "ZZZ", "1B43"):
         r = client.post("/api/threeview/compose", json={
             "projectId": pid,
             "sources": [{"kind": "images", "file": i} for i in view_ids],
@@ -355,6 +359,55 @@ def main() -> int:
         "bg": ""})
     check("底板色空串回落默认", r.status_code == 200, r.text[:120])
 
+    # 透明底板：三种写法（开关 / bg=transparent / bg=none）都该产出 RGBA 板，
+    # 四角全透明、主体 alpha 保住、meta 标记 alpha=True
+    for label, extra in (("transparentBg 开关", {"transparentBg": True}),
+                         ("bg=transparent", {"bg": "transparent"}),
+                         ("bg=none", {"bg": "none"})):
+        r = client.post("/api/threeview/compose", json={
+            "projectId": pid,
+            "sources": [{"kind": "images", "file": i} for i in view_ids],
+            **extra})
+        check(f"透明底板 {label} 200", r.status_code == 200, r.text[:200])
+        if r.status_code != 200:
+            continue
+        tim = r.json()["image"]
+        tstrip = storage.load_image(pid, "images", f"{tim['assetId']}.png")
+        check(f"透明底板 {label} 产物 RGBA", tstrip.mode == "RGBA", tstrip.mode)
+        if tstrip.mode != "RGBA":
+            continue
+        am = tstrip.getchannel("A")
+        check(f"透明底板 {label} 四角全透明",
+              am.getpixel((0, 0)) == 0
+              and am.getpixel((tstrip.width - 1, tstrip.height - 1)) == 0,
+              f"{am.getpixel((0, 0))}/{am.getpixel((tstrip.width - 1, tstrip.height - 1))}")
+        opaque = sum(1 for v in am.getdata() if v > 200)
+        check(f"透明底板 {label} 主体保住了",
+              opaque / (tstrip.width * tstrip.height) > 0.02,
+              str(round(opaque / (tstrip.width * tstrip.height), 3)))
+        tmeta = tim.get("threeview") or {}
+        check(f"透明底板 {label} meta 标记",
+              bool(tmeta.get("alpha")) and tmeta.get("bg") == "transparent",
+              str(tmeta.get("bg")))
+
+    # 已带透明背景的输入直接透传 alpha（method=alpha），不再二次抠图：
+    # 二次抠底会把已经成立的边缘再啃一遍
+    tr_view = Image.new("RGBA", (256, 384), (0, 0, 0, 0))
+    d = ImageDraw.Draw(tr_view)
+    d.ellipse([96, 60, 160, 140], fill=(240, 200, 160, 255))
+    d.rectangle([104, 140, 152, 320], fill=(240, 200, 160, 255))
+    tr_id = storage.save_image(pid, tr_view, prefix="tv-src")["id"]
+    r = client.post("/api/threeview/compose", json={
+        "projectId": pid,
+        "sources": [{"kind": "images", "file": tr_id}] * 3,
+        "transparentBg": True})
+    check("透明输入拼板 200", r.status_code == 200, r.text[:200])
+    if r.status_code == 200:
+        tviews = r.json()["image"]["threeview"]["views"]
+        check("透明输入跳过抠图",
+              all(v["matte"] == "alpha" for v in tviews),
+              str([v["matte"] for v in tviews]))
+
     print("== 视角生成：参数复用正视图 ==")
     from backend.app.pipelines.threeview import _apply_background
     instr = _apply_background("把角色转成侧面。", "gray")
@@ -365,6 +418,16 @@ def main() -> int:
     check("透明背景带双段式声明",
           instr.startswith("This is an RGBA image with transparency.")
           and "The image has alpha channel and the background is transparent." in instr)
+    # 视角指令里那句「背景保持纯色不变」在透明底上会让模型照抄参考图的地面
+    # → 实测右视图脚下留椭圆投影。透明分支必须换掉它并禁投影。
+    from backend.app.pipelines.threeview import _view_instruction
+    tr_instr = _apply_background(_view_instruction("side_r"), "transparent")
+    check("透明视角指令不带纯色背景句", "背景保持纯色不变" not in tr_instr,
+          tr_instr[-140:])
+    check("透明视角指令禁地面投影",
+          "不要地面投影" in tr_instr and "不要阴影" in tr_instr, tr_instr[-140:])
+    check("灰底视角指令保留纯色背景句",
+          "背景保持纯色不变" in _apply_background(_view_instruction("side"), "gray"))
     # derive 要认 background 字段（pydantic 不认会 422，前端任务起不来）。
     # 不真的 POST：那会 create_task 跑模型，冒烟测试不该碰 GPU。
     from backend.app.main import ViewDerivePayload

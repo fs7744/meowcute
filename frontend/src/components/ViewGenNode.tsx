@@ -103,7 +103,7 @@ export default function ViewGenNode({
         {inherit ? (
           <div className="param-grid">
             <label className="gen-field">
-              <span className="gen-field-label">参数（复用正视图）</span>
+              <span className="gen-field-label">参数（复用正视图，不在此节点修改）</span>
               <div className="hint" style={{ lineHeight: 1.7 }}>
                 画风：{inherit.styleName ?? '未选'} · {inherit.width}×{inherit.height}
                 <br />
@@ -115,34 +115,11 @@ export default function ViewGenNode({
             </label>
           </div>
         ) : (
-          <>
-            <div className="hint">
-              未找到正视图生成卡（上游是选择图片等节点）：使用下面的节点参数。
-            </div>
-            <label className="gen-field">
-              <span className="gen-field-label">输出尺寸</span>
-              <div className="param-grid">
-                <input className="input" type="number" min={128} max={1536} step={8}
-                  value={v.width} onChange={(e) => patch({ width: Number(e.target.value) })} />
-                <input className="input" type="number" min={128} max={1536} step={8}
-                  value={v.height} onChange={(e) => patch({ height: Number(e.target.value) })} />
-              </div>
-            </label>
-            <div className="param-grid">
-              <label className="gen-field">
-                <span className="gen-field-label">步数（空=默认 40）</span>
-                <input className="input" type="number" min={4} max={60}
-                  value={v.steps ?? ''} placeholder="40"
-                  onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
-              </label>
-              <label className="gen-field">
-                <span className="gen-field-label">种子（空=随机）</span>
-                <input className="input" type="number" min={0}
-                  value={v.seed ?? ''} placeholder="随机"
-                  onChange={(e) => patch({ seed: e.target.value ? Number(e.target.value) : null })} />
-              </label>
-            </div>
-          </>
+          <div className="hint">
+            上游不是「生成图」生成卡：本节点没有可继承的参数，执行时按默认值跑
+            （尺寸跟随参考图、步数自动、种子随机、中灰底、画风不指定）。
+            要让四视图参数统一，把「生成图」接到链条最上游，改它的参数即可。
+          </div>
         )}
 
         <button className="btn btn-sm" onClick={onRun} disabled={running}

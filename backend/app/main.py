@@ -943,6 +943,8 @@ class ComposePayload(BaseModel):
     projectId: str
     sources: List[ThreeViewSource] = Field(default_factory=list)
     bg: str = "1B4332"                      # 底板色（暗绿）
+    # True = 输出 RGBA 透明底板（不贴底色，各视图 alpha 原样带出）
+    transparentBg: bool = False
     gap: int = 12
     baseline: float = 0.93                  # 主体底部对齐到画布高度的比例
     cell: Optional[List[int]] = None        # 单格尺寸，空则取三张最大值
@@ -1023,11 +1025,21 @@ async def threeview_compose(payload: ComposePayload) -> Dict[str, Any]:
                 404, f"第 {i + 1} 张图不存在：{src.file or '（未指定）'}")
         imgs.append(img)
 
-    try:
-        bg_hex = (payload.bg or "1B4332").lstrip("#")
-        bg = tuple(int(bg_hex[j:j + 2], 16) for j in (0, 2, 4))
-    except Exception:
-        raise HTTPException(400, "底板色格式应为 6 位十六进制，如 1B4332")
+    # 底板色：显式 transparentBg、或把 bg 写成 transparent/none，都算透明底板；
+    # 其余必须是 6 位十六进制——乱码一律 400，别静默回落到暗绿拼出一张错板。
+    # 空串仍回落默认暗绿（用户在色号框里清空不该把拼板卡死）。
+    raw_bg = (payload.bg or "").strip().lstrip("#")
+    transparent = bool(payload.transparentBg) or raw_bg.lower() in ("transparent", "none")
+    bg: Optional[tuple] = None
+    if not transparent:
+        if not raw_bg:
+            bg = threeview_mod.DEFAULT_BG
+        elif len(raw_bg) == 6 and all(c in "0123456789abcdefABCDEF" for c in raw_bg):
+            bg = tuple(int(raw_bg[j:j + 2], 16) for j in (0, 2, 4))
+        else:
+            raise HTTPException(
+                400, "底板色格式应为 6 位十六进制（如 1B4332）；"
+                     "要透明底板请打开「透明底板」开关")
 
     cell = None
     if payload.cell and len(payload.cell) == 2:
@@ -1037,7 +1049,9 @@ async def threeview_compose(payload: ComposePayload) -> Dict[str, Any]:
         threeview_mod.compose_three_view, imgs,
         cell=cell, bg=bg, gap=max(0, int(payload.gap)),
         baseline=min(0.99, max(0.5, float(payload.baseline))))
-    info = storage.save_image(payload.projectId, strip.convert("RGBA"),
+    # 透明底板存 RGBA，其余存原样 RGB：给不透明板凭空补一条 alpha=255 的通道
+    # 只会让文件变大，还容易在下游被误判成「带透明」
+    info = storage.save_image(payload.projectId, strip,
                               kind="images", prefix="tv")
     return {"ok": True, "image": {
         "assetId": info["id"], "url": info["url"],

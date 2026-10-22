@@ -177,6 +177,8 @@ export const api = {
     projectId: string
     sources: { kind: 'images' | 'refs'; file: string }[]
     bg?: string; gap?: number; baseline?: number
+    /** true = 输出 RGBA 透明底板（忽略 bg） */
+    transparentBg?: boolean
     cell?: [number, number] | null
   }) =>
     fetch('/api/threeview/compose', jsonInit(payload)).then(j<{ ok: boolean; image: ResultImage }>),

@@ -14,8 +14,10 @@ type Props = {
   categories: string[]
   projectId: string
   task: { progress: TaskProgress | null; error: string | null } | null
-  /** 画布上存在四视图拼板节点：拼板会抠底并统一底板色，与透明背景互斥 */
+  /** 画布上存在四视图拼板节点：背景这句提示要说明拼板侧怎么处理底色 */
   boardMode?: boolean
+  /** 那张拼板开了透明底板（RGBA 输出）——选透明背景即可 alpha 直通 */
+  boardTransparent?: boolean
   onChange: (patch: Partial<GenNodeType>) => void
   onGenerate: () => void
   onPreview: () => void
@@ -32,8 +34,8 @@ const SIZES: [number, number][] = [
 
 export default function GenNode({
   node, index, styles, backgrounds, examples, categories, projectId, task,
-  boardMode, onChange, onGenerate, onPreview, onDelete, onDragStart, onCancel,
-  onFinishLink, onStartLink,
+  boardMode, boardTransparent, onChange, onGenerate, onPreview, onDelete,
+  onDragStart, onCancel, onFinishLink, onStartLink,
 }: Props) {
   const [exCat, setExCat] = useState(categories[0] || '角色描述')
   const [uploading, setUploading] = useState(false)
@@ -255,41 +257,30 @@ export default function GenNode({
             <span className="gen-field-label"><span className="idx">04</span>背景</span>
           </div>
           <div className="chips">
-            {backgrounds.map((b) => {
-              // 四视图拼板场景禁选透明：拼板要把各张图抠底后统一贴到底板色上，
-              // 透明底进拼板会被抹黑/抠底失效（底板色与透明互斥）
-              const blocked = boardMode && b.id === 'transparent'
-              return (
-                <button key={b.id}
-                  className={`chip ${node.params.background === b.id ? 'on' : ''}`}
-                  style={blocked ? { opacity: 0.45, cursor: 'not-allowed' } : undefined}
-                  title={blocked
-                    ? '四视图拼板需要不透明背景：拼板会抠底并统一底板色，透明底与之互斥。想用透明底请先移除拼板节点。'
-                    : b.hint}
-                  onClick={() => { if (!blocked) patchParams({ background: b.id as any }) }}>
-                  <i style={{
-                    display: 'inline-block', width: 9, height: 9, marginRight: 5,
-                    background: b.swatch === 'transparent'
-                      ? 'repeating-conic-gradient(#999 0% 25%, #444 0% 50%) 0 0 / 6px 6px'
-                      : b.swatch,
-                    boxShadow: '0 0 0 1px rgba(255,255,255,0.3)',
-                  }} />
-                  {b.label}
-                </button>
-              )
-            })}
+            {backgrounds.map((b) => (
+              <button key={b.id}
+                className={`chip ${node.params.background === b.id ? 'on' : ''}`}
+                title={b.hint}
+                onClick={() => patchParams({ background: b.id as any })}>
+                <i style={{
+                  display: 'inline-block', width: 9, height: 9, marginRight: 5,
+                  background: b.swatch === 'transparent'
+                    ? 'repeating-conic-gradient(#999 0% 25%, #444 0% 50%) 0 0 / 6px 6px'
+                    : b.swatch,
+                  boxShadow: '0 0 0 1px rgba(255,255,255,0.3)',
+                }} />
+                {b.label}
+              </button>
+            ))}
           </div>
           <div className="hint">{backgrounds.find((b) => b.id === node.params.background)?.hint}</div>
-          {boardMode && node.params.background === 'transparent' ? (
-            <div className="warn" style={{ marginTop: 4 }}>
-              已选透明背景，但画布上有四视图拼板节点：拼板会抠底并统一底板色，
-              请改用中灰或绿幕（移除拼板节点后才能用透明）。
-            </div>
-          ) : null}
           {boardMode ? (
             <div className="hint" style={{ marginTop: 2 }}>
-              画布上有四视图拼板节点：背景不可选透明（拼板会抠底并统一底板色）；
-              侧 / 背 / 右视图会自动复用这里选的全部参数。
+              {boardTransparent
+                ? <>画布上的拼板用了透明底板：这里选「透明」可让各视角原生带 alpha，拼板直接透传（省一次抠图）；
+                    选灰/绿底也行，拼板会先抠底再叠到透明板上。侧 / 背 / 右视图自动复用本卡参数。</>
+                : <>画布上的拼板是不透明底板：选灰/绿纯色底抠图最稳（透明底也能拼，拼板会沿用各图 alpha）；
+                    侧 / 背 / 右视图自动复用本卡参数。</>}
             </div>
           ) : null}
         </div>

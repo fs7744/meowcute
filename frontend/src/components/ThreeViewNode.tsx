@@ -40,7 +40,8 @@ export default function ThreeViewNode({
   onRun, onStartLink, onFinishLink, onPreview,
 }: Props) {
   const DEFAULTS: ThreeViewNodeType['threeview'] = {
-    enabled: true, bg: '1B4332', gap: 12, baseline: 0.93, cell: null,
+    enabled: true, bg: '1B4332', transparentBg: false,
+    gap: 12, baseline: 0.93, cell: null,
   }
   const t = { ...DEFAULTS, ...node.threeview }
   const patch = (p: Partial<typeof t>) => onChange({ threeview: { ...t, ...p } })
@@ -104,13 +105,27 @@ export default function ThreeViewNode({
           </div>
         ) : null}
 
+        <div className="switch-row">
+          <span className="t" style={{ fontSize: 12 }}
+            title="开：不贴底色，拼板直接输出 RGBA（各视图 alpha 原样带出）">
+            透明底板{t.transparentBg ? '（输出 RGBA）' : ''}
+          </span>
+          <button className={`switch ${t.transparentBg ? 'on' : ''}`}
+            onClick={() => patch({ transparentBg: !t.transparentBg })}
+            aria-label="切换透明底板">
+            <i />
+          </button>
+        </div>
+
         <div className="param-grid">
           <label className="gen-field">
             <span className="gen-field-label">底板色</span>
-            <div className="tv-color">
-              <input type="color" value={`#${t.bg}`}
+            <div className="tv-color"
+              style={t.transparentBg ? { opacity: 0.45 } : undefined}>
+              <input type="color" value={`#${t.bg}`} disabled={!!t.transparentBg}
                 onChange={(e) => patch({ bg: e.target.value.replace('#', '').toUpperCase() })} />
               <input className="input" value={t.bg} maxLength={6}
+                disabled={!!t.transparentBg}
                 onChange={(e) => patch({
                   bg: e.target.value.replace(/[^0-9A-Fa-f]/g, '').toUpperCase().slice(0, 6),
                 })} />
@@ -123,8 +138,14 @@ export default function ThreeViewNode({
           </label>
         </div>
         <div className="hint" style={{ marginTop: -4 }}>
-          底板色必须是不透明纯色（6 位十六进制）：拼板会把每张图抠底后贴到底板上，
-          透明底与之互斥——需要透明背景的场合请直接用各视角单图。
+          {t.transparentBg ? (
+            <>透明底板：输出 RGBA，底板全透明、主体 alpha 原样保留，不需要再抠一次底。
+              各视角若也用「透明」背景，alpha 会直接透传（跳过抠图）；用灰/绿底则各张抠完再叠到透明板上。
+              底板色此时不生效。</>
+          ) : (
+            <>底板色必须是不透明纯色（6 位十六进制）：拼板会把每张图抠底后贴到这块底色上。
+              要透明输出，打开上面的「透明底板」。</>
+          )}
         </div>
 
         <label className="gen-field">
@@ -156,6 +177,9 @@ export default function ThreeViewNode({
               <span className="meta-pill good">{node.result.width}×{node.result.height}</span>
               {meta ? <span className="meta-pill">单格 {meta.cell[0]}×{meta.cell[1]}</span> : null}
               {meta ? <span className="meta-pill">间距 {meta.gap}px</span> : null}
+              {meta?.alpha
+                ? <span className="meta-pill good">透明底板 RGBA</span>
+                : (meta ? <span className="meta-pill">底板 #{meta.bg.replace('#', '')}</span> : null)}
             </div>
             {meta ? (
               <div className="hint" style={{ marginTop: 4 }}>

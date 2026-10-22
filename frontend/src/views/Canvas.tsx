@@ -569,7 +569,8 @@ export default function Canvas({ projectId, onBack }: Props) {
     const node: ThreeViewNodeType = {
       id: newId('tv'), type: 'threeview', x: spot.x, y: spot.y,
       threeview: {
-        enabled: true, bg: '1B4332', gap: 12, baseline: 0.93, cell: null,
+        enabled: true, bg: '1B4332', transparentBg: false,
+        gap: 12, baseline: 0.93, cell: null,
       },
       result: null, createdAt: Date.now() / 1000,
     }
@@ -1016,18 +1017,17 @@ export default function Canvas({ projectId, onBack }: Props) {
     if (!project) throw new Error('项目未加载')
     const { out: srcOut, src: srcNode } = resolveFrontSource(node, runtime)
     const im = srcOut.images[0]
-    // 参数复用：侧/背/右继承正视图（生成卡）的画风/尺寸/步数/种子/质量/背景，
-    // 用户只在正视图上填一次。正视图不是生成卡时（选择图片等）才回退到
-    // 视角节点自身的老字段（兼容旧项目数据）。
+    // 参数复用：侧/背/右只认正视图生成卡（画风/尺寸/步数/种子/质量/背景），
+    // 用户只在生成卡上填一次。上游不是生成卡时（选择图片等直接喂图）没有参数
+    // 可继承：尺寸跟随参考图、其余走默认，不再留节点级参数框。
     const gen = srcNode.type === 'generate' ? (srcNode as GenNodeType) : null
     const gp = gen?.params
-    const styleId = gen ? gen.styleId : (node.viewgen?.styleId ?? null)
-    const width = gp?.width ?? node.viewgen?.width ?? 512
-    const height = gp?.height ?? node.viewgen?.height ?? 768
-    const steps = gp && gp.steps != null ? gp.steps : (node.viewgen?.steps ?? null)
-    const seed = gp && gp.seed != null ? gp.seed : (node.viewgen?.seed ?? null)
-    const maxSeqLen = gp && gp.maxSeqLen != null
-      ? gp.maxSeqLen : (node.viewgen?.maxSeqLen ?? null)
+    const styleId = gen ? gen.styleId : null
+    const width = gp?.width ?? (im.width || 512)
+    const height = gp?.height ?? (im.height || 768)
+    const steps = gp?.steps ?? null
+    const seed = gp?.seed ?? null
+    const maxSeqLen = gp?.maxSeqLen ?? null
     // 背景必须跟正视图一致：拼板按各张底色抠图，底色不同就会咬出异色边
     const background = gp?.background ?? 'gray'
     const { taskId } = await api.threeviewDerive({
@@ -1111,6 +1111,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         return { kind: s.kind, file: s.kind === 'images' ? s.images[0].assetId : s.file }
       }),
       bg: t?.bg || '1B4332',
+      transparentBg: !!t?.transparentBg,
       gap: t?.gap ?? 12,
       baseline: t?.baseline ?? 0.93,
       cell: t?.cell ?? null,
@@ -1986,10 +1987,15 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is ThreeViewNodeType => n.type === 'threeview'),
     [project?.nodes],
   )
-  /** 画布上有没有四视图拼板节点：有的话生成卡禁选透明背景——
-   *  拼板会把各张图抠底后统一贴到底板色上，透明底与之互斥 */
+  /** 画布上有没有四视图拼板节点：有的话背景提示要交代拼板侧的底色处理 */
   const boardMode = useMemo(
     () => (project?.nodes || []).some((n) => n.type === 'threeview'),
+    [project?.nodes],
+  )
+  /** 那张拼板是否开了透明底板：透明板下选「透明」背景可 alpha 直通 */
+  const boardTransparent = useMemo(
+    () => (project?.nodes || []).some(
+      (n) => n.type === 'threeview' && !!(n as ThreeViewNodeType).threeview?.transparentBg),
     [project?.nodes],
   )
   /** 视角节点复用的正视图参数摘要：节点卡上展示「继承正视图」的明细，
@@ -2205,6 +2211,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               /** 画布上存在四视图拼板节点时，生成卡禁选透明背景：
                *  拼板会把各张图抠底后统一贴到底板色上，透明底与之互斥 */
               boardMode={boardMode}
+              boardTransparent={boardTransparent}
               onChange={(patch) => patchNode(n.id, patch)}
               onGenerate={() => generate(n)}
               onPreview={() => openPromptPreview(n)}

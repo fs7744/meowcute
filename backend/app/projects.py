@@ -77,6 +77,8 @@ DEFAULT_VIEWGEN = {
 DEFAULT_THREEVIEW = {
     "enabled": True,
     "bg": "1B4332",
+    # 透明底板：True 时忽略 bg，拼板输出 RGBA（各视图 alpha 原样带出）
+    "transparentBg": False,
     "gap": 12,
     "baseline": 0.93,
     "cell": None,
@@ -528,6 +530,7 @@ def _clean_threeview(t: Any) -> Dict[str, Any]:
     return {
         "enabled": bool(t.get("enabled", True)),
         "bg": bg,
+        "transparentBg": bool(t.get("transparentBg", False)),
         "gap": _i(t.get("gap"), 12, 0, 64),
         "baseline": round(min(0.99, max(0.5, baseline)), 3),
         "cell": cell,

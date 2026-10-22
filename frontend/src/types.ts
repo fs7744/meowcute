@@ -200,6 +200,8 @@ export type ThreeViewOptions = {
   enabled: boolean
   /** 底板色，6 位十六进制（不带 #），默认暗绿 1B4332 */
   bg: string
+  /** 透明底板：开时忽略 bg，拼板输出 RGBA（各视图 alpha 原样带出） */
+  transparentBg?: boolean
   gap: number
   /** 主体底部对齐到画布高度的比例 */
   baseline: number
@@ -234,7 +236,10 @@ export type ThreeViewMeta = {
   cell: [number, number]
   gap: number
   baseline: number
+  /** 底板色：透明底板时为字符串 "transparent" */
   bg: string
+  /** true = 输出是 RGBA 透明底板 */
+  alpha?: boolean
   size: [number, number]
   views: {
     view: 'front' | 'side' | 'back' | 'side_r'
