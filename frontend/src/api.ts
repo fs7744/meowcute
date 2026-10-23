@@ -45,6 +45,39 @@ export const api = {
   }) => fetch('/api/templates/custom', jsonInit(payload))
     .then(j<{ ok: boolean; template: Template }>),
 
+  /** 编辑自定义模板（同样是整体保存：未提交的字段回到建模板时的值） */
+  updateTemplate: (id: string, payload: {
+    name?: string; tagline?: string; description?: string
+    nodes?: any[]; edges?: any[]; graph?: { nodes: any[]; edges: any[] }
+    defaults?: Record<string, any>
+  }) => fetch(`/api/templates/custom/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(j<{ ok: boolean; template: Template }>),
+
+  /** 编辑内置默认模板：存为本地覆盖补丁，只保存与出厂不同的字段 */
+  saveBuiltinTemplate: (id: string, payload: {
+    name?: string; tagline?: string; description?: string
+    highlights?: string[]; notes?: string[]
+    steps?: { title: string; detail: string }[]
+    inputs?: any[]; outputs?: any[]
+    defaults?: Record<string, any>
+    graph?: { nodes: any[]; edges: any[] }
+  }) => fetch(`/api/templates/builtin/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(j<{ ok: boolean; template: Template }>),
+
+  /** 恢复内置模板的出厂默认（删掉覆盖补丁） */
+  resetBuiltinTemplate: (id: string) =>
+    fetch(`/api/templates/builtin/${id}`, { method: 'DELETE' })
+      .then(j<{ ok: boolean; template: Template }>),
+
+  /** 另存为自定义副本（内置模板想大改又不想动默认时用） */
+  duplicateTemplate: (id: string) =>
+    fetch(`/api/templates/${id}/duplicate`, { method: 'POST' })
+      .then(j<{ ok: boolean; template: Template }>),
+
   deleteTemplate: (id: string) =>
     fetch(`/api/templates/custom/${id}`, { method: 'DELETE' }).then(j<{ ok: boolean }>),
 

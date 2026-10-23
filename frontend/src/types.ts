@@ -36,6 +36,11 @@ export type Template = {
   /** 自定义模板标记 + 节点图（内置模板没有） */
   custom?: boolean
   graph?: { nodes: any[]; edges: any[] }
+  /** 任何模板都可编辑：内置模板的编辑存本地覆盖，代码里的出厂定义不动 */
+  editable?: boolean
+  /** 内置模板已被用户改过（true 时列表显示「已修改」+ 可恢复默认） */
+  overridden?: boolean
+  updatedAt?: number
 }
 
 export type PromptExample = {

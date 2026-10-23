@@ -953,3 +953,10 @@ button { cursor: pointer; }
   box-shadow: 0 0 0 3px rgba(0, 255, 136, .28), 0 0 10px rgba(0, 255, 136, .7);
 }
 .canvas-root.linking .port.out { background: var(--green); }
+
+/* 模板编辑器的节点行：一行一个节点，展开后直接改该节点的 JSON。
+   边框要把「可点的行」和里面的 textarea 分开，否则一堆输入框糊成一片。 */
+.tpl-node-row {
+  border: 1px solid var(--line); background: var(--bg-2); padding: 8px 10px;
+}
+.tpl-node-row .btn-sm { height: 26px; }

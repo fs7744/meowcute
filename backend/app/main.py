@@ -44,6 +44,7 @@ from . import projects as projects_mod
 from . import prompt_examples as examples_mod
 from . import storage
 from . import custom_templates as ctpl
+from . import template_overrides as tov
 from .config import DATA_DIR, ROOT, load_settings, save_settings, scan_models
 from .pipelines import matte as matte_mod
 from .pipelines import refine as refine_mod
@@ -144,19 +145,82 @@ async def models() -> Dict[str, Any]:
 
 @app.get("/api/templates")
 async def templates() -> Dict[str, Any]:
-    custom = [ctpl._public(t) for t in ctpl.list_templates()]
-    return {"templates": list_templates() + custom}
+    # 内置模板一律经过 apply：用户对默认模板的编辑是本地覆盖补丁，
+    # 直接返回 TEMPLATES 常量会让「编辑了但不生效」再次上演。
+    builtin = [tov.apply(t) for t in list_templates()]
+    custom = [{**ctpl._public(t), "editable": True} for t in ctpl.list_templates()]
+    return {"templates": builtin + custom}
 
 
 @app.get("/api/templates/{tid}")
 async def template_detail(tid: str) -> Dict[str, Any]:
     t = get_template(tid)
     if t:
-        return t
+        return tov.apply(t)
     ct = ctpl.get_template(tid)
     if not ct:
         raise HTTPException(404, "模板不存在")
-    return ctpl._public(ct)
+    return {**ctpl._public(ct), "editable": True}
+
+
+class BuiltinTemplatePayload(BaseModel):
+    """内置模板的编辑补丁：只提交想改的字段，其余保持出厂值。"""
+
+    name: Optional[str] = None
+    tagline: Optional[str] = None
+    description: Optional[str] = None
+    highlights: Optional[List[str]] = None
+    notes: Optional[List[str]] = None
+    steps: Optional[List[Dict[str, Any]]] = None
+    inputs: Optional[List[Dict[str, Any]]] = None
+    outputs: Optional[List[Dict[str, Any]]] = None
+    defaults: Optional[Dict[str, Any]] = None
+    graph: Optional[Dict[str, Any]] = None
+
+
+@app.put("/api/templates/builtin/{tid}")
+async def update_builtin_template(tid: str, payload: BuiltinTemplatePayload) -> Dict[str, Any]:
+    """编辑内置默认模板（存为本地覆盖补丁，不改代码里的出厂定义）。"""
+    try:
+        t = tov.set_override(tid, payload.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "template": t}
+
+
+@app.delete("/api/templates/builtin/{tid}")
+async def reset_builtin_template(tid: str) -> Dict[str, Any]:
+    """恢复出厂默认：删掉覆盖补丁。"""
+    try:
+        t = tov.reset_override(tid)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True, "template": t}
+
+
+@app.post("/api/templates/{tid}/duplicate")
+async def duplicate_template(tid: str) -> Dict[str, Any]:
+    """把任何模板（含内置）另存为自定义副本：想大改又不想动默认时用。"""
+    src = get_template(tid)
+    if src is not None:
+        eff = tov.apply(src)
+        name = f"{eff.get('name') or '模板'}（副本）"
+        graph = eff.get("graph") or {"nodes": [], "edges": []}
+        defaults = eff.get("defaults") or {}
+    else:
+        ct = ctpl.get_template(tid)
+        if not ct:
+            raise HTTPException(404, "模板不存在")
+        pub = ctpl._public(ct)
+        name = f"{pub.get('name') or '模板'}（副本）"
+        graph = pub.get("graph") or {"nodes": [], "edges": []}
+        defaults = pub.get("defaults") or {}
+    try:
+        t = ctpl.create({"name": name, "tagline": "自定义工作流",
+                         "description": "", "graph": graph, "defaults": defaults})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "template": t}
 
 
 class CustomTemplatePayload(BaseModel):
@@ -298,7 +362,8 @@ async def list_projects() -> Dict[str, Any]:
 
 @app.post("/api/projects")
 async def create_project(payload: CreateProjectPayload) -> Dict[str, Any]:
-    t = get_template(payload.templateId)
+    raw = get_template(payload.templateId)
+    t = tov.apply(raw) if raw is not None else None
     graph = t.get("graph") if t else None
     if not t:
         ct = ctpl.get_template(payload.templateId)

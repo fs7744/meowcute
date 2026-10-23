@@ -417,6 +417,92 @@ def _run_checks(client) -> int:
               all(v["matte"] == "alpha" for v in tviews),
               str([v["matte"] for v in tviews]))
 
+    print("== 模板编辑：内置默认模板可改、可恢复 ==")
+    # 内置模板是 templates.py 里的常量。直接改常量不可接受（升级会被覆盖、
+    # 也没法恢复），所以用户编辑存成覆盖补丁，读取与建项目都走合并视图。
+    _ts = client.get("/api/templates").json()["templates"]
+    _b = next((t for t in _ts if t["id"] == "dir_walk"), None)
+    check("内置模板可编辑且默认未被修改",
+          _b is not None and _b.get("editable") is True
+          and _b.get("overridden") is False, str(_b and _b.get("id")))
+    check("列表返回节点图（编辑器要打开它）",
+          bool(_b and _b.get("graph", {}).get("nodes")),
+          str(len((_b or {}).get("graph", {}).get("nodes") or [])))
+
+    _g = _b["graph"]
+    _gen = next(n for n in _g["nodes"] if n["type"] == "generate")
+    _put = client.put("/api/templates/builtin/dir_walk", json={
+        "name": "八方向行走 · 我的",
+        "defaults": {**_b["defaults"], "width": 768, "height": 768},
+        "graph": {"nodes": [{**n, "prompt": "我的固定提示词"} if n["type"] == "generate" else n
+                            for n in _g["nodes"]], "edges": _g["edges"]},
+    })
+    check("保存内置模板覆盖", _put.status_code == 200
+          and _put.json()["template"].get("overridden") is True, _put.text[:120])
+
+    _b2 = next(t for t in client.get("/api/templates").json()["templates"]
+               if t["id"] == "dir_walk")
+    _gen2 = next(n for n in _b2["graph"]["nodes"] if n["type"] == "generate")
+    check("覆盖在读接口生效", _b2["name"] == "八方向行走 · 我的"
+          and _b2["defaults"].get("width") == 768 and _gen2["prompt"] == "我的固定提示词",
+          f'{_b2["name"]} / {_b2["defaults"].get("width")} / {_gen2["prompt"]}')
+
+    # 关键：建项目也要走合并视图，否则「编辑了但新建的项目还是老样子」
+    _pid2 = client.post("/api/projects", json={"name": "tpl-ov", "templateId": "dir_walk"}
+                        ).json()["project"]["id"]
+    _p2 = client.get(f"/api/projects/{_pid2}").json()["project"]
+    _g3 = next(n for n in _p2["nodes"] if n["type"] == "generate")
+    check("新建项目用覆盖后的节点图", _g3["prompt"] == "我的固定提示词", _g3["prompt"])
+
+    # 只存差异：把出厂值原样提交回去不应该留下「已修改」
+    client.delete("/api/templates/builtin/dir_walk")
+    _factory = client.get("/api/templates/dir_walk").json()
+    _same = client.put("/api/templates/builtin/dir_walk", json={
+        "name": _factory["name"], "tagline": _factory["tagline"],
+        "description": _factory["description"], "highlights": _factory["highlights"],
+        "notes": _factory["notes"], "steps": _factory["steps"],
+        "defaults": _factory["defaults"], "graph": _factory["graph"],
+    })
+    check("提交与出厂相同的值不产生覆盖（最小补丁）",
+          _same.status_code == 200 and _same.json()["template"].get("overridden") is False,
+          str(_same.json().get("template", {}).get("overridden")))
+
+    check("非法节点图被拒（空节点）",
+          client.put("/api/templates/builtin/dir_walk",
+                     json={"graph": {"nodes": []}}).status_code == 400)
+    check("不存在的内置模板被拒",
+          client.put("/api/templates/builtin/nope", json={"name": "x"}).status_code == 400)
+
+    # 悬空连线 / 非法节点类型在保存时被清理，而不是留着让画布运行期踩空
+    _clean = client.put("/api/templates/builtin/dir_walk", json={"graph": {
+        "nodes": [{"id": "a", "type": "generate", "x": -50, "y": 0},
+                  {"id": "b", "type": "bogus"}],
+        "edges": [{"from": "a", "to": "ghost"}, {"from": "a", "to": "a"}],
+    }}).json()["template"]["graph"]
+    check("非法节点与悬空连线被清理",
+          [n["id"] for n in _clean["nodes"]] == ["a"] and _clean["edges"] == [],
+          str(_clean))
+
+    _dup = client.post("/api/templates/dir_walk/duplicate")
+    check("内置模板可另存为自定义副本",
+          _dup.status_code == 200 and _dup.json()["template"].get("custom") is True
+          and len(_dup.json()["template"]["graph"]["nodes"]) >= 1,
+          _dup.text[:120])
+
+    _rst = client.delete("/api/templates/builtin/dir_walk")
+    check("恢复默认清掉覆盖",
+          _rst.status_code == 200 and _rst.json()["template"].get("overridden") is False
+          and _rst.json()["template"]["name"] == _factory["name"],
+          _rst.json()["template"]["name"])
+
+    # 自定义模板此前只能建/删，没有编辑入口（前端也没有 update 方法）
+    _ct = client.post("/api/templates/custom", json={
+        "name": "可编辑的副本", "nodes": [{"id": "g", "type": "generate", "x": 0, "y": 0}],
+        "edges": []}).json()["template"]
+    _ct2 = client.put(f"/api/templates/custom/{_ct['id']}", json={"name": "改过名字"}).json()
+    check("自定义模板可编辑", _ct2["template"]["name"] == "改过名字",
+          _ct2["template"]["name"])
+
     print("== 参数校验：恶意输入不许打挂服务 ==")
     import time as _time
     from backend.app import projects as _pj

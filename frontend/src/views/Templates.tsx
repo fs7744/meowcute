@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { HeroCat, PixelIcon } from '../components/CatLogo'
 import NewProjectModal from '../components/NewProjectModal'
+import TemplateEditor from '../components/TemplateEditor'
 import type { Template } from '../types'
 
 type Props = {
@@ -31,6 +32,9 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
   const [templates, setTemplates] = useState<Template[]>([])
   const [modal, setModal] = useState<{ open: boolean; tid?: string; params?: boolean }>({ open: false })
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  // 正在编辑的模板：内置模板编辑存本地覆盖，自定义模板直接写回
+  const [editing, setEditing] = useState<Template | null>(null)
   // 模板页视图：简略只留「名字 + 链路 + 入口」，适合模板多起来之后快速扫；
   // 详细给全量说明。偏好记在 localStorage，下次进来还是你选的那个。
   const [view, setView] = useState<'compact' | 'detail'>(() => (
@@ -45,6 +49,15 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
   }, [])
 
   const compact = view === 'compact'
+
+  /** 保存/恢复/建副本后就地替换那条，不整页刷新（避免视图与滚动位置丢失） */
+  const upsert = (t: Template) => setTemplates((list) => {
+    const i = list.findIndex((x) => x.id === t.id)
+    if (i < 0) return [...list, t]
+    const next = [...list]
+    next[i] = t
+    return next
+  })
 
   const available = templates.filter((t) => t.status === 'available')
   const planned = templates.filter((t) => t.status !== 'available')
@@ -79,6 +92,7 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
         </div>
 
         {error ? <div className="err">{error}</div> : null}
+        {notice ? <div className="hint" style={{ color: 'var(--green)' }}>{notice}</div> : null}
 
         <div className="section-head">
           <div className="grow">
@@ -106,6 +120,7 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
                 </div>
                 <span className="tag">可用</span>
                 {t.custom ? <span className="tag pink">自定义</span> : null}
+                {t.overridden ? <span className="tag yellow">已修改</span> : null}
               </div>
 
               {compact ? null : <div className="desc">{t.description}</div>}
@@ -142,6 +157,10 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
                     查看参数
                   </button>
                 )}
+                <button className="btn btn-sm" onClick={() => setEditing(t)}
+                  title={t.custom ? '修改这个自定义模板' : '修改默认模板（存为本地覆盖，可恢复默认）'}>
+                  编辑
+                </button>
                 {t.custom ? (
                   <button className="btn btn-sm btn-danger" onClick={async () => {
                     if (!confirm(`删除自定义模板「${t.name}」？已创建的项目不受影响。`)) return
@@ -210,6 +229,25 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
           未来接入第三方接口时，只需替换生成端，像素精修与项目结构不变。
         </div>
       </div>
+
+      <TemplateEditor
+        open={!!editing}
+        template={editing}
+        onClose={() => setEditing(null)}
+        onSaved={(t, msg) => {
+          upsert(t)
+          setNotice(msg || null)
+          setError(null)
+        }}
+        onDuplicated={(t) => {
+          upsert(t)
+          setNotice(`已创建副本「${t.name}」，可在副本上继续改，默认模板不受影响`)
+        }}
+        onReset={(t) => {
+          upsert(t)
+          setNotice(`已恢复「${t.name}」的出厂默认`)
+        }}
+      />
 
       <NewProjectModal
         open={modal.open}
