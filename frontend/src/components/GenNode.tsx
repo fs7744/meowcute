@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, loadPromptLimits } from '../api'
+import { promptLimitFor } from '../lib/promptLimit'
 import type {
   BackgroundOption, GenNode as GenNodeType, PixelOptions, PromptExample, PromptLimits,
   RefAsset, Style, TaskProgress,
@@ -54,11 +55,13 @@ export default function GenNode({
     loadPromptLimits().then((l) => { if (alive) setLimits(l) }).catch(() => undefined)
     return () => { alive = false }
   }, [])
+  // 只有「像素类画风 + 像素精修开启」才真的会追加契约句，否则按纯文本算开销
+  const pixelOn = !!node.pixel?.enabled && !!style?.pixelClass
   const seqLen = node.params.maxSeqLen ?? limits?.seqLenMax ?? 1920
-  const fixedChars = limits?.styles[node.styleId || '']?.[node.pixel?.enabled ? 'pixel' : 'plain'] ?? 0
-  const budgetChars = Math.floor(
-    (seqLen - (limits?.overheadTokens ?? 64)) / (limits?.charsPerToken ?? 1.3))
-  const maxChars = Math.max(40, budgetChars - fixedChars)
+  const fixedChars = limits?.styles[node.styleId || '']?.[pixelOn ? 'pixel' : 'plain'] ?? 0
+  const maxChars = promptLimitFor(limits, {
+    styleId: node.styleId, maxSeqLen: node.params.maxSeqLen, pixelOn,
+  })
   const promptLen = (node.prompt || '').length
   const overBy = promptLen - maxChars
   const nearLimit = overBy <= 0 && promptLen >= maxChars * 0.88
@@ -165,7 +168,6 @@ export default function GenNode({
             ref={taRef}
             className="textarea"
             style={{ minHeight: 92 }}
-            maxLength={maxChars}
             placeholder="例：灰白英短猫武士，红色短披风，左腰侧挎武士刀，三头身比例，正面站立"
             value={node.prompt}
             onChange={(e) => onChange({ prompt: e.target.value })}
@@ -175,11 +177,15 @@ export default function GenNode({
               color: overBy > 0 ? 'var(--pink)' : undefined }}>
               {overBy > 0 ? (
                 <>
-                  超出 {overBy} 字：超出的部分模型读不到（会被截断）。
+                  已超出 {overBy} 字（共 {promptLen} 字，上限 {maxChars}）：超出的部分模型
+                  读不到。<b>删到上限之内才能生成。</b>
                   <button className="btn btn-sm" style={{ marginLeft: 6, height: 22 }}
                     onClick={() => onChange({ prompt: (node.prompt || '').slice(0, maxChars) })}>
                     截到上限
                   </button>
+                  {node.params.maxSeqLen ? null : (
+                    <span> 或把「提示词质量」调到更高档。</span>
+                  )}
                 </>
               ) : (
                 <>
@@ -472,8 +478,13 @@ export default function GenNode({
           <button className="btn btn-sm btn-danger" onClick={onCancel}>取消</button>
         ) : null}
         <button className="btn btn-primary btn-sm" style={{ height: 34 }}
-          onClick={onGenerate} disabled={running || !node.prompt.trim()}>
-          {running ? <><span className="spin" /> 生成中</> : `生成 ${node.params.n} 张`}
+          onClick={onGenerate}
+          disabled={running || !node.prompt.trim() || overBy > 0}
+          title={overBy > 0
+            ? `提示词超出 ${overBy} 字：删到 ${maxChars} 字以内才能生成`
+            : undefined}>
+          {running ? <><span className="spin" /> 生成中</>
+            : overBy > 0 ? `提示词超 ${overBy} 字` : `生成 ${node.params.n} 张`}
         </button>
       </div>
 

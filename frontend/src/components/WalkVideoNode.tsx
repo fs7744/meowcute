@@ -248,10 +248,12 @@ export default function WalkVideoNode({
 
         <label className="gen-field">
           <span className="gen-field-label">动作</span>
-          <input className="input" value={v.action} maxLength={actionMax}
+          <input className="input" value={v.action}
             onChange={(e) => patch({ action: e.target.value })} />
-          <span className="hint" style={{ marginTop: 2 }}>
-            {v.action.length} / {actionMax} 字
+          <span className="hint" style={{ marginTop: 2,
+            color: v.action.length > actionMax ? 'var(--yellow)' : undefined }}>
+            {v.action.length} / 建议 {actionMax} 字
+            {v.action.length > actionMax ? ' · 超出建议长度，仍会生效' : ''}
           </span>
         </label>
 

@@ -89,6 +89,7 @@ def snapshot() -> Dict[str, Any]:
         },
         "walkAction": {
             "maxChars": WALK_ACTION_MAX,
-            "note": "动作描述会拼进 Wan 的视频提示词模板，模板本身已占掉大半预算。",
+            "note": "动作描述会拼进 Wan 的视频提示词模板（模板本身 173 字）。"
+                    "这里是建议长度：再长也仍在 512 token 预算内，只是收益递减。",
         },
     }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, subscribeTask } from '../api'
+import { api, loadPromptLimits, subscribeTask } from '../api'
+import { promptLimitFor } from '../lib/promptLimit'
 import GenNode from '../components/GenNode'
 import InputNode from '../components/InputNode'
 import MatteNode from '../components/MatteNode'
@@ -17,7 +18,8 @@ import WalkVideoNode from '../components/WalkVideoNode'
 import type {
   BackgroundOption, CanvasNode, GenNode as GenNodeType, GenerateResult,
   InputNode as InputNodeType, MatteNode as MatteNodeType, PlayNode as PlayNodeType,
-  Project, PromptExample, PromptPreview, RefineNode as RefineNodeType, ResultImage,
+  Project, PromptExample, PromptLimits, PromptPreview, RefineNode as RefineNodeType,
+  ResultImage,
   ResultMeta, ResultNode as ResultNodeType, SequenceNode as SequenceNodeType,
   SpriteSheetNode as SpriteSheetNodeType, Style, TaskProgress, Template,
   ThreeViewNode as ThreeViewNodeType, ViewGenNode as ViewGenNodeType,
@@ -185,6 +187,8 @@ export default function Canvas({ projectId, onBack }: Props) {
   const [styles, setStyles] = useState<Style[]>([])
   /** 设置页「新建节点时的默认值」（width/height/n/background） */
   const [nodeDefaults, setNodeDefaults] = useState<Record<string, any>>({})
+  /** 提示词上限：生成卡自己会拦，工作流入口也要拦（否则绕过按钮照样发出去） */
+  const [limits, setLimits] = useState<PromptLimits | null>(null)
   /** 模板编辑草稿：提交中 */
   const [tplBusy, setTplBusy] = useState(false)
   const [backgrounds, setBackgrounds] = useState<BackgroundOption[]>([])
@@ -278,6 +282,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       setTemplate(tpl)
       // 设置页的「新建节点默认值」：新建生成卡时预填（模板 defaults 仍可覆盖）
       setNodeDefaults(se.settings?.defaults || {})
+      loadPromptLimits().then(setLimits).catch(() => undefined)
       lastPayload.current = JSON.stringify({
         name: pr.project.name, nodes: pr.project.nodes,
         edges: pr.project.edges, viewport: pr.project.viewport,
@@ -1831,6 +1836,30 @@ export default function Canvas({ projectId, onBack }: Props) {
     const executable = project.nodes.filter(isRunner)
     if (!executable.length) {
       alert('画布上没有可执行的节点：先添加「生成图」「像素精修」「扣除背景」「视角生成」或「八方向行走」节点并连好线。')
+      return
+    }
+    // 提示词超上限时不能跑：模型只读前一半，用户却以为整段生效。
+    // 生成卡自己的按钮已经禁用了，但「运行工作流」是另一条入口，必须一起挡。
+    const overprompt = executable.filter((n) => {
+      if (n.type !== 'generate') return false
+      const st = styles.find((x) => x.id === n.styleId)
+      const pixelOn = !!n.pixel?.enabled && !!st?.pixelClass
+      const max = promptLimitFor(limits, {
+        styleId: n.styleId, maxSeqLen: n.params?.maxSeqLen, pixelOn,
+      })
+      return (n.prompt || '').length > max
+    }) as GenNodeType[]
+    if (overprompt.length) {
+      const detail = overprompt.map((n) => {
+        const st = styles.find((x) => x.id === n.styleId)
+        const pixelOn = !!n.pixel?.enabled && !!st?.pixelClass
+        const max = promptLimitFor(limits, {
+          styleId: n.styleId, maxSeqLen: n.params?.maxSeqLen, pixelOn,
+        })
+        return `· 「${(n.prompt || '').slice(0, 12)}…」${(n.prompt || '').length} 字 / 上限 ${max} 字`
+      }).join('\n')
+      alert(`有 ${overprompt.length} 张生成卡的提示词超出上限，超出的部分模型读不到。\n` +
+        `删到上限内、或把「提示词质量」调高一档后再运行：\n${detail}`)
       return
     }
     // 拓扑序：先跑上游，再跑下游（有环也不会死循环，seen 兜底）
