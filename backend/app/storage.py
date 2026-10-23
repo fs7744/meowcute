@@ -117,6 +117,10 @@ def save_gif(pid: str, frames: List[Image.Image], kind: str = "images",
     Wan 输出开头 / 结尾常有几帧不变，合并后文件更小、循环里也不会出现
     同姿势的重复帧——正是序列帧节点想去重做的事。读回来的帧数可能少于
     写入的帧数，下游按实际帧数处理即可。
+
+    调色板**全程共用一块**（从抽样的帧统一量化）：每帧各自量化时，同一个
+    颜色在不同帧会落进不同的 256 色集合，观感就是颜色跳动；共用一块后同一
+    颜色在任何帧里都是同一个值。实测文件还能小 ~28%（81 帧 11.5MB → 8.3MB）。
     """
     ensure_dirs()
     if not frames:
@@ -126,8 +130,19 @@ def save_gif(pid: str, frames: List[Image.Image], kind: str = "images",
     path = d / f"{aid}.gif"
     duration = max(20, int(round(1000.0 / max(1, int(fps)))))
     rgb = [f.convert("RGB") for f in frames]
-    rgb[0].save(
-        path, "GIF", save_all=True, append_images=rgb[1:],
+    # 全局调色板：抽样 ≤24 帧缩成小拼图一次量化。缩图只为取色，不为取形，
+    # 96×128 足够覆盖整段视频的颜色分布。
+    step = max(1, len(rgb) // 24)
+    sampled = rgb[::step][:24]
+    mont = Image.new("RGB", (96 * len(sampled), 128))
+    for i, f in enumerate(sampled):
+        mont.paste(f.resize((96, 128)), (i * 96, 0))
+    pal = mont.convert("P", palette=Image.ADAPTIVE, colors=256)
+    # 不定抖：抖动纹理会逐帧变化，反而添闪烁；下游还要抠图重采样，
+    # 这里的颜色精度由精灵整图节点决定。
+    pframes = [f.quantize(palette=pal, dither=Image.Dither.NONE) for f in rgb]
+    pframes[0].save(
+        path, "GIF", save_all=True, append_images=pframes[1:],
         duration=duration, loop=0, disposal=2, optimize=True,
     )
     raw = path.read_bytes()

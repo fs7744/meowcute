@@ -568,6 +568,82 @@ def _run_checks(client) -> int:
           client.post("/api/templates/matte_cutout/commit",
                       json={"projectId": _normal}).status_code == 400)
 
+    print("== 四视图拼板投入行走链：拆锚点 + 清脏 alpha + GIF 全局调色板 ==")
+    # 用户刻意把四视图拼板投进 dir_walk 保一致性。以前整张 4 角色拼板会被
+    # passthrough 直接喂给视频底座（1024×253 塞进 384×512），出来是残影 +
+    # 闪烁 + 变形；且拼板背景 51.3% 像素是「alpha 1-8 + 品红 RGB」，Wan 的
+    # convert("RGB") 把这片垃圾变成可见的品红背景。三条修复各有一条断言。
+    import numpy as _np
+    from PIL import Image as _Im, ImageDraw as _Dr
+    from backend.app.alpha_clean import sanitize_alpha, transparent_ratio
+    from backend.app.pipelines.threeview import split_view_board
+    _pid = client.post("/api/projects", json={
+        "name": "board-split", "templateId": "dir_walk"}).json()["project"]["id"]
+
+    # 1) 脏 alpha：近透明区 RGB 清零（品红泄漏的根源）
+    _dirty = _Im.new("RGBA", (64, 64), (255, 0, 255, 2))
+    _d = _Dr.Draw(_dirty)
+    _d.rectangle((20, 20, 44, 44), fill=(200, 60, 60, 255))
+    _clean = sanitize_alpha(_dirty)
+    _ca = _np.asarray(_clean)
+    check("脏 alpha 的近透明区被清零（RGB+alpha）",
+          _ca[2, 2].tolist() == [0, 0, 0, 0] and _ca[30, 30, 3] == 255,
+          f'{_ca[2, 2].tolist()} / {_ca[30, 30, 3]}')
+    check("清理不改变实心区颜色", _ca[30, 30, :3].tolist() == [200, 60, 60],
+          str(_ca[30, 30, :3].tolist()))
+    check("透明占比可算（Wan 参考图铺底色要用）",
+          0.8 < transparent_ratio(_clean) < 0.9
+          and transparent_ratio(_Im.new("RGB", (8, 8))) == 0.0
+          and transparent_ratio(_Im.new("RGBA", (8, 8), (0, 0, 0, 0))) == 1.0)
+
+    # 2) 拼板拆分：4 联 → 4 张；单角色不误拆
+    _board = _Im.new("RGBA", (400, 100), (0, 0, 0, 0))
+    for _i in range(4):
+        _x = _i * 100
+        _Dr.Draw(_board).rectangle((_x + 25, 15, _x + 75, 90), fill=(200, 60, 60, 255))
+    _cells = split_view_board(_board)
+    check("四联拼板拆成 4 张", len(_cells) == 4, str(len(_cells)))
+    check("拆出的每张只有一个主体",
+          all(transparent_ratio(c) > 0.5 for c in _cells),
+          str([round(transparent_ratio(c), 2) for c in _cells]))
+    # 不透明底拼板（compose 传了 bg 的产物）：间隔带是同色纯色列，
+    # 判据要认「与边框同色」而不只是透明
+    _ob = _Im.new("RGB", (400, 100), (27, 67, 50))
+    for _i in range(4):
+        _Dr.Draw(_ob).rectangle((_i * 100 + 25, 15, _i * 100 + 75, 90),
+                                fill=(200, 60, 60))
+    check("不透明底四联拼板也拆", len(split_view_board(_ob)) == 4,
+          str(len(split_view_board(_ob))))
+    # 贴边的背景带是页边距不是间隔：切了会把角色切掉一半
+    _mg = _Im.new("RGB", (400, 100), (27, 67, 50))
+    for _i in range(4):
+        _Dr.Draw(_mg).rectangle((_i * 100 + 30, 5, _i * 100 + 90, 95),
+                                fill=(200, 60, 60))
+    _mc = split_view_board(_mg)
+    check("拼板拆分保留页边距（不切角色）", len(_mc) == 4
+          and all(_np.asarray(c)[:, :, 3].size for c in _mc), str(len(_mc)))
+    _solo = _Im.new("RGBA", (100, 100), (0, 0, 0, 0))
+    _Dr.Draw(_solo).rectangle((30, 10, 70, 95), fill=(200, 60, 60, 255))
+    check("单角色立绘不误拆", split_view_board(_solo) == [])
+    check("不透明底图不拆", split_view_board(_Im.new("RGB", (400, 100), (30, 30, 30))) == [])
+
+    # 3) GIF 全局调色板：帧数与尺寸不变，同一颜色跨帧同值
+    _fr = []
+    for _i in range(6):
+        _f = _Im.new("RGB", (64, 64), (120, 130, 140))
+        # 红块固定在所有帧里：全局调色板保证它跨帧解回同一个值
+        _Dr.Draw(_f).rectangle((10, 20, 20, 50), fill=(200, 60, 60))
+        _Dr.Draw(_f).rectangle((30, 20 + _i * 3, 40, 50), fill=(60, 90, 200))
+        _fr.append(_f)
+    _gi = storage.save_gif(_pid, _fr, prefix="pal", fps=12)
+    _back, _, _ = storage.load_gif(_pid, "images", _gi["file"])
+    check("GIF 帧数不丢", len(_back) == 6, str(len(_back)))
+    check("GIF 全局调色板：同一颜色跨帧同值",
+          _back[0].convert("RGB").getpixel((15, 40)) == (200, 60, 60)
+          and _back[5].convert("RGB").getpixel((15, 40)) == (200, 60, 60),
+          f'{_back[0].convert("RGB").getpixel((15, 40))} vs '
+          f'{_back[5].convert("RGB").getpixel((15, 40))}')
+
     print("== 参数校验：恶意输入不许打挂服务 ==")
     import time as _time
     from backend.app import projects as _pj

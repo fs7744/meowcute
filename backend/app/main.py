@@ -44,6 +44,7 @@ from . import projects as projects_mod
 from . import prompt_examples as examples_mod
 from . import prompt_limits as limits_mod
 from . import storage
+from . import alpha_clean
 from . import custom_templates as ctpl
 from . import template_overrides as tov
 from .config import DATA_DIR, ROOT, load_settings, save_settings, scan_models
@@ -1353,6 +1354,15 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
         base = _load_source(payload.projectId, src)
         if base is None:
             raise RuntimeError("参考图不存在：请先跑上游的「生成图」或「选择图片」节点")
+        # 脏 alpha 清理：透明底图的背景区 alpha 常是 1-8、RGB 是垃圾值
+        # （实测拼板 51.3% 像素是「alpha 1-8 + 品红」），不清则下游丢掉 alpha
+        # 时就变成可见的品红/黑底。
+        base = alpha_clean.sanitize_alpha(base.convert("RGBA"))
+        # 投入的参考图本身是四视图拼板时拆成锚点。用户是**刻意**这么干的：
+        # 一张拼板同时提供四个朝向，保证八方向角色一致。不拆的后果实测过——
+        # 「正面」方向 passthrough 把整张 4 角色拼板喂给视频底座，出来的是
+        # 残影 + 闪烁 + 变形（1024×253 被塞进 384×512，Wan 无从下手）。
+        board_cells = threeview_mod.split_view_board(base)
 
         provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
 
@@ -1384,6 +1394,18 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
             img = storage.load_image(payload.projectId, payload.sourceKind, va.file)
             if img is not None:
                 view_anchors[va.role] = img.convert("RGB")
+        # 拼板拆分补锚点：格子顺序就是 VIEW_ORDER（front/side/back/side_r），
+        # 与 compose_view_board 的排列一致。用 setdefault——上游 compose 节点
+        # 显式给的锚点优先，拼板只补缺的角色。
+        board_split = 0
+        if board_cells:
+            for role, cell in zip(threeview_mod.VIEW_ORDER, board_cells):
+                view_anchors.setdefault(role, cell.convert("RGB"))
+            board_split = len(board_cells)
+            progress_mod.report(
+                task_id, 0, 1,
+                f"参考图是 {board_split} 联拼板，已按四视图锚点处理"
+                "（正/侧/背/右零推导，斜向只转 45 度）")
         # 用户直接指定的方向立绘：规整到节点尺寸，跳过推导
         dir_images: Dict[str, Any] = {}
         for di in payload.dirImages:
@@ -1422,6 +1444,8 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
         # 收尾值是卸载后的——这两个数能直接回答「这条链到底吃多少显存」
         peaks = [float((d.get("walk") or {}).get("vram", {}).get("peakGB") or 0)
                  for d in directions]
+        if board_split:
+            meta["boardSplit"] = board_split
         if any(peaks):
             meta["vramPeakGB"] = round(max(peaks), 2)
         after = DiffusersProvider.vram_gb().get("reserved")

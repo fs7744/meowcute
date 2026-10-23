@@ -406,6 +406,8 @@ export type WalkMeta = {
   vramAfterGB?: number | null
   /** 用到的四视图锚点（front/side/back/side_r） */
   anchors?: string[]
+  /** 投入的参考图是 N 联拼板，已拆成四视图锚点（正/侧/背/右零推导） */
+  boardSplit?: number
   /** 每个方向用了哪个锚点、转了多少度 */
   anchorPlan?: Partial<Record<string, { anchor: string; rotation: number }>>
   fps: number

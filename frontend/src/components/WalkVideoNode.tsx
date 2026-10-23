@@ -525,6 +525,12 @@ export default function WalkVideoNode({
               <span className="meta-pill walk-pill-src">现成 {meta.existingDirections}</span>
             ) : null}
             <span className="meta-pill">{meta.numFrames} 帧 @ {meta.fps}fps</span>
+            {meta.boardSplit ? (
+              <span className="meta-pill good"
+                title={`投入的参考图是 ${meta.boardSplit} 联拼板，已按正/侧/背/右拆成锚点：这四个方向零推导，斜向只转 45 度，角色一致性最好`}>
+                拼板锚点 ×{meta.boardSplit}
+              </span>
+            ) : null}
             {meta.vramPeakGB ? (
               <span className="meta-pill" title="一段视频的峰值显存（卸载底座前的分配器峰值）">
                 峰值显存 {meta.vramPeakGB}GB

@@ -99,6 +99,7 @@ import numpy as np
 from PIL import Image
 
 from . import matte as matte_pipe
+from ..alpha_clean import sanitize_alpha
 from ..styles import background_phrase
 
 # 统一底板色：暗绿 #1B4332（与归档项目模板/工作流提示词里的「暗绿色纯色背景」一致）
@@ -578,6 +579,77 @@ def compose_view_board(
         "alpha": bg is None,
         "size": list(strip.size), "views": infos,
     }
+
+
+def split_view_board(img: Image.Image) -> List[Image.Image]:
+    """把横向多联拼板拆成单张立绘；不是拼板就返回空列表。
+
+    为什么需要：`dir_walk` 模板的入口是「选择图片」，而用户**刻意**把四视图
+    拼板投进来保一致性（一张拼板同时提供四个朝向）。以前整张 4 角色拼板会被
+    passthrough 直接喂给视频底座（1024×253 塞进 384×512），出来的必然是
+    残影 + 闪烁 + 变形（实测）。拼板的结构是可靠的：格子之间有一条贯穿全高、
+    内容单一的间隔带，按它切即可，切出来的格子顺序就是 VIEW_ORDER。
+
+    判据（同时满足才拆，避免把一张正常立绘切开）：
+    - 宽高比 ≥ 1.5（拼板是横长的）；
+    - 「背景像素」= 透明，或与画面边框同色（后者覆盖不透明底拼板）；
+    - 间隔带 = 背景像素占比 >98% 的整列，且**不贴画面边缘**（贴边的是页边距，
+      属于格子的一部分，切了会把角色切掉一半）；
+    - 至少 2 个间隔带 → 至少 3 格；每格背景占比 2%~98%（既不是空白条，
+      也不是满图实心），宽度不小于全图的 12%。
+    """
+    import numpy as np
+
+    rgba = sanitize_alpha(img.convert("RGBA"))
+    w, h = rgba.size
+    if w < 64 or h < 64 or w / h < 1.5:
+        return []
+    a = np.asarray(rgba)
+    alpha = a[:, :, 3]
+    rgb = a[:, :, :3].astype(np.int16)
+
+    # 画面边框色：最外几列的众数（不透明底拼板的底板色）
+    border = np.concatenate([rgb[:, :3].reshape(-1, 3), rgb[:, -3:].reshape(-1, 3)])
+    bg_col = None
+    if len(border):
+        bq = border // 8 * 8
+        colors, counts = np.unique(bq, axis=0, return_counts=True)
+        bg_col = colors[counts.argmax()]
+
+    is_bg = alpha < 16
+    if bg_col is not None:
+        is_bg = is_bg | (np.abs(rgb - bg_col).max(axis=2) <= 10)
+    bg_col_frac = is_bg.mean(axis=0)
+
+    # 连续背景列聚成带；贴边的带是页边距，不算格子间隔
+    runs: List[Tuple[int, int]] = []
+    x = 0
+    while x < w:
+        if bg_col_frac[x] > 0.98:
+            x0 = x
+            while x < w and bg_col_frac[x] > 0.98:
+                x += 1
+            runs.append((x0, x - 1))
+        else:
+            x += 1
+    gaps = [(s0, e0) for s0, e0 in runs if s0 > 0 and e0 < w - 1]
+    if len(gaps) < 1:
+        return []
+    cuts = [(s0 + e0) // 2 for s0, e0 in gaps]
+    bounds = [0] + cuts + [w]
+
+    cells: List[Image.Image] = []
+    for x0, x1 in zip(bounds, bounds[1:]):
+        if x1 - x0 < w * 0.12:               # 太窄的是残边，不是一格
+            continue
+        cell = rgba.crop((x0, 0, x1, h))
+        ratio = float(is_bg[:, x0:x1].mean())
+        if not 0.02 <= ratio <= 0.98:        # 全背景或全实心都不像一格
+            return []
+        cells.append(cell)
+    if len(cells) < 2 or len(cells) > 4:
+        return []
+    return cells
 
 
 # 向后兼容别名（老调用方/老项目数据里的三视图拼板）

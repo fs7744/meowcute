@@ -28,6 +28,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .base import BaseProvider, ProviderResult
+from ..alpha_clean import sanitize_alpha, transparent_ratio
 from ..config import resolve_path
 from .. import progress as progress_mod
 
@@ -623,7 +624,11 @@ class DiffusersProvider(BaseProvider):
             if image_arg is not None:
                 kw["image"] = image_arg
             out = pipe(**kw)
-            images.append(out.images[0].convert("RGBA"))
+            # 清理脏 alpha：透明底输出的背景区 alpha 常是 1-8、RGB 是 VAE 垃圾值
+            # （实测四视图拼板 51.3% 像素是「alpha 1-8 + 品红 RGB」）。不清的话，
+            # 任何丢掉 alpha 的下游（Wan 的 convert("RGB")、用户下载后用别的工具
+            # 打开）都会看到一片品红/黑底。清零后透明区在任何观图方式下都一致。
+            images.append(sanitize_alpha(out.images[0].convert("RGBA")))
             if generator is not None and seed is not None:
                 generator = torch.Generator(device=generator.device).manual_seed(int(seed) + i + 1)
         _release_vram()
@@ -813,12 +818,21 @@ class DiffusersProvider(BaseProvider):
             max(1.0, min(9.0, guidance_scale)))
         from PIL import Image as _Image
 
-        src = ref.convert("RGB")
-        w = int(width or src.width) // 16 * 16
-        h = int(height or src.height) // 16 * 16
+        # 参考图预处理：**不能**用 ref.convert("RGB")。透明底立绘的 alpha=0 区
+        # RGB 是垃圾值（品红/黑），丢掉 alpha 后整片变成可见背景——实测八方向
+        # 行走视频背景发品紫、画面闪烁，根因就是这里。改成和编辑底座同一套：
+        # 等比缩放居中（letterbox，不拉伸体型）+ 透明区铺中灰。
+        # 中灰是实测模型最愿意当成「什么都没有」的底色；图本身有实底时按它
+        # 自己的边框色铺， letterbox 边带才不会有异色接缝。
+        rgba = sanitize_alpha(ref.convert("RGBA"))
+        w = int(width or rgba.width) // 16 * 16
+        h = int(height or rgba.height) // 16 * 16
         if max(w, h) > max_side:
             scale = max_side / max(w, h)
             w, h = max(16, int(w * scale) // 16 * 16), max(16, int(h * scale) // 16 * 16)
+        src = _prep_ref_images(
+            [rgba], w, h,
+            bg=None if transparent_ratio(rgba) < 0.02 else (128, 128, 128))[0]
         # 像素保真只在**放大**时用最近邻（保住硬边）。缩小绝不能最近邻：
         # 512×768 → 384×512 这种抽点会产生大量锯齿，视频底座会把它当成
         # 噪声放大，实测剪影面积从稳定的 20~27% 抖到 13~69%（整帧冲淡/重影）。
