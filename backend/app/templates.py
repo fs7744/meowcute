@@ -279,8 +279,8 @@ TEMPLATES: List[Dict[str, Any]] = [
             "主体底部对齐共同基线、水平居中：模型出图高低不齐，对齐后才可用",
         ],
         "inputs": [
-            {"key": "image", "label": "正视图", "required": True,
-             "hint": "「生成图」节点写角色描述；或换「选择图片」上传已有的正视图"},
+            {"key": "image", "label": "角色图", "required": True,
+             "hint": "「选择图片」上传一张角色立绘；要四视图锚点就用「角色四视图」模板"},
             {"key": "style", "label": "游戏画风", "required": False,
              "hint": "只作用于正视图；侧 / 背 / 右靠编辑指令继承画风"},
             {"key": "viewgen", "label": "视角生成", "required": False,
@@ -364,21 +364,25 @@ TEMPLATES: List[Dict[str, Any]] = [
     {
         "id": "dir_walk",
         "name": "八方向行走",
-        "tagline": "一张角色图 → 四视图 → 八方向行走视频 → 精灵表 → 可操控预览",
+        "tagline": "一张角色图 → 八方向行走视频 → 精灵表 → 可操控预览",
         "status": "available",
         "accent": "#FF8A4C",
         "icon": "walk",
         "description": (
-            "先出正 / 侧 / 背 / 右四视图，再以它们为锚点做八方向：正面、正左、背面、"
-            "正右四个方向直接取用四视图（零推导），其余斜向只从最近的锚点转 45 度，"
-            "而不是一律从正视图硬转 90 / 180 度——旋转幅度越小，角色越不容易走形。"
-            "每个方向再用 Wan2.2 图生视频底座生成原地行走视频，抽帧抠图后拼成"
-            "每方向一张横排精灵表，最后变成能用方向键操控的行走播放器。"
-            "为什么用视频底座而不是逐帧编辑：逐帧每帧独立推理，帧间没有运动"
-            "连续性，行走循环会抖；视频底座一次生成整段动作，肢体路径天然连贯。"
+            "入口是「选择图片」：手上已经有角色立绘（自己画的、别的工具出的）就直接"
+            "传进来，不用先生成。每个方向由底座从这张图推导朝向，再用 Wan2.2 图生视频"
+            "生成原地行走，抽帧抠图后拼成每方向一张横排精灵表，最后变成能用方向键"
+            "操控的行走播放器。"
+            "只有一张参考图时，正 / 侧 / 背 / 右都要各自转一次，背面转 180 度最容易"
+            "走形——对一致性要求高的话，用「角色四视图」模板先生成四视图，再把那四张"
+            "图接到这条链上（行走节点会沿链回溯收锚点），四个方向就变成零推导、"
+            "斜向只转 45 度。"
+            "为什么用视频底座而不是逐帧编辑：逐帧每帧独立推理，帧间没有运动连续性，"
+            "行走循环会抖；视频底座一次生成整段动作，肢体路径天然连贯。"
         ),
         "highlights": [
-            "四视图当锚点：四个方向零推导，斜向只转 45 度，推导次数由 8 降到 4",
+            "入口是「选择图片」：现成的角色立绘直接进来跑，不用先生成图",
+            "单图也能出八方向：每个方向各自转朝向；要更稳就把四视图模板生成的图接到这条链上",
             "八方向 = 左半边 5 个方向真实生成 + 右半边 3 个整段帧镜像，视频时间省一半",
             "每个真实方向的立绘图都会存下来，可放大查看，也可以自己指定一张替换",
             "方向指令只描述「转到哪个朝向」，不点名服装 / 配色——点名会变成「给角色加一件」",
@@ -389,8 +393,8 @@ TEMPLATES: List[Dict[str, Any]] = [
             "可操控预览：方向键 / WASD 转向，QEZC 斜向，空格暂停",
         ],
         "inputs": [
-            {"key": "image", "label": "正视图", "required": True,
-             "hint": "「生成图」节点写角色描述；或换「选择图片」上传已有的正视图"},
+            {"key": "image", "label": "角色图", "required": True,
+             "hint": "「选择图片」上传一张角色立绘；要四视图锚点就用「角色四视图」模板"},
             {"key": "style", "label": "游戏画风", "required": False,
              "hint": "作用于正视图与各方向立绘；行走视频由 Wan 底座接管"},
             {"key": "walkvideo", "label": "行走视频", "required": False,
@@ -403,14 +407,11 @@ TEMPLATES: List[Dict[str, Any]] = [
              "hint": "播放帧率与显示倍率"},
         ],
         "steps": [
-            {"n": 1, "title": "正视图", "detail": "生成图节点 txt2img 自由创作，或选择图片上传"},
-            {"n": 2, "title": "侧视图", "detail": "编辑底座从正视图接力：只转朝向，造型以参考图为准"},
-            {"n": 3, "title": "背视图", "detail": "从侧视图继续接力；背面不出现脸，手持物跟随身体"},
-            {"n": 4, "title": "右视图", "detail": "同链路转向画面右侧，与侧视图镜像，补全四视图"},
-            {"n": 5, "title": "行走视频", "detail": "以四视图为锚点：正/侧/背/右直接用，斜向转 45 度；再跑 Wan 原地行走"},
-            {"n": 6, "title": "序列帧", "detail": "每方向等距抽帧 + 相邻去重 + 抠图 → 一小摞透明底帧"},
-            {"n": 7, "title": "精灵整图", "detail": "共享缩放规整 → 每方向一张横排精灵表 + 八方向总览"},
-            {"n": 8, "title": "可操控预览", "detail": "方向键 / 按钮切换八个方向播放行走循环"},
+            {"n": 1, "title": "选择图片", "detail": "上传一张角色立绘（或先跑「像素精灵 · 文字生图」再拿过来）"},
+            {"n": 2, "title": "行走视频", "detail": "每个方向推导立绘 + Wan 原地行走；八方向里镜像省一半视频"},
+            {"n": 3, "title": "序列帧", "detail": "每方向等距抽帧 + 相邻去重 + 抠图 → 一小摞透明底帧"},
+            {"n": 4, "title": "精灵整图", "detail": "共享缩放规整 → 每方向一张横排精灵表 + 八方向总览"},
+            {"n": 5, "title": "可操控预览", "detail": "方向键 / 按钮切换八个方向播放行走循环"},
         ],
         "outputs": [
             {"label": "八方向精灵表", "detail": "每方向一张横排循环表 + 一张八方向总览"},
@@ -427,64 +428,43 @@ TEMPLATES: List[Dict[str, Any]] = [
             "maxSeqLen": None,
         },
         "notes": [
-            "画布是一条直线：生成图 / 选择图片 → 行走视频 → 序列帧 → 精灵整图 → 可操控预览。",
-            "行走视频节点的参考永远是最上游那张正视图（和视角节点一样沿链往前找）。",
+            "画布是一条直线：选择图片 → 行走视频 → 序列帧 → 精灵整图 → 可操控预览。",
+            "行走视频节点的参考就是「选择图片」里那张图，所有方向都从它推导。",
+            "只有一张图时背面要转 180 度，最容易走形；对一致性要求高就用「角色四视图」模板先生成四视图，再把行走节点接在拼板后面（它会沿链回溯收四张锚点）。",
             "没有 Wan2.2 TI2V-5B 底座时跑不了第 2 步：节点会给出缺模型的明确提示。",
             "想先验证链路可以把方向模式调成「仅正面」：只跑一个方向，几分钟出结果。",
         ],
-        # 内置节点图：正视图 → 行走视频 → 序列帧 → 精灵整图 → 可操控预览。
-        # 直线链就是用户描述的工作流；每个节点只收上一步的产物，
-        # 方向信息随图片上的 walkDir 与节点 meta 一起往下传。
+        # 内置节点图：选择图片 → 行走视频 → 序列帧 → 精灵整图 → 可操控预览。
+        # 入口刻意不是「生成图 + 三个视角节点」：手上已有立绘的人不必先花三次
+        # 推导生四视图；只有一张图时行走节点会退回单图推导，四视图锚点这条
+        # 更强的路径留给 char_three_view 模板（把拼板接到行走节点前面即可）。
         "graph": {
             "nodes": [
-                {"id": "gen1", "type": "generate", "x": 80, "y": 240,
-                 "prompt": "", "styleId": "pixel_16bit", "refs": [],
-                 "params": {"width": 512, "height": 768, "n": 1, "steps": None,
-                            "seed": None, "background": "gray", "maxSeqLen": None},
-                 "pixel": {"enabled": False, "gridSnap": True, "colors": 16,
-                           "palette": "auto", "gridSize": None, "targetSize": None,
-                           "transparentBg": False}},
-                {"id": "sd1", "type": "viewgen", "x": 620, "y": 100,
-                 "viewgen": {"enabled": True, "view": "side", "styleId": None,
-                             "steps": None, "seed": None, "width": 512,
-                             "height": 768, "maxSeqLen": None},
-                 "result": None},
-                {"id": "rt1", "type": "viewgen", "x": 620, "y": 460,
-                 "viewgen": {"enabled": True, "view": "side_r", "styleId": None,
-                             "steps": None, "seed": None, "width": 512,
-                             "height": 768, "maxSeqLen": None},
-                 "result": None},
-                {"id": "bk1", "type": "viewgen", "x": 1160, "y": 180,
-                 "viewgen": {"enabled": True, "view": "back", "styleId": None,
-                             "steps": None, "seed": None, "width": 512,
-                             "height": 768, "maxSeqLen": None},
-                 "result": None},
-                {"id": "wk1", "type": "walkvideo", "x": 1700, "y": 180,
+                {"id": "in1", "type": "input", "x": 80, "y": 240, "refs": [],
+                 "label": "角色图"},
+                {"id": "wk1", "type": "walkvideo", "x": 620, "y": 240,
                  "walkvideo": {"enabled": True, "dirMode": "eight", "action": "行走",
                                "styleId": None, "steps": None, "seed": None,
                                "width": 384, "height": 512, "numFrames": 81,
                                "fps": 24, "maxSide": 512, "maxSeqLen": None,
                                "pixelArt": False},
                  "result": None},
-                {"id": "sq1", "type": "sequence", "x": 1160, "y": 180,
+                {"id": "sq1", "type": "sequence", "x": 1160, "y": 240,
                  "sequence": {"enabled": True, "framesPerDir": 8, "fps": 8,
                               "matte": True, "tolerance": 40},
                  "result": None},
-                {"id": "sh1", "type": "spritesheet", "x": 1700, "y": 180,
+                {"id": "sh1", "type": "spritesheet", "x": 1700, "y": 240,
                  "spritesheet": {"enabled": True, "size": 128, "cols": 0,
                                  "sharedScale": True, "anchor": "bottom"},
                  "result": None},
-                {"id": "pl1", "type": "play", "x": 2240, "y": 160,
+                {"id": "pl1", "type": "play", "x": 2240, "y": 240,
                  "play": {"enabled": True, "fps": 8, "zoom": 2},
                  "result": None},
                 {"id": "rs1", "type": "result", "x": 2780, "y": 240,
                  "images": [], "prompt": "", "negative": "", "meta": {}},
             ],
             "edges": [
-                {"from": "gen1", "to": "sd1"},
-                {"from": "sd1", "to": "rt1"},
-                {"from": "rt1", "to": "bk1"},
-                {"from": "bk1", "to": "wk1"},
+                {"from": "in1", "to": "wk1"},
                 {"from": "wk1", "to": "sq1"},
                 {"from": "sq1", "to": "sh1"},
                 {"from": "sh1", "to": "pl1"},

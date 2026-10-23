@@ -112,9 +112,15 @@ def _run_checks(client) -> int:
               any(n.get("type") == "threeview" for n in tv["graph"]["nodes"]))
     dw = next((t for t in ts if t.get("id") == "dir_walk"), None)
     if dw:
-        views = sorted(n["viewgen"]["view"] for n in dw["graph"]["nodes"]
-                       if n.get("type") == "viewgen")
-        check("八方向模板四视图锚点齐全", views == ["back", "side", "side_r"], str(views))
+        dtypes = [n["type"] for n in dw["graph"]["nodes"]]
+        # 入口是「选择图片」：手上已有立绘的人不必先花三次推导生四视图。
+        # 四视图锚点那条更强的路径留给 char_three_view（拼板可接在行走节点前）。
+        check("八方向模板从选择图片开始（不再预置生成图/视角节点）",
+              dtypes[0] == "input" and "viewgen" not in dtypes
+              and "generate" not in dtypes, str(dtypes))
+        check("八方向模板仍含行走/序列帧/精灵表/预览",
+              all(t in dtypes for t in ("walkvideo", "sequence", "spritesheet", "play")),
+              str(dtypes))
     r = client.get("/api/styles")
     st = r.json().get("styles", [])
     check("画风 15 个", len(st) == 15, str(len(st)))
@@ -421,7 +427,7 @@ def _run_checks(client) -> int:
     # 内置模板是 templates.py 里的常量。直接改常量不可接受（升级会被覆盖、
     # 也没法恢复），所以用户编辑存成覆盖补丁，读取与建项目都走合并视图。
     _ts = client.get("/api/templates").json()["templates"]
-    _b = next((t for t in _ts if t["id"] == "dir_walk"), None)
+    _b = next((t for t in _ts if t["id"] == "char_three_view"), None)
     check("内置模板可编辑且默认未被修改",
           _b is not None and _b.get("editable") is True
           and _b.get("overridden") is False, str(_b and _b.get("id")))
@@ -431,7 +437,7 @@ def _run_checks(client) -> int:
 
     _g = _b["graph"]
     _gen = next(n for n in _g["nodes"] if n["type"] == "generate")
-    _put = client.put("/api/templates/builtin/dir_walk", json={
+    _put = client.put("/api/templates/builtin/char_three_view", json={
         "name": "八方向行走 · 我的",
         "defaults": {**_b["defaults"], "width": 768, "height": 768},
         "graph": {"nodes": [{**n, "prompt": "我的固定提示词"} if n["type"] == "generate" else n
@@ -441,23 +447,23 @@ def _run_checks(client) -> int:
           and _put.json()["template"].get("overridden") is True, _put.text[:120])
 
     _b2 = next(t for t in client.get("/api/templates").json()["templates"]
-               if t["id"] == "dir_walk")
+               if t["id"] == "char_three_view")
     _gen2 = next(n for n in _b2["graph"]["nodes"] if n["type"] == "generate")
     check("覆盖在读接口生效", _b2["name"] == "八方向行走 · 我的"
           and _b2["defaults"].get("width") == 768 and _gen2["prompt"] == "我的固定提示词",
           f'{_b2["name"]} / {_b2["defaults"].get("width")} / {_gen2["prompt"]}')
 
     # 关键：建项目也要走合并视图，否则「编辑了但新建的项目还是老样子」
-    _pid2 = client.post("/api/projects", json={"name": "tpl-ov", "templateId": "dir_walk"}
+    _pid2 = client.post("/api/projects", json={"name": "tpl-ov", "templateId": "char_three_view"}
                         ).json()["project"]["id"]
     _p2 = client.get(f"/api/projects/{_pid2}").json()["project"]
     _g3 = next(n for n in _p2["nodes"] if n["type"] == "generate")
     check("新建项目用覆盖后的节点图", _g3["prompt"] == "我的固定提示词", _g3["prompt"])
 
     # 只存差异：把出厂值原样提交回去不应该留下「已修改」
-    client.delete("/api/templates/builtin/dir_walk")
-    _factory = client.get("/api/templates/dir_walk").json()
-    _same = client.put("/api/templates/builtin/dir_walk", json={
+    client.delete("/api/templates/builtin/char_three_view")
+    _factory = client.get("/api/templates/char_three_view").json()
+    _same = client.put("/api/templates/builtin/char_three_view", json={
         "name": _factory["name"], "tagline": _factory["tagline"],
         "description": _factory["description"], "highlights": _factory["highlights"],
         "notes": _factory["notes"], "steps": _factory["steps"],
@@ -468,13 +474,13 @@ def _run_checks(client) -> int:
           str(_same.json().get("template", {}).get("overridden")))
 
     check("非法节点图被拒（空节点）",
-          client.put("/api/templates/builtin/dir_walk",
+          client.put("/api/templates/builtin/char_three_view",
                      json={"graph": {"nodes": []}}).status_code == 400)
     check("不存在的内置模板被拒",
           client.put("/api/templates/builtin/nope", json={"name": "x"}).status_code == 400)
 
     # 悬空连线 / 非法节点类型在保存时被清理，而不是留着让画布运行期踩空
-    _clean = client.put("/api/templates/builtin/dir_walk", json={"graph": {
+    _clean = client.put("/api/templates/builtin/char_three_view", json={"graph": {
         "nodes": [{"id": "a", "type": "generate", "x": -50, "y": 0},
                   {"id": "b", "type": "bogus"}],
         "edges": [{"from": "a", "to": "ghost"}, {"from": "a", "to": "a"}],
@@ -483,13 +489,13 @@ def _run_checks(client) -> int:
           [n["id"] for n in _clean["nodes"]] == ["a"] and _clean["edges"] == [],
           str(_clean))
 
-    _dup = client.post("/api/templates/dir_walk/duplicate")
+    _dup = client.post("/api/templates/char_three_view/duplicate")
     check("内置模板可另存为自定义副本",
           _dup.status_code == 200 and _dup.json()["template"].get("custom") is True
           and len(_dup.json()["template"]["graph"]["nodes"]) >= 1,
           _dup.text[:120])
 
-    _rst = client.delete("/api/templates/builtin/dir_walk")
+    _rst = client.delete("/api/templates/builtin/char_three_view")
     check("恢复默认清掉覆盖",
           _rst.status_code == 200 and _rst.json()["template"].get("overridden") is False
           and _rst.json()["template"]["name"] == _factory["name"],
@@ -878,18 +884,13 @@ def _run_checks(client) -> int:
     wpid = r.json()["project"]["id"]
     check("八方向模板建项目", r.status_code == 200 and wpid)
     wnodes = r.json()["project"]["nodes"]
-    # 八方向链的前置是四视图：正/侧/背/右出完再进行走视频，这样正、正左、背面、
-    # 正右四个方向零推导，斜向只转 45 度
-    check("模板链含四视图",
-          [n["type"] for n in wnodes] == ["generate", "viewgen", "viewgen", "viewgen",
-                                          "walkvideo", "sequence",
+    check("八方向链 = 选择图片 → 行走视频 → 序列帧 → 精灵表 → 预览",
+          [n["type"] for n in wnodes] == ["input", "walkvideo", "sequence",
                                           "spritesheet", "play", "result"],
           str([n["type"] for n in wnodes]))
-    check("四视图是侧 + 右 + 背",
-          [n.get("viewgen", {}).get("view") for n in wnodes
-           if n["type"] == "viewgen"] == ["side", "side_r", "back"],
-          str([n.get("viewgen", {}).get("view") for n in wnodes
-               if n["type"] == "viewgen"]))
+    check("模板不再预置生成图 / 四视图节点（单图入口）",
+          not any(n["type"] in ("generate", "viewgen") for n in wnodes),
+          str([n["type"] for n in wnodes]))
 
     # 锚点选择：有三视图时正/侧/背零推导，斜向只转 45 度
     from backend.app.pipelines.walkvideo import anchor_for as _af

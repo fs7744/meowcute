@@ -1323,12 +1323,16 @@ export default function Canvas({ projectId, onBack }: Props) {
       throw new Error(`「${nodeLabel(node.type)}」没有上游：把上一步连到左侧端口`)
     }
     const out = outputOf(inEdge.from, runtime)
+    const src = p?.nodes.find((n) => n.id === inEdge.from)
     // 可操控预览只吃元数据（精灵表 URL + 帧索引），上游图片被清空也照样能播；
     // 其余链路节点确实要图，缺图就是没跑过上游。
+    // 上游是「选择图片」时不能说「去跑上一步」——它没有可跑的东西，
+    // 用户要做的是上传一张图（八方向模板的入口就是它）。
     if (opts?.requireImages !== false && !out?.images.length) {
-      throw new Error('上游还没有产出：先跑上一步的节点')
+      throw new Error(src?.type === 'input'
+        ? '上游「选择图片」还没有图：先在节点里上传一张角色图'
+        : '上游还没有产出：先跑上一步的节点')
     }
-    const src = p?.nodes.find((n) => n.id === inEdge.from)
     return {
       out: out ?? { images: [], kind: 'images' as const, file: '', meta: null },
       fromId: inEdge.from,
