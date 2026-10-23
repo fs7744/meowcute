@@ -272,17 +272,23 @@ def set_override(tid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if base is None:
         raise ValueError("内置模板不存在")
     patch = _clean_patch(payload)
+    # **合并**已有覆盖，而不是整体替换。模板有两类编辑入口：
+    # 画布（提交 graph / defaults）和文案弹窗（提交 name / description），
+    # 若后者把覆盖整体替换掉，用户改个简介就会把之前用画布改的节点图冲回出厂。
+    data = _load()
+    items = data.setdefault("items", {})
+    existing = items.get(tid) or {}
+    merged = {k: v for k, v in existing.items() if k in _FIELDS}
+    merged.update(patch)
     # 大小护栏：defaults / graph 都是用户可填的 JSON，进来前先量体积，
     # 免得一个几十 MB 的图把 project.json 的读取路径拖垮
-    payload_text = dumps_bounded(patch)
+    payload_text = dumps_bounded(merged)
     if len(payload_text) > 400_000:
         raise ValueError(f"模板内容过大（{len(payload_text) // 1024}KB），上限 400KB")
     # 只存**与出厂不同的字段**（最小补丁）。前端提交的是完整表单，
     # 若把完整表单原样落盘，用户点一次「保存」就等于接管了这个模板的
     # 所有字段，以后代码里更新出厂模板的其它字段都会被这份旧快照盖住。
-    diff = {k: v for k, v in patch.items() if base.get(k) != v}
-    data = _load()
-    items = data.setdefault("items", {})
+    diff = {k: v for k, v in merged.items() if base.get(k) != v}
     if not diff:
         # 一个字段都没改 = 等同恢复默认（不留下空覆盖，否则列表永远显示「已修改」）
         items.pop(tid, None)

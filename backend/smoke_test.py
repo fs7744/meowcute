@@ -503,6 +503,65 @@ def _run_checks(client) -> int:
     check("自定义模板可编辑", _ct2["template"]["name"] == "改过名字",
           _ct2["template"]["name"])
 
+    print("== 模板编辑草稿：在无限画布上改，保存回模板 ==")
+    # 模板编辑不再用表单填节点（用户明确反馈太复杂），改为把模板打开成一份
+    # 画布草稿：拖节点、改参数、连线，然后一键写回。
+    _dr = client.post("/api/templates/char_three_view/draft")
+    _dp = _dr.json()["project"]
+    check("打开模板草稿", _dr.status_code == 200
+          and _dp.get("templateDraftOf") == "char_three_view",
+          str(_dp.get("templateDraftOf")))
+    check("草稿保留模板节点 id（写回时结构零 diff）",
+          any(n["id"] == "gen1" for n in _dp["nodes"]),
+          str([n["id"] for n in _dp["nodes"]]))
+    _dr2 = client.post("/api/templates/char_three_view/draft")
+    check("重复打开复用同一份草稿",
+          _dr2.json().get("reused") is True and _dr2.json()["project"]["id"] == _dp["id"])
+
+    _dnodes = [{**n} for n in _dp["nodes"]]
+    _dgen = next(n for n in _dnodes if n["type"] == "generate")
+    _dgen["prompt"] = "画布上改的提示词"
+    _dgen["params"] = {**_dgen["params"], "width": 640, "height": 960}
+    _ddrop = next((n["id"] for n in _dnodes if n["type"] == "viewgen"
+                   and n["viewgen"]["view"] == "side_r"), None)
+    _dnodes = [n for n in _dnodes if n["id"] != _ddrop]
+    _dedges = [e for e in _dp["edges"] if e["from"] != _ddrop and e["to"] != _ddrop]
+    client.put(f"/api/projects/{_dp['id']}", json={
+        "name": _dp["name"], "nodes": _dnodes, "edges": _dedges,
+        "viewport": _dp["viewport"]})
+    _cm = client.post("/api/templates/char_three_view/commit",
+                      json={"projectId": _dp["id"]})
+    _tp2 = _cm.json().get("template") or {}
+    check("画布草稿写回模板",
+          _cm.status_code == 200 and _cm.json().get("draftDeleted") is True
+          and next(n for n in _tp2["graph"]["nodes"] if n["type"] == "generate")["prompt"]
+          == "画布上改的提示词", _cm.text[:160])
+    check("默认参数从模板里的生成卡派生",
+          _tp2["defaults"].get("width") == 640 and _tp2["defaults"].get("height") == 960,
+          str(_tp2.get("defaults")))
+    check("草稿里删掉的节点也写回了模板",
+          not any(n.get("viewgen", {}).get("view") == "side_r"
+                  for n in _tp2["graph"]["nodes"]))
+    check("提交后草稿项目被清理",
+          client.get(f"/api/projects/{_dp['id']}").status_code == 404)
+
+    # 文案与节点图是两个编辑入口：改文案不能把画布改过的图冲回出厂
+    client.put("/api/templates/builtin/char_three_view", json={"name": "画布版四视图"})
+    _after = client.get("/api/templates/char_three_view").json()
+    check("改文案不会丢掉画布改的节点图",
+          _after["name"] == "画布版四视图"
+          and next(n for n in _after["graph"]["nodes"]
+                   if n["type"] == "generate")["prompt"] == "画布上改的提示词",
+          _after["name"])
+    client.delete("/api/templates/builtin/char_three_view")
+
+    _normal = client.post("/api/projects",
+                          json={"name": "普通项目", "templateId": "matte_cutout"}
+                          ).json()["project"]["id"]
+    check("非草稿项目不能提交回模板",
+          client.post("/api/templates/matte_cutout/commit",
+                      json={"projectId": _normal}).status_code == 400)
+
     print("== 参数校验：恶意输入不许打挂服务 ==")
     import time as _time
     from backend.app import projects as _pj

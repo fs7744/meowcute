@@ -100,6 +100,11 @@ export default function Projects({ onOpenProject }: Props) {
                 <div className="proj-body">
                   <div className="proj-name">
                     <span className="grow">{p.name}</span>
+                    {p.templateDraftOf ? (
+                      <span className="tag yellow" title="这是某个模板的编辑草稿：打开画布改完，点「保存为模板」写回">
+                        模板编辑中
+                      </span>
+                    ) : null}
                   </div>
                   <div className="proj-meta">
                     <span>{tplName(p.templateId)}</span>

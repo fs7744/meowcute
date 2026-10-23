@@ -173,7 +173,9 @@ def default_generate_node(x: float = 80, y: float = 120) -> Dict[str, Any]:
 
 
 def create_project(name: str, template_id: str, template_defaults: Dict[str, Any],
-                   template_graph: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                   template_graph: Optional[Dict[str, Any]] = None,
+                   draft_of: Optional[str] = None,
+                   keep_ids: bool = False) -> Dict[str, Any]:
     ensure_dirs()
     pid = new_asset_id("p")
     d = project_dir(pid)
@@ -191,8 +193,15 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
         for raw in template_graph["nodes"][:200]:
             if not isinstance(raw, dict) or raw.get("type") not in ALLOWED_TYPES:
                 continue
-            nid = new_asset_id(raw["type"][:3])
-            idmap[str(raw.get("id") or "")] = nid
+            # 模板编辑草稿保留模板里的节点 id：commit 时把图写回去，
+            # id 不变才能让「只改了提示词」在图结构上零 diff（否则每次保存
+            # 都会因为 id 全变而落一份看起来「改了结构」的覆盖）。
+            _raw_id = str(raw.get("id") or "")
+            if keep_ids and _raw_id and _raw_id not in idmap.values():
+                nid = _raw_id
+            else:
+                nid = new_asset_id(raw["type"][:3])
+            idmap[_raw_id] = nid
             n = dict(raw)
             n["id"] = nid
             if n["type"] == "generate":
@@ -271,6 +280,9 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
         "id": pid,
         "name": (name or "未命名项目").strip()[:60],
         "templateId": template_id,
+        # 非空 = 这个项目是「模板编辑草稿」：画布上多一条「保存为模板 / 放弃」，
+        # 项目列表里也标出来，避免被当成普通项目误删。
+        "templateDraftOf": draft_of,
         "createdAt": _now(),
         "updatedAt": _now(),
         "viewport": {"x": 0, "y": 0, "z": 1},
@@ -705,6 +717,7 @@ def list_projects() -> List[Dict[str, Any]]:
             "id": project["id"],
             "name": project.get("name") or "未命名项目",
             "templateId": project.get("templateId"),
+            "templateDraftOf": project.get("templateDraftOf"),
             "createdAt": project.get("createdAt"),
             "updatedAt": project.get("updatedAt"),
             "nodeCount": len(project.get("nodes", [])),
@@ -715,6 +728,18 @@ def list_projects() -> List[Dict[str, Any]]:
         })
     out.sort(key=lambda x: x.get("updatedAt") or 0, reverse=True)
     return out
+
+
+def find_draft(tid: str) -> Optional[Dict[str, Any]]:
+    """找一个模板已有的编辑草稿（同模板只留一份）。"""
+    ensure_dirs()
+    for d in PROJECTS_DIR.iterdir() if PROJECTS_DIR.is_dir() else []:
+        if not d.is_dir():
+            continue
+        project = load_project(d.name)
+        if project is not None and project.get("templateDraftOf") == tid:
+            return project
+    return None
 
 
 def delete_project(pid: str) -> bool:

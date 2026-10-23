@@ -163,6 +163,93 @@ async def template_detail(tid: str) -> Dict[str, Any]:
     return {**ctpl._public(ct), "editable": True}
 
 
+@app.post("/api/templates/{tid}/draft")
+async def open_template_draft(tid: str) -> Dict[str, Any]:
+    """把模板打开成一份画布草稿：模板编辑走无限画布，而不是表单填节点。"""
+    raw = get_template(tid)
+    if raw is not None:
+        t = tov.apply(raw)
+    else:
+        ct = ctpl.get_template(tid)
+        if not ct:
+            raise HTTPException(404, "模板不存在")
+        t = {**ctpl._public(ct), "editable": True}
+    if t.get("status") != "available":
+        raise HTTPException(400, "该模板尚未开放，先把节点链跑通再编辑")
+    # 同一个模板只留一份草稿：反复点「编辑」不该在项目列表里堆出一排草稿
+    exist = projects_mod.find_draft(tid)
+    if exist is not None:
+        return {"ok": True, "project": exist, "template": t, "reused": True}
+    project = projects_mod.create_project(
+        f"{t.get('name') or '模板'} · 模板编辑", tid, t.get("defaults") or {},
+        t.get("graph") or {"nodes": [], "edges": []},
+        draft_of=tid, keep_ids=True)
+    return {"ok": True, "project": project, "template": t, "reused": False}
+
+
+class CommitTemplatePayload(BaseModel):
+    projectId: str
+    keepDraft: bool = False
+
+
+@app.post("/api/templates/{tid}/commit")
+async def commit_template_draft(tid: str, payload: CommitTemplatePayload) -> Dict[str, Any]:
+    """把画布草稿写回模板。
+
+    运行时数据（参考图、结果图、选图记录）由 _clean_graph 统一清掉——模板里
+    指向别的项目的 assetId 没有任何意义；`_updatedAt` 之类的项目字段也不会
+    进模板。校验「草稿确实属于这个模板」是安全边界：否则前端可以拿任意
+    projectId 覆盖任意模板。
+    """
+    proj = projects_mod.load_project(payload.projectId)
+    if proj is None:
+        raise HTTPException(404, "编辑草稿不存在（可能已被删除）")
+    if str(proj.get("templateDraftOf") or "") != tid:
+        raise HTTPException(400, "这个项目不是该模板的编辑草稿")
+
+    # normalize=False：坐标已经在模板坐标系里，平移只会制造假 diff
+    graph = ctpl._clean_graph(
+        {"nodes": proj.get("nodes") or [], "edges": proj.get("edges") or []},
+        normalize=False)
+    if not graph["nodes"]:
+        raise HTTPException(400, "草稿里没有可用节点")
+
+    raw = get_template(tid)
+    if raw is not None:
+        tpl = tov.apply(raw)
+    else:
+        ct = ctpl.get_template(tid)
+        if not ct:
+            raise HTTPException(404, "模板不存在")
+        tpl = ctpl._public(ct)
+
+    # 默认参数从模板里的第一张生成卡派生：用户在画布上已经把尺寸/画风调好了，
+    # 再让他单独维护一套 defaults 只会分叉（这正是上一版编辑器被嫌复杂的原因）
+    defaults = dict(tpl.get("defaults") or {})
+    gen = next((n for n in graph["nodes"] if n.get("type") == "generate"), None)
+    if gen:
+        if gen.get("styleId"):
+            defaults["styleId"] = gen["styleId"]
+        gp = gen.get("params") or {}
+        for k in ("width", "height", "n", "background", "maxSeqLen"):
+            if k in gp:
+                defaults[k] = gp[k]
+        if isinstance(gen.get("pixel"), dict):
+            defaults["pixel"] = {**(defaults.get("pixel") or {}), **gen["pixel"]}
+
+    if raw is not None:
+        t = tov.set_override(tid, {"graph": graph, "defaults": defaults})
+    else:
+        t = ctpl.update(tid, {"graph": graph, "defaults": defaults})
+        if t is None:
+            raise HTTPException(404, "模板不存在")
+        t = {**t, "editable": True}
+
+    if not payload.keepDraft:
+        projects_mod.delete_project(payload.projectId)
+    return {"ok": True, "template": t, "draftDeleted": not payload.keepDraft}
+
+
 class BuiltinTemplatePayload(BaseModel):
     """内置模板的编辑补丁：只提交想改的字段，其余保持出厂值。"""
 

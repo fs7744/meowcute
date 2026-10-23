@@ -960,3 +960,9 @@ button { cursor: pointer; }
   border: 1px solid var(--line); background: var(--bg-2); padding: 8px 10px;
 }
 .tpl-node-row .btn-sm { height: 26px; }
+
+/* 模板编辑草稿模式：顶栏多出「保存为模板 / 放弃编辑」，窄屏要能换行不溢出 */
+.canvas-topbar { max-width: calc(100vw - 32px); flex-wrap: wrap; }
+.canvas-topbar .name-input:disabled { color: var(--muted); cursor: default; }
+/* 模板卡上现在有 4-5 个入口（新建 / 画布编辑 / 查看参数 / 改文案 / 另存副本） */
+.tpl-actions { flex-wrap: wrap; }

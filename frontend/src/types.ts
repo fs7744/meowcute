@@ -633,6 +633,8 @@ export type Project = {
   id: string
   name: string
   templateId: string
+  /** 非空 = 这个项目是某个模板的编辑草稿（画布顶栏给「保存为模板」） */
+  templateDraftOf?: string | null
   createdAt: number
   updatedAt: number
   viewport: { x: number; y: number; z: number }
@@ -644,6 +646,7 @@ export type ProjectSummary = {
   id: string
   name: string
   templateId: string
+  templateDraftOf?: string | null
   createdAt: number
   updatedAt: number
   nodeCount: number

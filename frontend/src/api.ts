@@ -73,6 +73,16 @@ export const api = {
     fetch(`/api/templates/builtin/${id}`, { method: 'DELETE' })
       .then(j<{ ok: boolean; template: Template }>),
 
+  /** 把模板打开成画布草稿（同一个模板只会有一份，重复调用复用） */
+  openTemplateDraft: (id: string) =>
+    fetch(`/api/templates/${id}/draft`, { method: 'POST' })
+      .then(j<{ ok: boolean; project: Project; template: Template; reused: boolean }>),
+
+  /** 把画布草稿写回模板（运行时图片/参考图在后端清掉） */
+  commitTemplateDraft: (id: string, projectId: string, keepDraft = false) =>
+    fetch(`/api/templates/${id}/commit`, jsonInit({ projectId, keepDraft }))
+      .then(j<{ ok: boolean; template: Template; draftDeleted: boolean }>),
+
   /** 另存为自定义副本（内置模板想大改又不想动默认时用） */
   duplicateTemplate: (id: string) =>
     fetch(`/api/templates/${id}/duplicate`, { method: 'POST' })

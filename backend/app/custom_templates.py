@@ -111,7 +111,7 @@ def _clean_node(n: Any) -> Optional[Dict[str, Any]]:
     return item
 
 
-def _clean_graph(graph: Any) -> Dict[str, Any]:
+def _clean_graph(graph: Any, normalize: bool = True) -> Dict[str, Any]:
     g = graph if isinstance(graph, dict) else {}
     nodes: List[Dict[str, Any]] = []
     seen = set()
@@ -132,8 +132,10 @@ def _clean_graph(graph: Any) -> Dict[str, Any]:
             if a in seen and b in seen and a != b:
                 edges.append({"from": a, "to": b})
     # 坐标归一化：模板可能来自画布任意位置，新建项目时从左上角开始摆放，
-    # 否则视口 {0,0,1} 里第一个节点可能在屏幕外
-    if nodes:
+    # 否则视口 {0,0,1} 里第一个节点可能在屏幕外。
+    # 模板编辑草稿 commit 时传 normalize=False：坐标本来就在模板坐标系里，
+    # 整体平移会让「只改了提示词」也产生坐标 diff。
+    if normalize and nodes:
         minx = min(n["x"] for n in nodes)
         miny = min(n["y"] for n in nodes)
         for n in nodes:

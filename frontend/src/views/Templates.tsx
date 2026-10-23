@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { HeroCat, PixelIcon } from '../components/CatLogo'
 import NewProjectModal from '../components/NewProjectModal'
-import TemplateEditor from '../components/TemplateEditor'
+import TemplateInfoModal from '../components/TemplateInfoModal'
 import type { Template } from '../types'
 
 type Props = {
@@ -33,8 +33,10 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
   const [modal, setModal] = useState<{ open: boolean; tid?: string; params?: boolean }>({ open: false })
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  // 正在编辑的模板：内置模板编辑存本地覆盖，自定义模板直接写回
+  // 正在改文案的模板（节点链一律在画布上编辑）
   const [editing, setEditing] = useState<Template | null>(null)
+  // 正在打开画布草稿的模板 id：防连点生成/复用同一个
+  const [opening, setOpening] = useState<string | null>(null)
   // 模板页视图：简略只留「名字 + 链路 + 入口」，适合模板多起来之后快速扫；
   // 详细给全量说明。偏好记在 localStorage，下次进来还是你选的那个。
   const [view, setView] = useState<'compact' | 'detail'>(() => (
@@ -58,6 +60,32 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
     next[i] = t
     return next
   })
+
+  /** 模板编辑的主路径：把模板打开成一份画布草稿，在无限画布上改完再存回去 */
+  const editInCanvas = async (t: Template) => {
+    setOpening(t.id)
+    setError(null)
+    try {
+      const r = await api.openTemplateDraft(t.id)
+      if (r.reused) setNotice(`继续上次未保存的编辑：${r.project.name}`)
+      else setNotice(null)
+      onOpenProject(r.project.id)
+    } catch (e: any) {
+      setError(String(e.message || e))
+    } finally {
+      setOpening(null)
+    }
+  }
+
+  const duplicate = async (t: Template) => {
+    try {
+      const r = await api.duplicateTemplate(t.id)
+      upsert(r.template)
+      setNotice(`已创建副本「${r.template.name}」，之后改副本不会影响原模板`)
+    } catch (e: any) {
+      setError(String(e.message || e))
+    }
+  }
 
   const available = templates.filter((t) => t.status === 'available')
   const planned = templates.filter((t) => t.status !== 'available')
@@ -157,10 +185,22 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
                     查看参数
                   </button>
                 )}
-                <button className="btn btn-sm" onClick={() => setEditing(t)}
-                  title={t.custom ? '修改这个自定义模板' : '修改默认模板（存为本地覆盖，可恢复默认）'}>
-                  编辑
+                <button className="btn btn-sm" disabled={opening === t.id}
+                  onClick={() => void editInCanvas(t)}
+                  title="打开无限画布编辑节点链、提示词与参数，改完点「保存为模板」写回">
+                  {opening === t.id ? '打开中…' : '在画布中编辑'}
                 </button>
+                {compact ? null : (
+                  <>
+                    <button className="btn btn-sm btn-ghost" onClick={() => setEditing(t)}>
+                      改文案
+                    </button>
+                    <button className="btn btn-sm btn-ghost" onClick={() => void duplicate(t)}
+                      title="基于当前内容建一个自定义模板，原模板不受影响">
+                      另存副本
+                    </button>
+                  </>
+                )}
                 {t.custom ? (
                   <button className="btn btn-sm btn-danger" onClick={async () => {
                     if (!confirm(`删除自定义模板「${t.name}」？已创建的项目不受影响。`)) return
@@ -230,7 +270,7 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
         </div>
       </div>
 
-      <TemplateEditor
+      <TemplateInfoModal
         open={!!editing}
         template={editing}
         onClose={() => setEditing(null)}
@@ -238,14 +278,6 @@ export default function Templates({ onOpenProject, onGoProjects }: Props) {
           upsert(t)
           setNotice(msg || null)
           setError(null)
-        }}
-        onDuplicated={(t) => {
-          upsert(t)
-          setNotice(`已创建副本「${t.name}」，可在副本上继续改，默认模板不受影响`)
-        }}
-        onReset={(t) => {
-          upsert(t)
-          setNotice(`已恢复「${t.name}」的出厂默认`)
         }}
       />
 

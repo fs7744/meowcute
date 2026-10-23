@@ -185,6 +185,8 @@ export default function Canvas({ projectId, onBack }: Props) {
   const [styles, setStyles] = useState<Style[]>([])
   /** 设置页「新建节点时的默认值」（width/height/n/background） */
   const [nodeDefaults, setNodeDefaults] = useState<Record<string, any>>({})
+  /** 模板编辑草稿：提交中 */
+  const [tplBusy, setTplBusy] = useState(false)
   const [backgrounds, setBackgrounds] = useState<BackgroundOption[]>([])
   const [examples, setExamples] = useState<PromptExample[]>([])
   const [categories, setCategories] = useState<string[]>([])
@@ -344,9 +346,11 @@ export default function Canvas({ projectId, onBack }: Props) {
   // 代码只关了 SSE）。这里用 sendBeacon 走同步语义：页面卸载后 fetch 会被取消，
   // beacon 不会。体量只有几十 KB 的 JSON，远小于 64KB 上限。
   const saveBeaconRef = useRef<() => void>(() => undefined)
+  /** 放弃编辑时会先删草稿项目：此时再 flush 一次等于对着已删目录写文件 */
+  const skipFlushRef = useRef(false)
   saveBeaconRef.current = () => {
     const p = projectRef.current
-    if (!p) return
+    if (!p || skipFlushRef.current) return
     const payload = { name: p.name, nodes: p.nodes, edges: p.edges, viewport }
     const json = JSON.stringify(payload)
     if (json === lastPayload.current) return
@@ -2089,6 +2093,45 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
   }
 
+  /** 把画布草稿写回模板（模板编辑的主路径：在无限画布上改完，点一下保存） */
+  const commitTemplate = async () => {
+    const p = projectRef.current
+    if (!p?.templateDraftOf) return
+    setTplBusy(true)
+    try {
+      // 先显式落盘：commit 是后端读 project.json 再写回模板，
+      // 光靠 800ms 防抖可能在提交时还没落盘，写回去的就是上一版节点图
+      await api.saveProject(p.id, {
+        name: p.name, nodes: p.nodes, edges: p.edges, viewport,
+      } as any)
+      const r = await api.commitTemplateDraft(p.templateDraftOf, p.id)
+      skipFlushRef.current = true
+      alert(`模板「${r.template.name}」已更新${r.draftDeleted ? '，编辑草稿已清理' : ''}。`)
+      window.location.hash = '#/templates'
+    } catch (e: any) {
+      alert(`保存模板失败：${e.message || e}`)
+    } finally {
+      setTplBusy(false)
+    }
+  }
+
+  const discardDraft = async () => {
+    const p = projectRef.current
+    if (!p?.templateDraftOf) return
+    if (!confirm('放弃这次模板编辑？草稿会被删除，模板保持原样。')) return
+    setTplBusy(true)
+    try {
+      skipFlushRef.current = true
+      await api.deleteProject(p.id)
+      window.location.hash = '#/templates'
+    } catch (e: any) {
+      skipFlushRef.current = false
+      alert(`删除草稿失败：${e.message || e}`)
+    } finally {
+      setTplBusy(false)
+    }
+  }
+
   const openPromptPreview = async (node: GenNodeType) => {
     setPromptModal({ open: true, loading: true, error: null, data: null })
     try {
@@ -2553,14 +2596,23 @@ export default function Canvas({ projectId, onBack }: Props) {
 
       {/* 顶部项目栏 */}
       <div className="canvas-topbar">
-        <button className="btn btn-sm" onClick={onBack}>← 项目</button>
+        <button className="btn btn-sm" onClick={() => {
+          // 模板草稿的「回去」应该是模板页，不是项目列表
+          if (project.templateDraftOf) window.location.hash = '#/templates'
+          else onBack()
+        }}>{project.templateDraftOf ? '← 模板' : '← 项目'}</button>
         <input
           className="name-input"
           value={project.name}
+          disabled={!!project.templateDraftOf}
+          title={project.templateDraftOf ? '模板编辑草稿：名字不用改，保存的是节点图' : undefined}
           onChange={(e) => setProject({ ...project, name: e.target.value })}
           onBlur={() => { if (!project.name.trim()) setProject({ ...project, name: '未命名项目' }) }}
         />
-        <span className="tpl-tag">{template?.name || '未知模板'}</span>
+        <span className="tpl-tag" style={project.templateDraftOf
+          ? { borderColor: 'var(--yellow)', color: 'var(--yellow)' } : undefined}>
+          {project.templateDraftOf ? '模板编辑 · ' : ''}{template?.name || '未知模板'}
+        </span>
         <span className="save-state">
           {saveState === 'saving' ? '保存中…'
             : saveState === 'dirty' ? '未保存'
@@ -2568,9 +2620,20 @@ export default function Canvas({ projectId, onBack }: Props) {
             : lastSaved ? `已保存 ${new Date(lastSaved).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
             : '已保存'}
         </span>
-        <button className="btn btn-sm" onClick={saveAsTemplate} title="把当前节点图存成自定义模板">
-          存为模板
-        </button>
+        {project.templateDraftOf ? (
+          <>
+            <button className="btn btn-sm btn-primary" onClick={commitTemplate}
+              disabled={tplBusy} title="把当前节点图 / 参数写回这个模板">
+              {tplBusy ? '保存中…' : '保存为模板'}
+            </button>
+            <button className="btn btn-sm" onClick={discardDraft} disabled={tplBusy}
+              title="删除草稿，模板保持原样">放弃编辑</button>
+          </>
+        ) : (
+          <button className="btn btn-sm" onClick={saveAsTemplate} title="把当前节点图存成自定义模板">
+            存为模板
+          </button>
+        )}
         <button className="btn btn-sm" onClick={() => setFilesOpen(true)} title="项目文件夹：输入与产出都在这里">
           文件夹
         </button>
