@@ -47,6 +47,7 @@ from . import storage
 from . import alpha_clean
 from . import custom_templates as ctpl
 from . import template_overrides as tov
+from . import viewcheck
 from .config import DATA_DIR, ROOT, load_settings, save_settings, scan_models
 from .pipelines import matte as matte_mod
 from .pipelines import refine as refine_mod
@@ -1118,6 +1119,9 @@ class ViewDerivePayload(BaseModel):
     # 正视图那句角色描述原文：附在视角指令里当「部件清单」，防止腰挎的刀、
     # 背上的弓这类细长配件在重画身体时被漏掉（前端从上游生成卡带下来）
     character: str = ""
+    # 一致性校验未通过时是否换种子重试一次。默认开：实测同一批 6 张背视图里
+    # 只有 1 张保住了披风，重试一次的期望收益明显高于一次 40 步的成本。
+    retryOnFail: bool = True
 
 
 class ComposePayload(BaseModel):
@@ -1172,16 +1176,37 @@ async def _run_view_derive(task_id: str, payload: ViewDerivePayload) -> None:
                         "正视图不存在：请先跑上游的「生成图」或「选择图片」节点")
                 failed.append(f"{i + 1}: 源图不存在")
                 continue
-            out, meta = await threeview_mod.derive_view(
-                payload.view, base,
-                style_id=payload.styleId,
-                steps=payload.steps, seed=payload.seed,
-                width=payload.width, height=payload.height,
-                max_seq_len=payload.maxSeqLen,
-                background=payload.background,
-                character=payload.character,
-                provider_cfg=provider_cfg, task_id=task_id,
-                batch_index=i, batch_total=len(srcs))
+            # 一致性校验：参考色板取这张正视图本身（多源时每张各管各的）。
+            # 判据是「主色块还在不在」（色相存在性），不是「直方图像不像」：
+            # 背视图看不到脸和胸前配色，分布形状必然变，按相似度判会整批误拦。
+            # 标定与反例见 backend/app/viewcheck.py 顶部注释。
+            ref_prof = viewcheck.build_reference([base])
+            attempt = 0
+            while True:
+                out, meta = await threeview_mod.derive_view(
+                    payload.view, base,
+                    style_id=payload.styleId,
+                    steps=payload.steps,
+                    # 重试必须换种子，否则同一 seed 出来的还是同一张
+                    seed=(None if payload.seed is None
+                          else int(payload.seed) + 997 * attempt),
+                    width=payload.width, height=payload.height,
+                    max_seq_len=payload.maxSeqLen,
+                    background=payload.background,
+                    character=payload.character,
+                    provider_cfg=provider_cfg, task_id=task_id,
+                    batch_index=i, batch_total=len(srcs))
+                verdict = viewcheck.check_view(
+                    viewcheck.analyze(out, f"{src.file}#{attempt}"),
+                    ref_prof, payload.view)
+                if verdict["ok"] or not payload.retryOnFail or attempt >= 1:
+                    break
+                attempt += 1
+                progress_mod.report(
+                    task_id, i, len(srcs),
+                    f"第 {i + 1} 张未通过一致性校验"
+                    f"（{verdict['fails'][0]}），换种子重试")
+            verdict["attempt"] = attempt
             info = storage.save_image(payload.projectId, out.convert("RGBA"),
                                       kind="images",
                                       # 文件名前缀区分视角：side→vs / back→vb /
@@ -1196,7 +1221,8 @@ async def _run_view_derive(task_id: str, payload: ViewDerivePayload) -> None:
                 "pairIndex": i,
                 "srcAssetId": src.file,
             })
-            metas.append(dict(meta, pairIndex=i, srcAssetId=src.file))
+            metas.append(dict(meta, pairIndex=i, srcAssetId=src.file,
+                              check=verdict))
 
         if not images:
             raise RuntimeError("所有正视图都未能生成：" + "；".join(failed[:4]))
@@ -1262,6 +1288,21 @@ async def threeview_compose(payload: ComposePayload) -> Dict[str, Any]:
     if payload.cell and len(payload.cell) == 2:
         cell = (int(payload.cell[0]), int(payload.cell[1]))
 
+    # 拼板前的一致性复核：以第 1 张（正视图）为参考，逐张看主色块还在不在。
+    # 真正的止损点在 derive（那里拦能换种子重跑），这里兜的是「用户手工逐格
+    # 挑图挑错了」——拼板是确定性操作，错图拼上去看不出来，只会显得角色变了。
+    try:
+        ref_prof = viewcheck.build_reference([imgs[0]])
+        checks: List[Dict[str, Any]] = []
+        for idx, img in enumerate(imgs[1:], start=1):
+            view = threeview_mod.VIEW_ORDER[idx]
+            v = viewcheck.check_view(viewcheck.analyze(img), ref_prof, view)
+            checks.append({"index": idx, "view": view, "ok": v["ok"],
+                           "fails": v["fails"], "warns": v["warns"][:2]})
+    except Exception as e:                       # 校验绝不该挡住拼板
+        checks = [{"index": -1, "view": "", "ok": True,
+                   "fails": [], "warns": [f"一致性复核跳过：{e}"[:200]]}]
+
     strip, meta = await asyncio.to_thread(
         threeview_mod.compose_three_view, imgs,
         cell=cell, bg=bg, gap=max(0, int(payload.gap)),
@@ -1273,7 +1314,7 @@ async def threeview_compose(payload: ComposePayload) -> Dict[str, Any]:
     return {"ok": True, "image": {
         "assetId": info["id"], "url": info["url"],
         "width": strip.width, "height": strip.height,
-        "threeview": meta,
+        "threeview": dict(meta, checks=checks),
     }}
 
 

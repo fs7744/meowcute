@@ -172,6 +172,12 @@ export default function ViewGenNode({
               {meta?.mode ? <span className="meta-pill">编辑接力</span> : null}
               {meta?.steps ? <span className="meta-pill">{meta.steps} 步</span> : null}
               {meta?.seed != null ? <span className="meta-pill">种子 {meta.seed}</span> : null}
+              {(meta as any)?.check?.attempt
+                ? <span className="meta-pill">重试 {(meta as any).check.attempt} 次</span>
+                : null}
+              {(meta as any)?.check && !(meta as any).check.ok
+                ? <span className="meta-pill bad">配色未通过</span>
+                : null}
               {results.length > 1
                 ? <span className="meta-pill">第 {groupNo(shown, pick)}/{results.length} 组</span>
                 : null}
@@ -196,6 +202,14 @@ export default function ViewGenNode({
                   正视图第 k 张）。选哪张拼进四视图，在「四视图拼板」卡上逐格挑。
                 </div>
               </>
+            ) : null}
+            {(meta as any)?.check && !(meta as any).check.ok ? (
+              <div className="warn" style={{ marginTop: 4 }}>
+                配色一致性未通过：{((meta as any).check.fails || []).join('；')}
+                {(meta as any).check.attempt
+                  ? '。已换种子重试仍不通过，建议重抽这一张。'
+                  : ''}
+              </div>
             ) : null}
             {(meta as any)?.bgWarning ? (
               <div className="warn" style={{ marginTop: 4 }}>{(meta as any).bgWarning}</div>

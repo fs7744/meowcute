@@ -34,6 +34,72 @@ DEDUP_THRESHOLD = 1.5
 # --------------------------------------------------------------------------- #
 # 抽帧与去重
 # --------------------------------------------------------------------------- #
+def detect_cycle_period(frames: List[Image.Image]) -> Optional[int]:
+    """估计动作周期（帧）：让 frame[i] ≈ frame[i+P] 的那个 P。
+
+    为什么要它：等距采样跨整个视频时，如果视频里有 1.6 个步态周期，取出来的
+    8 帧会同时含第 1 圈和第 2 圈的相位——精灵表循环播放时姿势来回跳，看起来
+    「不像在走」。按周期采样（8 帧全部落在同一圈内）才能得到闭合循环。
+
+    判据：候选 P 遍历 [n/6, n-4]，算所有可配对帧的平均灰度差，取最小。
+    真正的周期是一个明显的谷底；没有明显谷底（全程渐变/静止）时返回 None，
+    由调用方退回等距采样。
+    """
+    n = len(frames)
+    if n < 12:
+        return None
+    small = [np.asarray(f.convert("L").resize((32, 32), Image.BILINEAR),
+                        dtype=np.int16) for f in frames]
+    lo = max(4, n // 6)
+    hi = n - 4
+    if hi <= lo:
+        return None
+    best_p: Optional[int] = None
+    best_score = None
+    second = None
+    for period in range(lo, hi + 1):
+        score = float(np.mean([
+            np.abs(small[i] - small[i + period]).mean()
+            for i in range(n - period)]))
+        if best_score is None or score < best_score:
+            second = best_score
+            best_score, best_p = score, period
+        elif second is None or score < second:
+            second = score
+    if best_p is None or best_score is None or second is None:
+        return None
+    # 谷要明显：最优必须比次优低 15% 以上，否则视为「没有周期」而非硬挑一个
+    if best_score > second * 0.85:
+        return None
+    return best_p
+
+
+def sample_cycle(frames: List[Image.Image], count: int) -> List[Image.Image]:
+    """按动作周期采样：count 帧全部落在同一个周期内（循环闭合）。
+
+    检测不到周期时退回 sample_frames 的等距采样。
+    """
+    n = len(frames)
+    count = max(1, min(int(count), n))
+    if count >= n:
+        return list(frames)
+    period = detect_cycle_period(frames)
+    if period is None or period < count:
+        return sample_frames(frames, count)
+    # 一个周期内等距取 count 帧（不含末端：frame[period]≈frame[0]，
+    # 取 0 就等价于取了末端，循环时不重复）
+    idx = [round(i * period / count) for i in range(count)]
+    seen = set()
+    out: List[Image.Image] = []
+    for i in idx:
+        i = min(i, n - 1)
+        if i in seen:
+            continue
+        seen.add(i)
+        out.append(frames[i])
+    return out or sample_frames(frames, count)
+
+
 def sample_frames(frames: List[Image.Image], count: int) -> List[Image.Image]:
     """等间距取 count 帧，首尾都取（末帧姿势接近首帧，循环才顺）。"""
     n = len(frames)
@@ -241,7 +307,9 @@ def run_sequence(
                             f"{d.get('label') or DIR_LABELS.get(d.get('dir'), '')}：抽帧抠图中…")
         # 先剔掉糊掉的帧，再抽样：糊帧一旦被抽中，精灵表里就是一块抹布
         clean, blurry = reject_blurry(frames)
-        picked = sample_frames(clean, frames_per_dir)
+        # 按动作周期采样（检测不到才等距）：8 帧落在同一圈步态里，
+        # 精灵表循环播放时姿势连续，不会跳到下一个周期的相位
+        picked = sample_cycle(clean, frames_per_dir)
         picked, dropped = dedup_frames(picked)
         prepared: List[Image.Image] = []
         removed: List[float] = []

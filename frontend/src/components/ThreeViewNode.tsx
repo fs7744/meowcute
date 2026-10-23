@@ -259,6 +259,16 @@ export default function ThreeViewNode({
                   ? '（有图没抠掉底色，已按原图贴入）' : ''}
               </div>
             ) : null}
+            {(meta as any)?.checks?.some((c: any) => !c.ok) ? (
+              <div className="warn" style={{ marginTop: 4 }}>
+                拼进来的图有配色对不上的：
+                {((meta as any).checks as any[])
+                  .filter((c) => !c.ok)
+                  .map((c) => ` ${(VIEW_CN as any)[c.view] || c.view}（${(c.fails || []).join('、')}）`)
+                  .join('；')}
+                。换一组重新拼，或回到对应视角卡重抽。
+              </div>
+            ) : null}
           </div>
         ) : (
           <div className="hint" style={{ marginTop: 8 }}>

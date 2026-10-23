@@ -694,6 +694,36 @@ def _run_checks(client) -> int:
           _lim["walkPrompt"]["maxChars"] == 300
           and "示例库" in _lim["walkPrompt"]["note"], str(_lim.get("walkPrompt")))
 
+    print("== 序列帧采样：按动作周期取，循环才闭合 ==")
+    # 等距采样跨整个视频时，若视频里有 1.6 个步态周期，8 帧会混到两个圈的相位，
+    # 精灵表循环播放时姿势跳变。改成先检测周期、在同一圈内取帧。
+    from backend.app.pipelines.sequence import (
+        detect_cycle_period, sample_cycle, sample_frames,
+    )
+    # 合成一段周期 12 的往复运动（方块左右移动 + 形变）
+    _pf = []
+    for _i in range(48):
+        _im = _Im.new("RGB", (96, 96), (30, 30, 30))
+        _Dr.Draw(_im).rectangle((20 + (_i % 12) * 4, 30, 44 + (_i % 12) * 4, 70),
+                                fill=(200, 60, 60))
+        _pf.append(_im)
+    check("合成周期视频能检出周期", detect_cycle_period(_pf) == 12,
+          str(detect_cycle_period(_pf)))
+    _sc = sample_cycle(_pf, 8)
+    check("按周期采样仍在同一圈内（最大下标 < 周期）",
+          max(_pf.index(f) for f in _sc) < 12, str([_pf.index(f) for f in _sc]))
+    check("按周期采样取够帧数", len(_sc) == 8, str(len(_sc)))
+    # 全程渐变（无周期）→ 检不出，安全退回等距
+    _nf = []
+    for _i in range(40):
+        _im = _Im.new("RGB", (96, 96), (30 + _i, 30, 30))
+        _nf.append(_im)
+    check("无周期视频检不出（不硬挑）", detect_cycle_period(_nf) is None,
+          str(detect_cycle_period(_nf)))
+    check("无周期时退回等距采样", sample_cycle(_nf, 8) == sample_frames(_nf, 8))
+    # 帧数少于请求时全给
+    check("帧不够时全给", len(sample_cycle(_pf[:5], 8)) == 5)
+
     print("== 参数校验：恶意输入不许打挂服务 ==")
     import time as _time
     from backend.app import projects as _pj
@@ -1176,13 +1206,16 @@ def _run_checks(client) -> int:
     # （帧必须逐帧不同：PIL 写 GIF 会合并连续相同的帧，那是它的优化不是 bug）
     from backend.app import storage as storage_mod
 
-    def fake_walk_frames(n: int = 24, bg=(40, 120, 60)) -> list:
+    def fake_walk_frames(n: int = 48, bg=(40, 120, 60)) -> list:
+        # 48 帧、周期 24（一个完整步态圈）。周期要大于采样数的两倍，
+        # 否则同一周期内取 8 帧会拿到相近姿态、被去重掉——那就测不到
+        # 「周期采样」想保证的行为了。
         frames = []
         for i in range(n):
             img = Image.new("RGB", (192, 256), bg)
             d = ImageDraw.Draw(img)
-            swing = (i % 12) - 6
-            lift = 6 if (i % 6) < 3 else 0
+            swing = (i % 24) - 12
+            lift = 6 if (i % 24) < 12 else 0
             d.rectangle([80 + swing, 90, 112 + swing, 150], fill=(240, 200, 160))   # 身体
             d.ellipse([86 + swing, 60, 106 + swing, 90], fill=(240, 200, 160))      # 头
             d.rectangle([84 + swing, 150, 94 + swing, 230 - lift], fill=(60, 60, 90))   # 左腿
@@ -1196,7 +1229,7 @@ def _run_checks(client) -> int:
         gifs[d] = info
     check("合成行走视频 GIF 落盘", all(g["file"].endswith(".gif") for g in gifs.values()))
     frames_back, durations, gmeta = storage_mod.load_gif(wpid, "images", gifs["down"]["file"])
-    check("GIF 读得回来", len(frames_back) == 24 and len(durations) == 24,
+    check("GIF 读得回来", len(frames_back) == 48 and len(durations) == 48,
           f"{len(frames_back)} 帧 / {len(durations)} 时长")
 
     r = client.post("/api/sequence", json={
@@ -1291,7 +1324,10 @@ def _run_checks(client) -> int:
         for k in range(24):
             img = Image.new("RGB", (192, 256), (40 + i * 30, 120, 60))
             dr = ImageDraw.Draw(img)
-            swing = (k % 12) - 6
+            # 摆动幅度要够大：每帧只移 2px 的话，32×32 灰度差只有 0.87，
+            # 低于去重阈值 1.0，按周期采样（步长 2 帧）取到的帧会被全判为
+            # 「和前一帧相同」而掉光——那是测试数据不像真人走路，不是缺陷。
+            swing = (k % 12) * 3 - 18
             dr.rectangle([80 + swing, 90, 112 + swing, 150], fill=(240, 200, 160))
             dr.ellipse([86 + swing, 60, 106 + swing, 90], fill=(240, 200, 160))
             frames.append(img)
@@ -1406,7 +1442,9 @@ def _run_checks(client) -> int:
     sq = wait_task(r.json()["taskId"]).get("result", {})
     check("序列帧无错误", not sq.get("error"), str(sq.get("error")))
     check("两个方向各 6 帧", all(d.get("count") == 6
-                                for d in (sq.get("sequence") or {}).get("directions", [])))
+                                for d in (sq.get("sequence") or {}).get("directions", [])),
+          str([(d.get("dir"), d.get("count"), d.get("dropped"))
+               for d in (sq.get("sequence") or {}).get("directions", [])]))
 
     # 入参兜底：直接调 API 传超大尺寸也不会把输出撑爆（界面输入框有上下限，API 没有）
     r = client.post("/api/spritesheet", json={

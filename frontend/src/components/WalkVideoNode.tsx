@@ -100,7 +100,10 @@ export default function WalkVideoNode({
   // 81 帧/30 步实测 75.7s、49 帧/24 步 52.7s，两点拟合误差 < 1s。
   // 再加上每方向一次立绘推导（28 步约 18s）与序列帧/拼表（约 25s）。
   const vidSteps = v.steps ?? 30
-  const perVideoSec = Math.round(31 + 0.0183 * (v.numFrames || 49) * vidSteps)
+  // 成本按像素量缩放：分辨率翻倍，单方向时间近似翻倍（本机 512×704 实测约 100s）
+  const pixelFactor = (v.width * v.height) / (384 * 512)
+  const perVideoSec = Math.round(
+    (31 + 0.0183 * (v.numFrames || 49) * vidSteps) * Math.max(0.3, pixelFactor))
   const etaSec = Math.round(realDirs.length * (perVideoSec + 18) + 25)
   const etaText = `${Math.floor(etaSec / 60)} 分 ${etaSec % 60} 秒`
   const [videos, setVideos] = useState<VideoAsset[] | null>(null)
@@ -472,6 +475,43 @@ export default function WalkVideoNode({
           </div>
         </div>
 
+        {/* 画质：分辨率是本机实测对成品质量影响最大的一项，以前只在数据模型里、
+            界面上根本改不到——用户问「怎么提高质量」时得给他抓手 */}
+        <div className="param-grid">
+          <label className="gen-field">
+            <span className="gen-field-label"
+              title="视频底座出图宽度。Wan2.2 TI2V-5B 原生是 720p 级别，但本机实测：">宽</span>
+            <input className="input" type="number" min={128} max={1024} step={16}
+              value={v.width}
+              onChange={(e) => patch({ width: Number(e.target.value) })} />
+          </label>
+          <label className="gen-field">
+            <span className="gen-field-label"
+              title="视频底座出图高度（会按 16 对齐；长边超过「长边上限」时先降）">高</span>
+            <input className="input" type="number" min={128} max={1024} step={16}
+              value={v.height}
+              onChange={(e) => patch({ height: Number(e.target.value) })} />
+          </label>
+          <label className="gen-field">
+            <span className="gen-field-label" title="长边超过这个值就先降采样到这个尺寸">长边上限</span>
+            <input className="input" type="number" min={256} max={1024} step={16}
+              value={v.maxSide}
+              onChange={(e) => patch({ maxSide: Number(e.target.value) })} />
+          </label>
+        </div>
+        <div className="hint" style={{ marginTop: -4, lineHeight: 1.6 }}>
+          本机实测（4090 / 同图同种子 / 49 帧）：<b>384×512 最稳</b>（剪影波动 3.4，约 55s/方向）；
+          512×704 动作最多、细节最锐，但波动大（36.4，约 100s/方向）；480×640 两头不占（波动 60）。
+          <button className="btn btn-sm" style={{ marginLeft: 6, height: 22 }}
+            onClick={() => patch({ width: 512, height: 704, maxSide: 704, steps: 40 })}>
+            画质优先
+          </button>
+          <button className="btn btn-sm" style={{ marginLeft: 4, height: 22 }}
+            onClick={() => patch({ width: 384, height: 512, maxSide: 512, steps: null })}>
+            速度优先（默认）
+          </button>
+        </div>
+
         <div className="param-grid">
           <label className="gen-field">
             <span className="gen-field-label">Wan 帧数</span>
@@ -494,7 +534,7 @@ export default function WalkVideoNode({
               onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
           </label>
           <label className="gen-field">
-            <span className="gen-field-label">种子（空=随机）</span>
+            <span className="gen-field-label" title="同一个种子 + 同一张图 + 同一段提示词 = 同一条视频。视频底座对种子极敏感（动作幅度能差一倍），不满意就换个种子重跑，比调参数快">种子（空=随机）</span>
             <input className="input" type="number" min={0}
               value={v.seed ?? ''} placeholder="随机"
               onChange={(e) => patch({ seed: e.target.value ? Number(e.target.value) : null })} />
@@ -515,7 +555,7 @@ export default function WalkVideoNode({
         {/* ---- 行走动作控制（轻量闭环：不上更大模型也能逼出「真正在走」） ---- */}
         <div className="param-grid" style={{ marginTop: 6 }}>
           <label className="gen-field">
-            <span className="gen-field-label" title="引导强度。默认 5.0；行走动作偏弱时上调（封顶 9.0）可逼出更大动作幅度">
+            <span className="gen-field-label" title="引导强度。默认 5.0。实测 7.5 能把动作幅度拉到 2.5 倍，但剪影波动从 4.6 涨到 29（糊帧风险）；先改提示词与种子，再考虑动它">
               引导 CFG（空=5.0）
             </span>
             <input className="input" type="number" min={1} max={9} step={0.5}
