@@ -79,6 +79,7 @@ export default function ViewGenNode({
   const [preview, setPreview] = useState<InstrPreview | null>(null)
   const [showPrompt, setShowPrompt] = useState(false)
   const customInstr = (node.viewgen?.instruction || '').trim()
+  const customNeg = (node.viewgen?.negative || '').trim()
   const bgId = inherit?.backgroundId ?? 'gray'
   const charText = inherit?.character ?? ''
   useEffect(() => {
@@ -161,7 +162,7 @@ export default function ViewGenNode({
         <div style={{ marginTop: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span className="gen-field-label" style={{ flex: 1 }}>
-              视角指令（{customInstr ? '自定义' : '自动拼接'}）
+              视角提示词（{customInstr || customNeg ? '已自定义' : '自动拼接'}）
             </span>
             <button className="ex-chip"
               onClick={() => setShowPrompt((s) => !s)}>
@@ -171,44 +172,70 @@ export default function ViewGenNode({
           {!showPrompt ? (
             <div className="hint" style={{ marginTop: 2 }}>
               {preview
-                ? `${preview.chars} 字，按 ${preview.parts.length} 段条款拼装（任务总纲 / 转视角 / 画面事实 / 守恒…）`
+                ? `正文 ${preview.chars} 字（${preview.parts.length} 段条款）+ 负面词，点「查看」可读全文并改成自己的`
                 : '读取中…'}
             </div>
-          ) : customInstr ? (
-            <>
-              <textarea className="textarea"
-                style={{ marginTop: 4, minHeight: 150, fontSize: 11 }}
-                value={node.viewgen?.instruction || ''}
-                onChange={(e) => patch({ instruction: e.target.value })} />
-              <div className="hint" style={{ marginTop: 2 }}>
-                {customInstr.length} 字
-                {preview ? ` / 建议不超过 ${preview.maxChars}` : ''}
-                {preview && customInstr.length > preview.maxChars
-                  ? '（超出的部分编码器读不到）' : ''}
-                <br />
-                开头那句背景声明仍按正视图的背景设置自动追加。
-                <button className="ex-chip" style={{ marginLeft: 6 }}
-                  onClick={() => patch({ instruction: '' })}>恢复默认</button>
-              </div>
-            </>
           ) : (
             <>
-              <div className="hint" style={{ marginTop: 2 }}>
-                {preview
-                  ? `${preview.chars} 字 —— 下面这段就是送给模型的全部内容（含开头背景声明）`
-                  : '读取中…'}
+              <div className="hint" style={{ marginTop: 4 }}>
+                指令正文{customInstr ? '（自定义）' : '（程序拼接）'}
               </div>
-              <pre style={{
-                margin: '4px 0 0', padding: 6, maxHeight: 168, overflow: 'auto',
-                border: '1px solid var(--line)', background: 'rgba(0,0,0,0.25)',
-                fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap',
-                wordBreak: 'break-all', color: 'var(--muted)',
-              }}>{preview?.full ?? ''}</pre>
+              {customInstr ? (
+                <>
+                  <textarea className="textarea"
+                    style={{ marginTop: 4, minHeight: 150, fontSize: 11 }}
+                    value={node.viewgen?.instruction || ''}
+                    onChange={(e) => patch({ instruction: e.target.value })} />
+                  <div className="hint" style={{ marginTop: 2 }}>
+                    {customInstr.length} 字
+                    {preview ? ` / 建议不超过 ${preview.maxChars}` : ''}
+                    {preview && customInstr.length > preview.maxChars
+                      ? '（超出的部分编码器读不到）' : ''}
+                    <br />
+                    开头那句背景声明仍按背景设置自动追加。
+                    <button className="ex-chip" style={{ marginLeft: 6 }}
+                      onClick={() => patch({ instruction: '' })}>恢复默认</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <pre style={{
+                    margin: '4px 0 0', padding: 6, maxHeight: 168, overflow: 'auto',
+                    border: '1px solid var(--line)', background: 'rgba(0,0,0,0.25)',
+                    fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all', color: 'var(--muted)',
+                  }}>{preview?.full ?? ''}</pre>
+                  <div className="hint" style={{ marginTop: 2 }}>
+                    上面就是送给模型的全部正文（含开头背景声明）。
+                    <button className="ex-chip" style={{ marginLeft: 6 }}
+                      onClick={() => patch({ instruction: preview?.body ?? '' })}>
+                      改为自己写
+                    </button>
+                  </div>
+                </>
+              )}
+
+              <div className="hint"
+                style={{ marginTop: 8, paddingTop: 6, borderTop: '1px dashed var(--line)' }}>
+                负面提示词{customNeg ? '（自定义）' : '（程序默认）'}
+              </div>
+              {customNeg ? (
+                <textarea className="textarea"
+                  style={{ marginTop: 4, minHeight: 56, fontSize: 11 }}
+                  value={node.viewgen?.negative || ''}
+                  onChange={(e) => patch({ negative: e.target.value })} />
+              ) : (
+                <div className="hint" style={{ marginTop: 2 }}>
+                  {preview ? (preview.negative ?? '（背景选「无」时不传负面词）') : '读取中…'}
+                </div>
+              )}
               <div className="hint" style={{ marginTop: 2 }}>
-                想改措辞就点右边按钮：会把当前正文填进输入框，只覆盖正文，背景声明照旧。
+                {customNeg ? `${(node.viewgen?.negative || '').length} 字` : ''}
                 <button className="ex-chip" style={{ marginLeft: 6 }}
-                  onClick={() => patch({ instruction: preview?.body ?? '' })}>
-                  改为自己写
+                  onClick={() => patch({
+                    negative: customNeg ? '' : (preview?.negative ?? ''),
+                  })}>
+                  {customNeg ? '恢复默认' : '改为自己写'}
                 </button>
               </div>
             </>

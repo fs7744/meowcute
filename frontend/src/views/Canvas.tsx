@@ -1111,6 +1111,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       // 卡片上改过的视角指令正文（空 = 后端那套默认条款）。
       // 用户看不到也改不了的东西不该存在——这段以前整段硬编码在 threeview。
       instruction: (node.viewgen?.instruction || '').trim(),
+      negative: (node.viewgen?.negative || '').trim(),
       // 多源：refs 只能整批一张（上传的一张图），images 逐张传
       sources: candidates.map((c, i) => (srcOut.kind === 'images'
         ? { kind: 'images' as const, file: c.assetId }
@@ -1384,6 +1385,8 @@ export default function Canvas({ projectId, onBack }: Props) {
       action: w?.action ?? '行走',
       // 整段提示词：用户完整输入，程序不拼接（为空时后端才退回 action 模板）
       prompt: w?.prompt || '',
+      // 自定义负面词（空 = 后端默认常量）
+      negative: (w?.negative || '').trim(),
       styleId: w?.styleId ?? null,
       steps: w?.steps ?? null,
       seed: w?.seed ?? null,
@@ -2184,6 +2187,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         height: node.params.height,
         background: node.params.background,
         pixel: node.pixel,
+        negative: node.params.negative || '',
       })
       setPromptModal({ open: true, loading: false, error: null, data })
     } catch (e: any) {

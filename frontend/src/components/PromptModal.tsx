@@ -74,6 +74,18 @@ export default function PromptModal({ open, loading, error, data, onClose }: Pro
               </button>
             </div>
             <pre className="prompt-pre" style={{ borderLeftColor: 'var(--pink)' }}>{data.negative || '（空）'}</pre>
+            {data.negativeParts ? (
+              <div className="hint" style={{ marginTop: 4, lineHeight: 1.6 }}>
+                {data.negativeParts.overridden
+                  ? '以上是你在生成卡里写的负面词：整段覆盖后，全局默认与像素契约那套都不再生效。'
+                  : <>
+                      来源：全局默认设置
+                      {data.negativeParts.contract
+                        ? ' + 像素契约自动追加（抗锯齿 / 渐变 / 平滑过渡等）' : ''}
+                      。想改就在生成卡「负面词」里点「改为自己写」——会先把这段填进去再让你改。
+                    </>}
+              </div>
+            ) : null}
 
             <div className="hint" style={{ marginTop: 12 }}>
               契约网格 {data.grid[0]}×{data.grid[1]}

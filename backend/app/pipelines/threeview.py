@@ -775,6 +775,7 @@ async def derive_view(
     background: str = "gray",
     character: str = "",
     instruction: str = "",
+    negative: str = "",
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
     batch_index: int = 0,
@@ -818,8 +819,10 @@ async def derive_view(
     # 写了没用」。2026-10-23 已在 provider 侧修好，这里算的长度才真正生效。
     seq_len = _fit_seq_len(prompt_text, max_seq_len)
     # 背景选「无」时模型可以自由补场景，此时禁「地面」是自相矛盾的 → 不传，
-    # 让 provider 回落到设置里的默认负面词。
-    negative = None if background == "none" else VIEW_NEGATIVE
+    # 让 provider 回落到设置里的默认负面词。用户自定义的负面词优先。
+    neg_custom = (negative or "").strip()
+    negative_prompt = (None if background == "none"
+                       else (neg_custom or VIEW_NEGATIVE))
     label = (f"{_VIEW_META[view]['cn']} {batch_index + 1}/{batch_total}"
              if batch_total > 1 else _VIEW_META[view]['cn'])
     # 批量时把进度映射到整批：第 2 张从 base=40 报到 80（grand=160），
@@ -836,7 +839,7 @@ async def derive_view(
         width=max(64, int(width) // 8 * 8),
         height=max(64, int(height) // 8 * 8),
         steps=steps, seed=seed, n=1, refs=[base],
-        negative=negative,
+        negative=negative_prompt,
         # 参考图铺底色：透明底不铺会被 convert("RGB") 压成黑底，
         # 模型把黑色当背景画进结果（暗部/地面），和「透明背景」直接打架
         ref_bg=_ref_fill(background),
@@ -851,6 +854,8 @@ async def derive_view(
         "view": view, "name": _VIEW_META[view]["cn"], "mode": "edit",
         "instruction": prompt_text,
         "instructionCustom": bool(custom),
+        "negative": negative_prompt,
+        "negativeCustom": bool(neg_custom),
         "steps": rmeta.get("steps"), "seed": seed,
         "model": rmeta.get("model"),
         "background": background,

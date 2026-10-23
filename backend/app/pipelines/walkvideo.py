@@ -244,6 +244,13 @@ EMPHASIS_TAIL = (
     "每一步都完整连贯，步伐稳定有节奏。"
 )
 
+# 默认负面词：以前直接写在 generate_walk 里，用户既看不到也改不了。
+# 提到模块级便于卡片预览接口回显，也让「可覆盖的默认」有单一出处。
+DEFAULT_WALK_NEGATIVE = (
+    "模糊, 重影, 涂抹, 低清, 噪点, 闪烁, 变形, 静止不动, 镜头晃动, "
+    "站桩, 单帧定格, 姿势不变, 动作僵硬"
+)
+
 
 def directions_of(dir_mode: str) -> List[str]:
     """方向模式 → 本次要产出的方向列表（按顺时针顺序）。"""
@@ -383,6 +390,7 @@ async def generate_walk(
     max_seq_len: Optional[int] = None,
     progress: Optional[Dict[str, Any]] = None,
     retries: int = 2,
+    negative: str = "",
 ) -> Tuple[List[Image.Image], Dict[str, Any]]:
     """Wan2.2 TI2V-5B：方向立绘 + 动作提示词 → 行走视频帧序列。
 
@@ -406,8 +414,8 @@ async def generate_walk(
     # 负向词直接对准用户反馈的现象：糊掉（涂抹/重影/低清）与闪烁/变形，
     # 再加「站桩/单帧定格/姿势不变/动作僵硬」——把模型最爱偷懒的静止解
     # 也写进黑名单，和正向的「持续运动」形成夹击。
-    negative = ("模糊, 重影, 涂抹, 低清, 噪点, 闪烁, 变形, 静止不动, 镜头晃动, "
-                "站桩, 单帧定格, 姿势不变, 动作僵硬")
+    # 用户可覆盖（卡片上能看能改）：这段以前是纯常量，界面上看不到也改不了。
+    negative = ((negative or "").strip() or DEFAULT_WALK_NEGATIVE)
 
     t = time.time()
     base_gs = 5.0 if guidance_scale is None else float(guidance_scale)
@@ -495,6 +503,7 @@ async def run_walk(
     guidance_scale: Optional[float] = None,
     motion_threshold: float = 6.0,
     retries: int = 2,
+    negative: str = "",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """跑完一个方向集合，返回每方向的帧序列。
 
@@ -631,6 +640,7 @@ async def run_walk(
                 guidance_scale=guidance_scale,
                 motion_threshold=motion_threshold, retries=retries,
                 max_seq_len=max_seq_len,
+                negative=negative,
                 progress={"label": f"{DIR_LABELS[d]}行走视频",
                           "base": done, "grand": total_steps, "hold": True})
         except progress_mod.CancelledError:

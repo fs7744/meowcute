@@ -439,6 +439,20 @@ def build_prompt(
     }
 
 
+def pixel_negative_extra(pixel: bool, material: str = "solid") -> str:
+    """像素契约自带的那半负面词（与用户/设置里的基础负面词分开返回）。
+
+    拆出来是为了让界面能说清「最终负面词里哪半是契约自动加的」——
+    用户可以在生成卡上整段覆盖负面词，这时必须知道原本有什么被换掉了。
+    """
+    if not pixel:
+        return ""
+    if material == "translucent":
+        # 半透明靠离散色阶表达：只否定「平滑渐变」，不否定「色阶」
+        return "抗锯齿, 平滑渐变, 模糊, 噪点, 平滑过渡, 写实照片"
+    return "抗锯齿, 渐变, 模糊, 噪点, 平滑过渡, 写实照片, 半透明"
+
+
 def resolve_pixel_negative(base_negative: str, pixel: bool,
                            material: str = "solid") -> str:
     """像素模式下的负面词：把「像素画最怕的瑕疵」显式否定。
@@ -448,11 +462,7 @@ def resolve_pixel_negative(base_negative: str, pixel: bool,
     实心色块——这是实机效果差的直接原因之一。
     """
     base = (base_negative or "").strip().strip("，, ")
-    if not pixel:
+    extra = pixel_negative_extra(pixel, material)
+    if not extra:
         return base
-    if material == "translucent":
-        # 半透明靠离散色阶表达：只否定「平滑渐变」，不否定「色阶」
-        extra = "抗锯齿, 平滑渐变, 模糊, 噪点, 平滑过渡, 写实照片"
-    else:
-        extra = "抗锯齿, 渐变, 模糊, 噪点, 平滑过渡, 写实照片, 半透明"
     return f"{base}, {extra}" if base else extra

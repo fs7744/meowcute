@@ -73,6 +73,8 @@ DEFAULT_VIEWGEN = {
     "maxSeqLen": None,
     # "" = 用程序拼的默认视角指令；非空 = 用户自己改过的正文，原样送给模型
     "instruction": "",
+    # "" = 用程序常量 VIEW_NEGATIVE；非空 = 用户自定义负面词
+    "negative": "",
     # 多张候选里当前预览/下游默认使用的那张（数组下标）
     "pick": 0,
 }
@@ -121,6 +123,9 @@ DEFAULT_WALKVIDEO = {
     # 默认值 = 示例库「原地行走」那条的全文，用户可随意改；示例库「行走视频」
     # 分类里还有举枪/奔跑/待机/潜行等完整写法可一键填入。
     "prompt": DEFAULT_WALK_PROMPT,
+    # 负面词：空 = 用 walkvideo.DEFAULT_WALK_NEGATIVE。以前这段写死在管线里，
+    # 卡片上看不到也改不了，和正面提示词的处理不一致。
+    "negative": "",
     "numFrames": 49,                        # Wan 帧数（内部对齐 4k+1）
     "fps": 16,
     "maxSide": 512,
@@ -185,7 +190,7 @@ def default_generate_node(x: float = 80, y: float = 120) -> Dict[str, Any]:
         "styleId": "pixel_16bit",
         "refs": [],
         "params": {"width": 512, "height": 512, "n": 1, "steps": None, "seed": None,
-                   "background": "gray"},
+                   "background": "gray", "negative": ""},
         "pixel": {"enabled": True, "gridSnap": True, "colors": 16,
                   "palette": "auto", "gridSize": None, "targetSize": None},
         "collapsed": False,
@@ -494,6 +499,9 @@ def _clean_params(p: Any) -> Dict[str, Any]:
         # 提示词质量档位（文本序列长度）。白名单漏了它 → 用户在生成卡上选了
         # 「高质量」，保存刷新后静默回到「自动」，且没有任何提示。
         "maxSeqLen": (_i(p.get("maxSeqLen"), 0, 256, 1536) or None) if p.get("maxSeqLen") else None,
+        # 负面词覆盖（空 = 全局默认 + 像素契约）。同 maxSeqLen，不进白名单就
+        # 是「改了存不下、刷新静默回默认」。
+        "negative": str(p.get("negative") or "")[:600],
     }
 
 
@@ -557,6 +565,8 @@ def _clean_viewgen(v: Any) -> Dict[str, Any]:
         # （历史坑：字段没进规整函数 = 「编辑了不生效」）。字符上限与
         # 提示词预算同一口径（1920 token ≈ 1400 字），超出也没用，编码器读不到。
         "instruction": str(v.get("instruction") or "")[:4000],
+        # 自定义负面词：同上，不进白名单就存不下来
+        "negative": str(v.get("negative") or "")[:400],
     }
 
 
@@ -643,6 +653,8 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
         "enabled": bool(w.get("enabled", True)),
         "dirMode": mode,
         "prompt": prompt,
+        # 自定义负面词（空 = 用管线默认常量）。同 prompt：不进白名单就存不下来
+        "negative": str(w.get("negative") or "")[:400],
         "action": str(w.get("action") or "行走")[:20] or "行走",
         "sources": srcs,
         "styleId": str(w.get("styleId") or "")[:40] or None,

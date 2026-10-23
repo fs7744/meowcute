@@ -70,12 +70,27 @@ export default function GenNode({
   const running = !!task?.progress && !task.progress.doneAt
   const p = task?.progress
 
+  // 「改为自己写」：先把当前实际会用的负面词（全局默认 + 像素契约）拉回来
+  // 预填，让用户在原稿上删改，而不是面对一个空框凭空重写。
+  const openNegativeEditor = async () => {
+    let seedText = ''
+    try {
+      const data = await api.preview({
+        prompt: node.prompt, styleId: node.styleId,
+        width: node.params.width, height: node.params.height,
+        background: node.params.background, pixel: node.pixel, negative: '',
+      })
+      seedText = data.negative || ''
+    } catch { /* 接口失败就让用户自己写 */ }
+    // 空串会回到「自动」，用一个空格占位以进入编辑态（后端会 strip 掉）
+    patchParams({ negative: seedText || ' ' })
+  }
+
   const grouped = useMemo(() => {
     const g: Record<string, Style[]> = {}
     for (const s of styles) {
       (g[s.group] ||= []).push(s)
-    }
-    return g
+    }    return g
   }, [styles])
 
   const examplesOfCat = useMemo(
@@ -340,6 +355,41 @@ export default function GenNode({
                 : <>画布上的拼板是不透明底板：选灰/绿纯色底抠图最稳（透明底也能拼，拼板会沿用各图 alpha）；
                     侧 / 背 / 右视图自动复用本卡参数。</>}
             </div>
+          ) : null}
+        </div>
+
+        {/* 负面词：默认是「全局设置 + 像素契约自动追加」，这里可以整段覆盖。
+            非像素画风时用户往往要把「抗锯齿/渐变」那套拿掉，以前只能改全局
+            设置，节点上没有地方看也没有地方改。 */}
+        <div className="gen-field">
+          <div className="gen-field-head">
+            <span className="gen-field-label">
+              负面词{node.params.negative ? '（已自定义）' : '（自动）'}
+            </span>
+            {node.params.negative ? (
+              <button className="ex-chip" type="button"
+                onClick={() => patchParams({ negative: '' })}>
+                恢复默认
+              </button>
+            ) : null}
+          </div>
+          {node.params.negative ? (
+            <textarea className="textarea"
+              style={{ minHeight: 56, fontSize: 11 }}
+              value={node.params.negative}
+              onChange={(e) => patchParams({ negative: e.target.value })} />
+          ) : (
+            <div className="hint" style={{ lineHeight: 1.6 }}>
+              当前用「全局设置里的默认负面词
+              {node.pixel?.enabled && style?.pixelClass ? ' + 像素契约追加的反锯齿/渐变等' : ''}」，
+              点下面的按钮可以整段改成自己的。
+            </div>
+          )}
+          {!node.params.negative ? (
+            <button className="ex-chip" type="button" style={{ marginTop: 4 }}
+              onClick={() => openNegativeEditor()}>
+              改为自己写（预填当前内容）
+            </button>
           ) : null}
         </div>
 

@@ -58,7 +58,7 @@ from .pipelines import walkvideo as walkvideo_mod
 from .providers.diffusers_local import DiffusersProvider
 from .styles import (
     BACKGROUND_PRESETS, background_phrase, build_prompt, detect_material,
-    get_style, list_styles, resolve_pixel_negative,
+    get_style, list_styles, pixel_negative_extra, resolve_pixel_negative,
 )
 from .templates import get_template, list_templates
 
@@ -625,6 +625,8 @@ class PreviewPayload(BaseModel):
     height: int = 512
     background: str = "gray"
     pixel: Optional[PixelOptions] = None
+    # 生成卡上覆盖的负面词（空 = 用「全局默认 + 像素契约」拼出来的那套）
+    negative: str = ""
 
 
 def _contract_grid(pixel: PixelOptions, style_id: Optional[str],
@@ -660,7 +662,8 @@ def _contract_grid(pixel: PixelOptions, style_id: Optional[str],
 def _build_generation_prompt(prompt: str, style_id: Optional[str],
                              pixel: PixelOptions, width: int, height: int,
                              background: str = "gray",
-                             edit: bool = False) -> Dict[str, Any]:
+                             edit: bool = False,
+                             negative_override: str = "") -> Dict[str, Any]:
     style = get_style(style_id)
     pixel_class = bool(style and style.get("pixelClass"))
     # 像素契约只对像素类画风生效：gridSnap 是像素精修的子选项，不能用来
@@ -674,7 +677,24 @@ def _build_generation_prompt(prompt: str, style_id: Optional[str],
                          material=material, edit=edit)
     settings = load_settings()
     base_neg = (settings.get("providers", {}).get("diffusers", {}) or {}).get("negativePrompt", "")
-    built["negative"] = resolve_pixel_negative(base_neg, use_contract, material)
+    # 负面词三层来源，全部摊开给界面：
+    #   base     = 全局设置里的默认负面词
+    #   contract = 开了像素契约时自动追加的「像素画最怕的瑕疵」
+    #   custom   = 用户在生成卡上整段覆盖（非空则前两层都不生效）
+    # 以前 custom 这一层不存在，负面词只能改全局设置，节点上看不到也改不了——
+    # 换个非像素画风时用户没有地方把「抗锯齿/渐变」那套拿掉。
+    custom_neg = (negative_override or "").strip()
+    contract_neg = pixel_negative_extra(use_contract, material)
+    if custom_neg:
+        built["negative"] = custom_neg
+    else:
+        built["negative"] = resolve_pixel_negative(base_neg, use_contract, material)
+    built["negativeParts"] = {
+        "base": ("" if custom_neg else str(base_neg or "").strip("，, ")),
+        "contract": ("" if custom_neg else contract_neg),
+        "custom": custom_neg,
+        "overridden": bool(custom_neg),
+    }
     # 透明背景：Qwen-Image-2.1 原生 RGBA 的官方双段式声明。缺了这段，
     # VAE 第 4 通道（alpha）不会激活，输出恒为不透明（实测）。
     if background == "transparent":
@@ -694,7 +714,8 @@ def _build_generation_prompt(prompt: str, style_id: Optional[str],
 async def preview_prompt(payload: PreviewPayload) -> Dict[str, Any]:
     pixel = payload.pixel or PixelOptions()
     built = _build_generation_prompt(payload.prompt, payload.styleId, pixel,
-                                     payload.width, payload.height, payload.background)
+                                     payload.width, payload.height, payload.background,
+                                     negative_override=payload.negative)
     return built
 
 
@@ -713,6 +734,9 @@ class ParamsPayload(BaseModel):
     # 文本序列长度：界面用「快速/标准/高质量」映射到 512/768/1024，
     # 为空时由 provider 按提示词长度自动估算（不写死）
     maxSeqLen: Optional[int] = None
+    # 负面词覆盖（空 = 全局默认 + 像素契约自动拼）。放在节点参数里而不是
+    # 全局设置里：换个画风/换个角色往往就要换负面词，全局一处改不了这么细。
+    negative: str = ""
 
 
 class GeneratePayload(BaseModel):
@@ -772,7 +796,8 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
 
         built = _build_generation_prompt(prompt_text, payload.styleId, pixel,
                                          width, height, params.background,
-                                         edit=bool(refs))
+                                         edit=bool(refs),
+                                         negative_override=params.negative)
 
         seed = params.seed
         if seed is None:
@@ -1123,6 +1148,9 @@ class ViewDerivePayload(BaseModel):
     # 以前这套指令整段硬编码在 threeview._view_instruction 里，界面既看不到
     # 也改不了；现在默认值仍由程序给，但正文可以整段覆盖。
     instruction: str = ""
+    # 同理：视角生成的负面词也一直是程序常量（VIEW_NEGATIVE），
+    # 界面看不到也改不了，这里一并放开
+    negative: str = ""
     # 一致性校验未通过时是否换种子重试一次。默认开：实测同一批 6 张背视图里
     # 只有 1 张保住了披风，重试一次的期望收益明显高于一次 40 步的成本。
     retryOnFail: bool = True
@@ -1134,6 +1162,7 @@ class ViewInstructionPayload(BaseModel):
     character: str = ""
     background: str = "gray"
     instruction: str = ""          # 已保存的自定义正文（有则按它算）
+    negative: str = ""             # 已保存的自定义负面词（有则按它算）
 
 
 class ComposePayload(BaseModel):
@@ -1207,6 +1236,7 @@ async def _run_view_derive(task_id: str, payload: ViewDerivePayload) -> None:
                     background=payload.background,
                     character=payload.character,
                     instruction=payload.instruction,
+                    negative=payload.negative,
                     provider_cfg=provider_cfg, task_id=task_id,
                     batch_index=i, batch_total=len(srcs))
                 # 校验绝不该挡住出图：算不动就放行（宁可漏判，不可误杀）
@@ -1282,6 +1312,10 @@ async def threeview_instruction(payload: ViewInstructionPayload) -> Dict[str, An
     default_body = "".join(t for _, _, t in parts)
     body = custom or default_body
     full = threeview_mod.apply_background(body, payload.background)
+    neg_custom = (payload.negative or "").strip()
+    # 与 derive_view 同一套回落：背景选「无」时不传负面词（禁「地面」和自由背景矛盾）
+    neg = (None if payload.background == "none"
+           else (neg_custom or threeview_mod.VIEW_NEGATIVE))
     return {
         "view": payload.view,
         "body": body,
@@ -1290,6 +1324,9 @@ async def threeview_instruction(payload: ViewInstructionPayload) -> Dict[str, An
         "custom": bool(custom),
         "background": payload.background,
         "parts": [{"key": k, "label": lb, "text": t} for k, lb, t in parts if t],
+        "negative": neg,
+        "negativeCustom": bool(neg_custom),
+        "negativeMaxChars": limits_mod.chars_for_tokens(256),
         "chars": len(full),
         "maxChars": limits_mod.chars_for_tokens(limits_mod.SEQ_LEN_MAX),
     }
@@ -1411,6 +1448,9 @@ class WalkVideoPayload(BaseModel):
     # 整段动作提示词：用户完整输入，程序不拼接。为空时退回按 action 拼的
     # 模板（老项目 / 接口直调的兼容路径）。
     prompt: Optional[str] = None
+    # 负面词：空 = 用 walkvideo.DEFAULT_WALK_NEGATIVE（以前写死在管线里，
+    # 卡片上看不到也改不了）
+    negative: str = ""
     styleId: Optional[str] = None
     steps: Optional[int] = None
     seed: Optional[int] = None
@@ -1435,6 +1475,21 @@ class WalkVideoPayload(BaseModel):
     guidanceScale: Optional[float] = None
     motionThreshold: float = 6.0
     retries: int = 2
+
+
+@app.get("/api/walkvideo/defaults")
+async def walkvideo_defaults() -> Dict[str, Any]:
+    """行走节点里由程序提供的两段文本，回显给界面。
+
+    负面词和「动作不达标时追加的强调句」以前都硬编码在管线里：用户既看不到
+    程序给视频底座喂了什么，也没法把这些措辞改成自己的。默认值仍留在程序里
+    （改坏了会退化），这里只负责让它可见、可覆盖。
+    """
+    return {
+        "negative": walkvideo_mod.DEFAULT_WALK_NEGATIVE,
+        "emphasisTail": walkvideo_mod.EMPHASIS_TAIL.strip(),
+        "prompt": projects_mod.DEFAULT_WALK_PROMPT,
+    }
 
 
 async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
@@ -1532,7 +1587,8 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
             guidance_scale=(None if payload.guidanceScale is None
                             else _clamp(payload.guidanceScale, 1.0, 9.0, 5.0)),
             motion_threshold=_clamp(payload.motionThreshold, 1.0, 30.0, 6.0),
-            retries=_clamp(payload.retries, 0, 5, 2))
+            retries=_clamp(payload.retries, 0, 5, 2),
+            negative=(payload.negative or "").strip())
 
         # 显存账：峰值取各方向最大值（每段视频都单独清零过峰值统计），
         # 收尾值是卸载后的——这两个数能直接回答「这条链到底吃多少显存」

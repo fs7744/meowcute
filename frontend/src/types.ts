@@ -127,6 +127,9 @@ export type GenParams = {
   background: 'gray' | 'green' | 'none' | 'transparent'
   // 提示词质量档位映射的文本序列长度：null=自动，512=快速，768=标准，1024=高质量
   maxSeqLen: number | null
+  /** 负面词覆盖：空 = 「全局默认 + 像素契约自动追加」那套。
+   *  换个画风（非像素）时常要把「抗锯齿/渐变」拿掉，所以放在节点上可改。 */
+  negative?: string
 }
 
 export type BackgroundOption = {
@@ -218,6 +221,8 @@ export type ViewGenOptions = {
   /** 自定义视角指令正文：空 = 用程序拼的默认条款（卡片上可展开查看）。
    *  非空时原样送给编辑底座，背景声明仍由 background 参数追加。 */
   instruction?: string
+  /** 自定义负面词：空 = 用程序常量 VIEW_NEGATIVE */
+  negative?: string
 }
 
 /** 四视图拼板参数（对应后端 DEFAULT_THREEVIEW）。 */
@@ -297,6 +302,9 @@ export type WalkVideoOptions = {
   /** 整段动作提示词：用户完整输入，程序不拼接。节点上直接改全文；
    *  示例库「行走视频」分类可一键填入完整写法。 */
   prompt?: string
+  /** 自定义负面词：空 = 用管线默认（模糊/重影/站桩/单帧定格…）。
+   *  默认值由 /api/walkvideo/defaults 回显，卡片上能看能改。 */
+  negative?: string
   /** 老项目的短动作词：仅在没有 prompt 时用于一次性迁移，界面上不再展示 */
   action?: string
   /**
@@ -747,4 +755,8 @@ export type PromptPreview = {
   breakdown: { label: string; text: string }[]
   useContract: boolean
   grid: [number, number]
+  /** 负面词的三层来源：全局默认 / 像素契约追加 / 用户覆盖（有 custom 则前两层不生效） */
+  negativeParts?: {
+    base: string; contract: string; custom: string; overridden: boolean
+  }
 }

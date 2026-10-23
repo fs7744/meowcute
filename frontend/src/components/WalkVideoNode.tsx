@@ -91,6 +91,19 @@ export default function WalkVideoNode({
   const promptMax = limits?.walkPrompt.maxChars ?? 300
   const overBy = promptText.length - promptMax
 
+  // 程序给的默认文本（负面词 / 重试强调句）：以前硬编码在管线里，界面看不到。
+  // 默认值仍在后端，这里只是取回来展示——用户不改就一直是它。
+  const [walkDefaults, setWalkDefaults] = useState<
+    { negative: string; emphasisTail: string } | null>(null)
+  useEffect(() => {
+    let alive = true
+    api.walkDefaults().then((d) => { if (alive) setWalkDefaults(d) })
+      .catch(() => undefined)
+    return () => { alive = false }
+  }, [])
+  const customNeg = (v.negative || '').trim()
+  const walkDefNeg = walkDefaults?.negative ?? ''
+
   const meta = node.meta
   const dirs = meta?.directions ?? []
 
@@ -316,6 +329,32 @@ export default function WalkVideoNode({
                   身体的起伏、手臂与手持物、镜头静止，四段分开写；持械角色记得写上
                   「双臂与武器保持稳定」。</>}
           </span>
+        </div>
+
+        {/* 负面词：以前写死在管线里（模糊/重影/站桩/单帧定格…），
+            界面上看不到也改不了。默认值仍由程序给，这里可以覆盖或清空。 */}
+        <div className="gen-field">
+          <div className="gen-field-head">
+            <span className="gen-field-label">
+              负面词{customNeg ? '（自定义）' : '（默认）'}
+            </span>
+            <button className="ex-chip" type="button"
+              onClick={() => patch({ negative: customNeg ? '' : walkDefNeg })}>
+              {customNeg ? '恢复默认' : '改为自己写'}
+            </button>
+          </div>
+          {customNeg ? (
+            <textarea
+              className="textarea"
+              style={{ minHeight: 56, fontSize: 11 }}
+              value={v.negative || ''}
+              onChange={(e) => patch({ negative: e.target.value })}
+            />
+          ) : (
+            <span className="hint" style={{ lineHeight: 1.6 }}>
+              {walkDefNeg || '（读取中…）'}
+            </span>
+          )}
         </div>
 
         {/* ---- 方向立绘：每个真实方向用哪张图当参考（可预览 / 可自选） ---- */}

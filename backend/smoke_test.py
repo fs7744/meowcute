@@ -358,6 +358,73 @@ def _run_checks(client) -> int:
           any("配色疑似丢失" in f for f in _r_lost["fails"]),
           str(_r_lost["fails"]))
 
+    print("== 视角提示词：可查看 / 可覆盖 ==")
+    r = client.post("/api/threeview/instruction",
+                    json={"view": "back", "character": "腰挎武士刀"})
+    ins = r.json()
+    check("视角提示词接口 200", r.status_code == 200, str(r.status_code))
+    check("给出逐段拆解", len(ins["parts"]) >= 8, str(len(ins["parts"])))
+    check("正文含角色设定", "腰挎武士刀" in ins["body"])
+    check("整段 = 各段顺序拼接",
+          "".join(p["text"] for p in ins["parts"]) == ins["body"])
+    check("背景声明前置到整段", ins["full"].startswith("背景要求"), ins["full"][:20])
+    check("返回默认负面词", bool(ins.get("negative")), str(ins.get("negative")))
+    r2 = client.post("/api/threeview/instruction",
+                     json={"view": "back", "instruction": "只写我自己的话",
+                           "negative": "我的负面词"})
+    i2 = r2.json()
+    check("自定义正文覆盖默认条款", i2["body"] == "只写我自己的话", i2["body"])
+    check("自定义负面词覆盖默认", i2["negative"] == "我的负面词")
+    check("默认正文仍可对照取值", len(i2["defaultBody"]) > 200)
+    r3 = client.post("/api/threeview/instruction",
+                     json={"view": "back", "background": "none"})
+    check("背景选无时不传负面词", r3.json()["negative"] is None)
+    from backend.app.projects import _clean_viewgen
+    cc = _clean_viewgen({"view": "back", "instruction": "自定义正文",
+                         "negative": "负面词"})
+    check("自定义指令进存盘白名单", cc["instruction"] == "自定义正文")
+    check("自定义负面词进存盘白名单", cc["negative"] == "负面词")
+
+    print("== 行走节点的默认文本：可查看 / 可覆盖 ==")
+    r = client.get("/api/walkvideo/defaults")
+    wd = r.json()
+    check("行走默认值接口 200", r.status_code == 200, str(r.status_code))
+    check("返回默认负面词", "站桩" in wd["negative"], wd.get("negative", "")[:20])
+    check("返回重试强调句", "绝不定格" in wd["emphasisTail"])
+    check("返回默认动作提示词", len(wd["prompt"]) > 50)
+    from backend.app.projects import _clean_walkvideo
+    cw = _clean_walkvideo({"negative": "我的负面词"})
+    check("行走负面词进存盘白名单", cw["negative"] == "我的负面词", cw["negative"])
+
+    print("== 生成卡负面词：三层来源 + 可整段覆盖 ==")
+    r = client.post("/api/generate/preview", json={
+        "prompt": "一只猫", "styleId": "pixel_16bit", "width": 512, "height": 512,
+        "background": "gray",
+        "pixel": {"enabled": True, "gridSnap": True, "colors": 16,
+                  "palette": "auto", "gridSize": None, "targetSize": None},
+    })
+    pv = r.json()
+    np = pv.get("negativeParts") or {}
+    check("预览返回负面词来源", "base" in np and "contract" in np, str(list(np)))
+    check("像素契约那半被单独标出", "抗锯齿" in (np.get("contract") or ""),
+          str(np.get("contract"))[:30])
+    check("默认未覆盖", np.get("overridden") is False)
+    r2 = client.post("/api/generate/preview", json={
+        "prompt": "一只猫", "styleId": "pixel_16bit", "width": 512, "height": 512,
+        "background": "gray",
+        "pixel": {"enabled": True, "gridSnap": True, "colors": 16,
+                  "palette": "auto", "gridSize": None, "targetSize": None},
+        "negative": "只留我写的这一句",
+    })
+    pv2 = r2.json()
+    check("自定义负面词整段覆盖", pv2["negative"] == "只留我写的这一句",
+          pv2["negative"])
+    check("覆盖后契约那半不再追加",
+          pv2["negativeParts"]["contract"] == "")
+    from backend.app.projects import _clean_params
+    cp = _clean_params({"negative": "我的负面词"})
+    check("生成卡负面词进存盘白名单", cp["negative"] == "我的负面词")
+
     print("== 三视图拼板接口 ==")
     # 三张不同底色的「视角图」：抠掉各自底色后应拼成一张 3 格宽的板
     def _view_img(bg, subject):

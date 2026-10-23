@@ -166,6 +166,8 @@ export const api = {
   preview: (payload: {
     prompt: string; styleId: string | null; width: number; height: number
     background: string; pixel: PixelOptions
+    /** 生成卡上覆盖的负面词（空 = 全局默认 + 像素契约） */
+    negative?: string
   }) => fetch('/api/generate/preview', jsonInit(payload)).then(j<PromptPreview>),
 
   generate: (payload: {
@@ -226,8 +228,17 @@ export const api = {
     sources?: { kind: 'images' | 'refs'; file: string }[]
     /** 用户改过的视角指令正文（空 = 用程序里的默认条款） */
     instruction?: string
+    /** 用户改过的负面词（空 = 用程序常量） */
+    negative?: string
   }) =>
     fetch('/api/threeview/derive', jsonInit(payload)).then(j<{ taskId: string }>),
+
+  /** 行走节点里由程序提供的默认文本（负面词 / 重试强调句 / 默认提示词）。
+   *  以前这些都硬编码在管线里看不到，现在回显给卡片展示。 */
+  walkDefaults: () =>
+    fetch('/api/walkvideo/defaults').then(j<{
+      negative: string; emphasisTail: string; prompt: string
+    }>),
 
   /** 四视图：视角提示词的拼装结果（卡片上展示 + 编辑时预填）。
    *  body = 可编辑的指令正文，full = 真正送进模型的整段（含背景声明），
@@ -237,6 +248,7 @@ export const api = {
     character?: string
     background?: string
     instruction?: string
+    negative?: string
   }) =>
     fetch('/api/threeview/instruction', jsonInit(payload)).then(j<{
       view: string
@@ -246,6 +258,9 @@ export const api = {
       custom: boolean
       background: string
       parts: { key: string; label: string; text: string }[]
+      negative: string | null
+      negativeCustom: boolean
+      negativeMaxChars: number
       chars: number
       maxChars: number
     }>),
@@ -288,6 +303,8 @@ export const api = {
     /** 像素保真：像素素材用最近邻缩放 */
         /** 整段动作提示词：用户完整输入，程序不拼接；为空时后端退回 action 模板 */
     prompt?: string
+    /** 自定义负面词：空 = 用后端默认常量 */
+    negative?: string
 pixelArt?: boolean
   }) =>
     fetch('/api/walkvideo', jsonInit(payload)).then(j<{ taskId: string }>),
