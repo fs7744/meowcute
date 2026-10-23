@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { loadPromptLimits } from '../api'
+import { api, loadPromptLimits } from '../api'
 import type {
   PromptLimits, ResultImage, ViewGenNode as ViewGenNodeType,
 } from '../types' 
+
+type InstrPreview = Awaited<ReturnType<typeof api.threeviewInstruction>>
 
 type Props = {
   node: ViewGenNodeType
@@ -20,6 +22,11 @@ type Props = {
     seed: number | null
     maxSeqLen: number | null
     background: string | null
+    /** 背景 id（gray/green/none/transparent）：预览提示词要用它，不能用展示用的标签 */
+    backgroundId?: string | null
+    /** 上游生成卡的角色描述原文：视角指令把它当「辨认清单」拼进去，
+     *  预览要和真实生成一致，就必须拿到同一份文本 */
+    character?: string | null
   } | null
   onChange: (patch: Partial<ViewGenNodeType>) => void
   onDelete: () => void
@@ -64,6 +71,23 @@ export default function ViewGenNode({
     loadPromptLimits().then((l) => { if (alive) setLimits(l) }).catch(() => undefined)
     return () => { alive = false }
   }, [])
+
+  // ---- 视角指令：摊开给用户看 / 允许整段覆盖 --------------------------------
+  // 以前这段 11 条条款整段硬编码在后端，卡片上只有一句「会做什么」的说明，
+  // 用户既看不到程序给模型喂了什么，也没法改。现在默认值还在程序里（可覆盖的
+  // 默认），卡片上展示拼装结果，一键就能改成自己的措辞。
+  const [preview, setPreview] = useState<InstrPreview | null>(null)
+  const [showPrompt, setShowPrompt] = useState(false)
+  const customInstr = (node.viewgen?.instruction || '').trim()
+  const bgId = inherit?.backgroundId ?? 'gray'
+  const charText = inherit?.character ?? ''
+  useEffect(() => {
+    let alive = true
+    api.threeviewInstruction({
+      view: v.view, character: charText, background: bgId,
+    }).then((p) => { if (alive) setPreview(p) }).catch(() => undefined)
+    return () => { alive = false }
+  }, [v.view, charText, bgId])
 
   const meta = node.result?.viewMeta
   const isBack = v.view === 'back'
@@ -132,6 +156,63 @@ export default function ViewGenNode({
         <div className="hint" style={{ marginTop: -4 }}>
           正视图抽卡几张，这里就对每张各生成一张（第 k 张 ↔ 第 k 组），
           角色不一致的那几张可以只在拼板里挑顺眼的一组。
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span className="gen-field-label" style={{ flex: 1 }}>
+              视角指令（{customInstr ? '自定义' : '自动拼接'}）
+            </span>
+            <button className="ex-chip"
+              onClick={() => setShowPrompt((s) => !s)}>
+              {showPrompt ? '收起' : '查看 / 修改'}
+            </button>
+          </div>
+          {!showPrompt ? (
+            <div className="hint" style={{ marginTop: 2 }}>
+              {preview
+                ? `${preview.chars} 字，按 ${preview.parts.length} 段条款拼装（任务总纲 / 转视角 / 画面事实 / 守恒…）`
+                : '读取中…'}
+            </div>
+          ) : customInstr ? (
+            <>
+              <textarea className="textarea"
+                style={{ marginTop: 4, minHeight: 150, fontSize: 11 }}
+                value={node.viewgen?.instruction || ''}
+                onChange={(e) => patch({ instruction: e.target.value })} />
+              <div className="hint" style={{ marginTop: 2 }}>
+                {customInstr.length} 字
+                {preview ? ` / 建议不超过 ${preview.maxChars}` : ''}
+                {preview && customInstr.length > preview.maxChars
+                  ? '（超出的部分编码器读不到）' : ''}
+                <br />
+                开头那句背景声明仍按正视图的背景设置自动追加。
+                <button className="ex-chip" style={{ marginLeft: 6 }}
+                  onClick={() => patch({ instruction: '' })}>恢复默认</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="hint" style={{ marginTop: 2 }}>
+                {preview
+                  ? `${preview.chars} 字 —— 下面这段就是送给模型的全部内容（含开头背景声明）`
+                  : '读取中…'}
+              </div>
+              <pre style={{
+                margin: '4px 0 0', padding: 6, maxHeight: 168, overflow: 'auto',
+                border: '1px solid var(--line)', background: 'rgba(0,0,0,0.25)',
+                fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all', color: 'var(--muted)',
+              }}>{preview?.full ?? ''}</pre>
+              <div className="hint" style={{ marginTop: 2 }}>
+                想改措辞就点右边按钮：会把当前正文填进输入框，只覆盖正文，背景声明照旧。
+                <button className="ex-chip" style={{ marginLeft: 6 }}
+                  onClick={() => patch({ instruction: preview?.body ?? '' })}>
+                  改为自己写
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
         {inherit ? (

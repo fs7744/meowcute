@@ -222,10 +222,17 @@ torchao 0.16.0 · accelerate 1.15.0
 | **Qwen-Image-2.1** | 文生图 / 指令改图（四视图、八方向推导）/ 原生 RGBA 透明 | 唯一的图片底座，fp8 + cpu offload 峰值约 14.8GB，40 步 |
 | Wan2.2-TI2V-5B | 行走视频生成 | fp8 量化 |
 
-> 视频底座选型（2026-10-23 调研，本机 RTX 4090 24GB）：Wan2.2 TI2V-5B 是 24GB 卡上
-> 最好的全能款；A14B 动作更好但 4090 上每条约 9 分钟，八方向要一小时以上，不实用；
-> LTX-2 时序更稳、更快（FP8 19.9GB 可上 24GB），但需要 diffusers 0.37.0.dev0，
-> 本机当前的 0.41.0 稳定版跑不了，留作后续升级选项。
+> 视频底座选型（2026-10-23 调研，本机 RTX 4090 24GB）：
+> - **Wan2.2 TI2V-5B（当前）**：24GB 卡上最好的全能款，Apache 2.0。
+> - **HunyuanVideo-1.5（Tencent，8.3B）**：**已在本机 diffusers 0.41.0 里**
+>   （`HunyuanVideo15ImageToVideoPipeline`），无需升级；480p/720p 原生、480p I2V
+>   step-distilled 只要 8-12 步（4090 约 75s/条）；14GB 起、24GB 舒适。
+>   许可不是 Apache（Tencent Hunyuan Community License，且 EU/UK/韩国不适用），
+>   第三方实测提到「快速运动可能时序抖动、细节会化开」——正是本项目最怕的两项，
+>   所以是**候选待 A/B**，不是直接换。
+> - Wan2.2 A14B：动作最好但 4090 每条约 9 分钟，八方向要一小时以上，不实用。
+> - LTX-2：时序更稳更快（FP8 19.9GB 可上 24GB），但需要 diffusers 0.37.0.dev0，
+>   本机 0.41.0 稳定版跑不了，留作后续升级选项。
 
 > 2026-10-23 起图片侧只保留 Qwen-Image-2.1：Z-Image-Turbo 与 Qwen-Image-Edit-2511
 > 两条管线（loader / 参数 / 设置项）已从代码删除，权重移归档目录。三套底座并存时

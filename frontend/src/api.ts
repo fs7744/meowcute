@@ -224,8 +224,31 @@ export const api = {
     /** 多张正视图候选：按顺序每张各出一张视角图（抽卡 n 张 → n 张视角图），
      *  返回的每张都带 pairIndex，拼板按组挑图靠它对齐 */
     sources?: { kind: 'images' | 'refs'; file: string }[]
+    /** 用户改过的视角指令正文（空 = 用程序里的默认条款） */
+    instruction?: string
   }) =>
     fetch('/api/threeview/derive', jsonInit(payload)).then(j<{ taskId: string }>),
+
+  /** 四视图：视角提示词的拼装结果（卡片上展示 + 编辑时预填）。
+   *  body = 可编辑的指令正文，full = 真正送进模型的整段（含背景声明），
+   *  parts = 默认条款的逐段拆解（让用户知道程序加了什么）。 */
+  threeviewInstruction: (payload: {
+    view: 'side' | 'back' | 'side_r'
+    character?: string
+    background?: string
+    instruction?: string
+  }) =>
+    fetch('/api/threeview/instruction', jsonInit(payload)).then(j<{
+      view: string
+      body: string
+      full: string
+      defaultBody: string
+      custom: boolean
+      background: string
+      parts: { key: string; label: string; text: string }[]
+      chars: number
+      maxChars: number
+    }>),
 
   /** 四视图：正/侧/背/右拼成一张横向板（确定性后处理，立即返回）。
    *  传 3 张按老三视图拼板，传 4 张为四视图。 */

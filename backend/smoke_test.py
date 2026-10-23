@@ -329,6 +329,35 @@ def _run_checks(client) -> int:
           f"{_bottom_row(trimmed)} vs {_bottom_row(base)}")
     check("底部裁切记进 meta", trimmed is not None)
 
+    print("== 四视图一致性校验（viewcheck）==")
+
+    def _body(color, w, h, size=192):
+        """透明底 + 一块居中色块：用面积占比模拟「配色块还在不在」。"""
+        from PIL import Image as _I
+        im = _I.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        d.rectangle([size // 2 - w // 2, size // 3, size // 2 + w // 2,
+                     size // 3 + h], fill=color)
+        # 灰色主体底座：让「主体」有足够像素，色块才是主体里的一部分
+        d.rectangle([size // 4, size // 6, size * 3 // 4, size - size // 8],
+                    fill=(150, 150, 150, 255))
+        d.rectangle([size // 2 - w // 2, size // 3, size // 2 + w // 2,
+                     size // 3 + h], fill=color)
+        return im
+
+    _front = _body((210, 50, 45, 255), 96, 90)
+    _lost = _body((210, 50, 45, 255), 18, 8)         # 红块几乎消失
+    _kept = _body((210, 50, 45, 255), 90, 84)        # 红块还在
+    from backend.app import viewcheck as _vc
+    _ref = _vc.build_reference([_front])
+    _r_kept = _vc.check_view(_vc.analyze(_kept, "kept"), _ref, "side")
+    _r_lost = _vc.check_view(_vc.analyze(_lost, "lost"), _ref, "side")
+    check("校验：配色保留的视角图通过", _r_kept["ok"], str(_r_kept["fails"]))
+    check("校验：配色丢件的视角图被拦", not _r_lost["ok"], str(_r_lost["fails"]))
+    check("校验：拦截项点名了具体色块",
+          any("配色疑似丢失" in f for f in _r_lost["fails"]),
+          str(_r_lost["fails"]))
+
     print("== 三视图拼板接口 ==")
     # 三张不同底色的「视角图」：抠掉各自底色后应拼成一张 3 格宽的板
     def _view_img(bg, subject):

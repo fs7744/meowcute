@@ -1119,9 +1119,21 @@ class ViewDerivePayload(BaseModel):
     # 正视图那句角色描述原文：附在视角指令里当「部件清单」，防止腰挎的刀、
     # 背上的弓这类细长配件在重画身体时被漏掉（前端从上游生成卡带下来）
     character: str = ""
+    # 用户在视角卡上改过的指令正文（空 = 用程序里那套默认条款）。
+    # 以前这套指令整段硬编码在 threeview._view_instruction 里，界面既看不到
+    # 也改不了；现在默认值仍由程序给，但正文可以整段覆盖。
+    instruction: str = ""
     # 一致性校验未通过时是否换种子重试一次。默认开：实测同一批 6 张背视图里
     # 只有 1 张保住了披风，重试一次的期望收益明显高于一次 40 步的成本。
     retryOnFail: bool = True
+
+
+class ViewInstructionPayload(BaseModel):
+    """视角提示词预览请求。字段与 derive 对齐，预览到的才是真实会送进模型的。"""
+    view: str = "side"
+    character: str = ""
+    background: str = "gray"
+    instruction: str = ""          # 已保存的自定义正文（有则按它算）
 
 
 class ComposePayload(BaseModel):
@@ -1194,11 +1206,18 @@ async def _run_view_derive(task_id: str, payload: ViewDerivePayload) -> None:
                     max_seq_len=payload.maxSeqLen,
                     background=payload.background,
                     character=payload.character,
+                    instruction=payload.instruction,
                     provider_cfg=provider_cfg, task_id=task_id,
                     batch_index=i, batch_total=len(srcs))
-                verdict = viewcheck.check_view(
-                    viewcheck.analyze(out, f"{src.file}#{attempt}"),
-                    ref_prof, payload.view)
+                # 校验绝不该挡住出图：算不动就放行（宁可漏判，不可误杀）
+                try:
+                    verdict = viewcheck.check_view(
+                        viewcheck.analyze(out, f"{src.file}#{attempt}"),
+                        ref_prof, payload.view)
+                except Exception as e:
+                    verdict = {"ok": True, "retry": False, "fails": [],
+                               "warns": [f"一致性校验跳过：{e}"[:200]],
+                               "metrics": {}}
                 if verdict["ok"] or not payload.retryOnFail or attempt >= 1:
                     break
                 attempt += 1
@@ -1244,6 +1263,36 @@ async def _run_view_derive(task_id: str, payload: ViewDerivePayload) -> None:
     except Exception as e:
         progress_mod.finish(task_id, str(e)[:600])
         task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/threeview/instruction")
+async def threeview_instruction(payload: ViewInstructionPayload) -> Dict[str, Any]:
+    """视角提示词的拼装结果：给视角卡展示，也用于编辑时预填。
+
+    返回三段：
+    - body  = 指令正文（界面上可编辑的那部分，默认就是程序拼的 11 段）；
+    - full  = 真正送进模型的整段（正文 + 背景声明），预览要显示这个；
+    - parts = 默认条款的逐段拆解，让用户知道程序加了什么、加在哪。
+    自定义正文非空时 body/full 都按它算，parts 仍返回默认值供对照。
+    """
+    if payload.view not in ("side", "back", "side_r"):
+        raise HTTPException(400, f"未知视角：{payload.view}")
+    custom = (payload.instruction or "").strip()
+    parts = threeview_mod.view_instruction_parts(payload.view, payload.character)
+    default_body = "".join(t for _, _, t in parts)
+    body = custom or default_body
+    full = threeview_mod.apply_background(body, payload.background)
+    return {
+        "view": payload.view,
+        "body": body,
+        "full": full,
+        "defaultBody": default_body,
+        "custom": bool(custom),
+        "background": payload.background,
+        "parts": [{"key": k, "label": lb, "text": t} for k, lb, t in parts if t],
+        "chars": len(full),
+        "maxChars": limits_mod.chars_for_tokens(limits_mod.SEQ_LEN_MAX),
+    }
 
 
 @app.post("/api/threeview/derive")

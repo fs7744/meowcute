@@ -71,6 +71,8 @@ DEFAULT_VIEWGEN = {
     "width": 512,
     "height": 768,
     "maxSeqLen": None,
+    # "" = 用程序拼的默认视角指令；非空 = 用户自己改过的正文，原样送给模型
+    "instruction": "",
     # 多张候选里当前预览/下游默认使用的那张（数组下标）
     "pick": 0,
 }
@@ -551,6 +553,10 @@ def _clean_viewgen(v: Any) -> Dict[str, Any]:
         "height": _i(v.get("height"), 768, 128, 1536),
         "maxSeqLen": (_i(v.get("maxSeqLen"), 0, 256, 1536) or None) if v.get("maxSeqLen") else None,
         "pick": _i(v.get("pick"), 0, 0, 8),
+        # 自定义视角指令正文：白名单里漏掉这一项，用户改完存盘再读回来就没了
+        # （历史坑：字段没进规整函数 = 「编辑了不生效」）。字符上限与
+        # 提示词预算同一口径（1920 token ≈ 1400 字），超出也没用，编码器读不到。
+        "instruction": str(v.get("instruction") or "")[:4000],
     }
 
 

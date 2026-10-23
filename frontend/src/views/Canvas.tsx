@@ -1108,6 +1108,9 @@ export default function Canvas({ projectId, onBack }: Props) {
       maxSeqLen,
       background,
       character,
+      // 卡片上改过的视角指令正文（空 = 后端那套默认条款）。
+      // 用户看不到也改不了的东西不该存在——这段以前整段硬编码在 threeview。
+      instruction: (node.viewgen?.instruction || '').trim(),
       // 多源：refs 只能整批一张（上传的一张图），images 逐张传
       sources: candidates.map((c, i) => (srcOut.kind === 'images'
         ? { kind: 'images' as const, file: c.assetId }
@@ -2247,6 +2250,10 @@ export default function Canvas({ projectId, onBack }: Props) {
         steps: g.params.steps, seed: g.params.seed,
         maxSeqLen: g.params.maxSeqLen,
         background: bg?.label ?? null,
+        // 预览视角提示词要用：背景 id（label 是给眼睛看的）+ 上游那句角色描述
+        // （视角指令把它当辨认清单拼进去，不传就和真实生成不一致）
+        backgroundId: g.params.background,
+        character: g.prompt?.trim() ?? '',
       }
     } catch { return null }
   }, [project, styles, backgrounds])

@@ -215,6 +215,9 @@ export type ViewGenOptions = {
   /** 多张候选里当前预览的那张（数组下标）：正视图抽卡 n 张时，本视角
    *  也生成 n 张，卡片里可以逐张看；拼板用哪张在拼板节点上选 */
   pick?: number
+  /** 自定义视角指令正文：空 = 用程序拼的默认条款（卡片上可展开查看）。
+   *  非空时原样送给编辑底座，背景声明仍由 background 参数追加。 */
+  instruction?: string
 }
 
 /** 四视图拼板参数（对应后端 DEFAULT_THREEVIEW）。 */

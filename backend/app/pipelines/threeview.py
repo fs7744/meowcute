@@ -181,8 +181,17 @@ def _character_clause(character: str) -> str:
     )
 
 
-def _view_instruction(view: str, character: str = "") -> str:
-    """编辑底座的中文指令：只转视角，外观/服装/配色/画风零改动。
+def _view_instruction_parts(
+        view: str, character: str = "") -> List[Tuple[str, str, str]]:
+    """编辑底座的中文指令，按【段落】返回：[(key, 中文标签, 文本), ...]。
+
+    为什么拆段：以前这里是一整段硬编码，用户在界面上既看不到程序给模型喂了
+    什么，也没法改。视角指令是纯约束条款（不像画风词那样牵动全局一致性），
+    用户完全有权调整措辞——所以拆成段落，由 `/api/threeview/instruction`
+    返回给界面展示，并允许整段覆盖。
+
+    默认值仍然留在程序里：这些条款是逐条踩坑换来的（见下面每段的注释），
+    删掉就会退化。所以做成「可覆盖的默认」，不是「必须手写」。
 
     编辑器（Qwen-Image-2.1）吃中文指令。顺序即优先级：
     任务总纲 → 转到哪 → 这一侧看到什么 → 角色设定（仅用于辨认）→
@@ -294,8 +303,29 @@ def _view_instruction(view: str, character: str = "") -> str:
 
     # 角色设定放在视角事实之后、守恒条款之前：靠前的位置让其中的名词真正参与
     # 辨认，紧跟着的守恒条款再把它约束成「只认图、不照抄」。
-    return (task + turn + detail + _character_clause(character) + side_fact
-            + keep_props + keep_volume + keep_occlusion + identity + keep_look + tail)
+    return [
+        ("task", "任务总纲（只转面，不增不减）", task),
+        ("turn", "转到哪个视角", turn),
+        ("detail", "该视角的画面事实", detail),
+        ("character", "角色设定（只用于辨认）", _character_clause(character)),
+        ("sideFact", "自身左右锚定", side_fact),
+        ("keepProps", "单侧配件守恒", keep_props),
+        ("keepVolume", "背覆部件守恒", keep_volume),
+        ("keepOcclusion", "遮挡守恒", keep_occlusion),
+        ("identity", "身份特征锚点", identity),
+        ("keepLook", "造型与姿势不变", keep_look),
+        ("tail", "收尾（单角色 / 无水印）", tail),
+    ]
+
+
+def _view_instruction(view: str, character: str = "") -> str:
+    """整段拼接结果：顺序即优先级，与拆段前逐字节一致。"""
+    return "".join(t for _, _, t in _view_instruction_parts(view, character))
+
+
+# 给 main.py / 界面复用的公开入口（模块内部仍用下划线名，不动历史调用点）
+view_instruction = _view_instruction
+view_instruction_parts = _view_instruction_parts
 
 
 def front_view_prompt(subject: str, style_words: str = "") -> str:
@@ -698,6 +728,9 @@ def _apply_background(instruction: str, background: str) -> str:
     return instruction
 
 
+apply_background = _apply_background   # 公开别名：提示词预览接口要用
+
+
 def _ref_fill(background: str) -> Optional[Tuple[int, int, int]]:
     """参考图铺底用什么颜色：和正视图的底色对齐。
 
@@ -741,6 +774,7 @@ async def derive_view(
     max_seq_len: Optional[int] = None,
     background: str = "gray",
     character: str = "",
+    instruction: str = "",
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
     batch_index: int = 0,
@@ -759,6 +793,11 @@ async def derive_view(
     background 复用正视图的背景设置：侧/背/右必须和正视图同底色，拼板时
     抠底逻辑才对得上——正视图中灰底而侧视图被模型补了个场景背景，拼出来
     就是一块异色补丁。transparent 走 Qwen-Image-2.1 原生 RGBA 双段式声明。
+
+    instruction = 用户在视角卡上自定义的指令正文（可为空）：非空就**原样**
+    当正文用，不再拼程序里的默认条款；背景声明仍由 background 参数追加，
+    因为背景是节点上的独立参数、且拼板抠底依赖它。界面上编辑的也是正文，
+    预览里会把追加的背景句单独标出来。
     """
     from .. import progress as progress_mod
     from ..providers.diffusers_local import DiffusersProvider
@@ -767,7 +806,9 @@ async def derive_view(
         raise ValueError(f"未知视角：{view}")
 
     provider = DiffusersProvider(provider_cfg or {})
-    instruction = _apply_background(_view_instruction(view, character), background)
+    custom = (instruction or "").strip()
+    body = custom or _view_instruction(view, character)
+    prompt_text = _apply_background(body, background)
 
     width, height = fit_view_size(width, height, base.width, base.height)
     # 序列长度取「正视图设置」与「本指令实际长度」的较大值，上限 1920。
@@ -775,7 +816,7 @@ async def derive_view(
     # 管线默认 max_sequence_length=512（中文约 390 字），1000+ 字的视角指令
     # 被静默截掉一半——配件守恒、背覆守恒、姿势不变全在尾部，表现成「指令
     # 写了没用」。2026-10-23 已在 provider 侧修好，这里算的长度才真正生效。
-    seq_len = _fit_seq_len(instruction, max_seq_len)
+    seq_len = _fit_seq_len(prompt_text, max_seq_len)
     # 背景选「无」时模型可以自由补场景，此时禁「地面」是自相矛盾的 → 不传，
     # 让 provider 回落到设置里的默认负面词。
     negative = None if background == "none" else VIEW_NEGATIVE
@@ -791,7 +832,7 @@ async def derive_view(
 
     t = time.time()
     result = await provider.generate(
-        prompt=instruction,
+        prompt=prompt_text,
         width=max(64, int(width) // 8 * 8),
         height=max(64, int(height) // 8 * 8),
         steps=steps, seed=seed, n=1, refs=[base],
@@ -808,7 +849,8 @@ async def derive_view(
     img = result.images[0].convert("RGBA")
     out = {
         "view": view, "name": _VIEW_META[view]["cn"], "mode": "edit",
-        "instruction": instruction,
+        "instruction": prompt_text,
+        "instructionCustom": bool(custom),
         "steps": rmeta.get("steps"), "seed": seed,
         "model": rmeta.get("model"),
         "background": background,
