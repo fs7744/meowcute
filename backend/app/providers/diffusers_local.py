@@ -22,6 +22,7 @@ import asyncio
 import gc
 import json
 import os
+from functools import lru_cache
 import time
 from typing import Any, Dict, List, Optional
 
@@ -181,6 +182,20 @@ def _normalize_refs(ref=None, refs=None) -> List[Any]:
     if refs:
         out.extend([r for r in refs if r is not None])
     return out[:MAX_REFS]
+
+
+@lru_cache(maxsize=8)
+def _accepts_max_seq(cls: Any) -> bool:
+    """管线 __call__ 是否接受 max_sequence_length（结果按类缓存）。
+
+    不直接硬塞：不同 diffusers 版本上同名参数可能不存在，塞进去会 TypeError，
+    而这条路径要跑几十秒才走到，失败了很难看出是参数问题。
+    """
+    try:
+        import inspect
+        return "max_sequence_length" in inspect.signature(cls.__call__).parameters
+    except Exception:
+        return False
 
 
 def _step_label(progress: Optional[Dict[str, Any]], i: int) -> str:
@@ -548,6 +563,13 @@ class DiffusersProvider(BaseProvider):
                     base=int((progress or {}).get("base") or 0),
                     grand=int((progress or {}).get("grand") or 0)),
             )
+            # 文本编码长度：管线默认 max_sequence_length=512，中文约 1.3 token/字，
+            # 512 只装得下约 390 字。四视图指令 1000+ 字，配件守恒 / 背覆守恒 /
+            # 姿势不变这些**靠后的条款会被静默截断**——表现成「指令写了没用」：
+            # 佩剑丢、没有的披风反而被加上（诱导句在前、纠正句被截）。
+            # max_seq_len 以前一路传到这个函数就被丢掉了，这里必须显式传下去。
+            if max_seq_len and _accepts_max_seq(type(pipe)):
+                kw["max_sequence_length"] = int(max_seq_len)
             if image_arg is not None:
                 kw["image"] = image_arg
             out = pipe(**kw)
@@ -557,6 +579,7 @@ class DiffusersProvider(BaseProvider):
         _release_vram()
         meta = {"steps": use_steps, "cfg": 1.0, "trueCfg": 4.0,
                 "family": "qwen21",
+                "maxSeqLen": int(max_seq_len) if max_seq_len else None,
                 "mode": "edit" if srcs else "txt2img",
                 "refCount": len(srcs), "size": [w, h]}
         try:
@@ -699,7 +722,8 @@ class DiffusersProvider(BaseProvider):
                  seed: Optional[int], generator: Any,
                  ref: Optional[Any], num_frames: int, fps: int, max_side: int,
                  task_id: Optional[str] = None, pixel_art: bool = False,
-                 guidance_scale: Optional[float] = None):
+                 guidance_scale: Optional[float] = None,
+                 max_seq_len: Optional[int] = None):
         """图生视频：参考图 + 动作提示词 → 帧序列（PIL 列表）。
 
         - num_frames 必须是 4k+1（Wan 时序 VAE 的要求），内部向下取整；
@@ -743,6 +767,11 @@ class DiffusersProvider(BaseProvider):
             pass
         # 4k+1：Wan 时序 VAE 把帧数压成 (n-1)/4+1 个潜帧，非 4k+1 会补齐或报错
         frames = max(5, (int(num_frames) - 1) // 4 * 4 + 1)
+        # 文本长度同样不能靠管线默认（umT5 默认 226 token）：行走节点的动作
+        # 描述一旦长一点就会被静默截断，表现成「只走了半句话」。
+        extra_kw = {}
+        if max_seq_len and _accepts_max_seq(type(pipe)):
+            extra_kw["max_sequence_length"] = int(max_seq_len)
         out = pipe(
             image=src,
             prompt=prompt,
@@ -758,6 +787,7 @@ class DiffusersProvider(BaseProvider):
             output_type="pil",
             # 步进回调：30 步的视频生成是全场最长的等待，进度与取消都靠它
             callback_on_step_end=progress_mod.make_step_callback(task_id, use_steps),
+            **extra_kw,
         )
         imgs = _frames_to_pil(out.frames)
         # 峰值显存：用户抱怨「显存很大」时，最需要知道的就是这个数到底多少。
@@ -1111,7 +1141,7 @@ class DiffusersProvider(BaseProvider):
                 negative if negative is not None else self.cfg.get("negativePrompt", ""),
                 width, height, steps, seed, generator, ref,
                 int(num_frames), int(fps), int(max_side), task_id,
-                bool(pixel_art), guidance_scale,
+                bool(pixel_art), guidance_scale, max_seq_len,
             )
         status = _torch_status()
         out_meta = {"provider": "diffusers", "model": model_id,

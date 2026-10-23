@@ -677,6 +677,48 @@ def _run_checks(client) -> int:
           not hasattr(DiffusersProvider, "_load_zimage")
           and not hasattr(DiffusersProvider, "_load_qwen_edit"))
 
+    print("== 视角指令：文本预算与传给管线 ==")
+    # 2026-10-23 定位到的真问题：_run_qwen21 收下 max_seq_len 后**没有传给管线**，
+    # 管线默认 max_sequence_length=512（中文约 390 字），1000+ 字的视角指令被
+    # 静默截断——配件守恒/背覆守恒/姿势不变全在被截掉的尾部，表现成「指令写了
+    # 没用」：佩剑丢、没披风的角色反而被加披风。这组断言守两件事：
+    # 1) 指令长度换算后不超预算；2) 长度确实交给了管线。
+    from backend.app.pipelines.threeview import (
+        _apply_background as _ab, _fit_seq_len, _view_instruction as _vi,
+    )
+    _long_desc = "熊猫特种兵，战术背心、弹匣袋、护膝、模块化突击步枪。" * 12
+    _ins = _ab(_vi("back", _long_desc), "transparent")
+    check("超长角色描述被收敛，不挤爆文本预算",
+          len(_ins) <= 1400 and len(_ins) * 1.3 + 64 <= 1920,
+          f"{len(_ins)} 字")
+    check("估算的序列长度覆盖整条指令",
+          _fit_seq_len(_ins, None) >= min(1792, len(_ins) * 1.3 + 64) - 128,
+          f"{_fit_seq_len(_ins, None)}")
+
+    import inspect as _inspect
+    from backend.app.providers import diffusers_local as _dl
+    _src = _inspect.getsource(_dl.DiffusersProvider._run_qwen21)
+    check("qwen21 把 max_sequence_length 真的传给管线",
+          "max_sequence_length" in _src, "_run_qwen21 里没有 max_sequence_length")
+    try:
+        from diffusers import QwenImagePipeline as _QP
+        check("能力检测认得 QwenImagePipeline 的 max_sequence_length",
+              _dl._accepts_max_seq(_QP))
+    except Exception:
+        pass
+
+    # 视角输出比例必须跟参考图走：正视图 768×768、节点默认 512×768 时，
+    # letterbox 会把角色缩在竖图中间，拼板和正视图对不上（看起来像换了体型）
+    from backend.app.pipelines.threeview import fit_view_size
+    check("视角尺寸跟随参考图比例（方图 → 方图）",
+          fit_view_size(512, 768, 768, 768) == (768, 768),
+          str(fit_view_size(512, 768, 768, 768)))
+    check("视角尺寸保持竖图比例",
+          fit_view_size(512, 768, 768, 1024) == (576, 768),
+          str(fit_view_size(512, 768, 768, 1024)))
+    check("Wan 也把 max_sequence_length 传下去",
+          "max_sequence_length" in _inspect.getsource(_dl.DiffusersProvider._run_wan))
+
     print("== 视角生成：参数复用正视图 ==")
     from backend.app.pipelines.threeview import _apply_background
     instr = _apply_background("把角色转成侧面。", "gray")
@@ -714,14 +756,28 @@ def _run_checks(client) -> int:
           "角色的左侧面" in _view_instruction("side")
           and "角色的右侧面" in _view_instruction("side_r"))
     check("背视图锚定左右镜像关系",
-          "和正视图正好相反" in _view_instruction("back"))
+          "与正视图正好相反" in _view_instruction("back"))
     # 背覆体积守恒：披风这类「正面只看见一条边」的部件在背视图最容易被抹掉。
     # 修法必须是几何描述 + 条件句（不能点名「披风」，否则没披风的角色会长一件）
     _bk = _view_instruction("back")
-    check("背视图有背覆体积守恒条款",
-          "盖住后背" in _bk and "至少与肩同宽" in _bk, _bk[200:260])
-    check("背覆条款是条件句（不凭空虚增部件）",
-          "参考图里如果有" in _bk and "披风" not in _bk)
+    # 背覆条款必须是**双分支**：「图里有」怎么画 + 「图里没有」怎么画。
+    # 写单边条件句（"如果有…它必须原样保留…至少与肩同宽"）实测会被模型当成
+    # 「给我补一件」的指令——没有披风的角色每个视角都多一件。
+    check("背视图有背覆守恒条款",
+          "盖住后背" in _bk and "图里有" in _bk and "图里没有" in _bk, _bk[200:280])
+    check("背覆条款是双分支（没有就别补）",
+          "图里没有" in _bk and "不要补" in _bk and "披风" not in _bk)
+    # 「角色穿着从肩部垂下的外层布料时…」这种句式，本意是条件句，模型读到
+    # 「穿着…外层布料」就照做——这是「没披风却加了披风」的直接来源。
+    check("背面不无条件断言角色穿着什么",
+          "穿着从肩部垂下的外层布料" not in _bk, _bk[:120])
+    check("通用条款不点名具体道具（名词只来自用户描述）",
+          "刀剑" not in _bk and "披风" not in _bk)
+    check("单侧细长物件有可见性要求（防整根被身体吃掉）",
+          "露在身体轮廓之外" in _view_instruction("side"))
+    check("角色描述只用于辨认，不作增补依据",
+          "不是让你照着文字补齐" in _view_instruction("side", "左腰佩剑")
+          and "也不许画" in _view_instruction("side", "左腰佩剑"))
     check("指令含身份锚点条款",
           "身份特征逐项一致" in _view_instruction("side")
           and "花纹" in _view_instruction("side_r"))
@@ -731,10 +787,14 @@ def _run_checks(client) -> int:
     # 角色描述原文当「部件清单」：细长配件不会在重画身体时被漏掉，
     # 但原句里的姿势词必须当场作废，否则模型退回正面站姿。
     _with_char = _view_instruction("side", "灰白猫武士，左腰侧挎武士刀，正面站立")
-    check("指令附角色部件清单", "角色设定清单" in _with_char and "左腰侧挎武士刀" in _with_char)
+    # 描述从「部件清单」降级为「辨认用角色设定」：清单会两头出错——
+    # 图里没有、描述里写了的被加上；图里有、描述没写的被当成清单外删掉。
+    check("指令附角色设定（仅用于辨认）",
+          "角色设定" in _with_char and "左腰侧挎武士刀" in _with_char
+          and "不是让你照着文字补齐" in _with_char)
     check("清单里姿势词声明作废",
           "作废" in _with_char and "以本张图的视角为准" in _with_char)
-    check("无角色描述时不加清单", "角色设定清单" not in _view_instruction("side"))
+    check("无角色描述时不加设定段", "角色设定" not in _view_instruction("side"))
     # 长指令被序列长度截断是静默失效：截掉的正好是尾部的背景句/守恒条款
     from backend.app.pipelines.threeview import _fit_seq_len
     _ins = _view_instruction("side")
