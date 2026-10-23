@@ -1108,6 +1108,7 @@ class DiffusersProvider(BaseProvider):
         pixel_art: bool = False,
         negative: Optional[str] = None,
         guidance_scale: Optional[float] = None,
+        max_seq_len: Optional[int] = None,
     ) -> ProviderResult:
         """图生视频：参考图 + 提示词 → 帧序列（ProviderResult.images = 帧）。
 

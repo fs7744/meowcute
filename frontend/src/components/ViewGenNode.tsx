@@ -1,4 +1,8 @@
-import type { ResultImage, ViewGenNode as ViewGenNodeType } from '../types'
+import { useEffect, useState } from 'react'
+import { loadPromptLimits } from '../api'
+import type {
+  PromptLimits, ResultImage, ViewGenNode as ViewGenNodeType,
+} from '../types' 
 
 type Props = {
   node: ViewGenNodeType
@@ -51,6 +55,15 @@ export default function ViewGenNode({
   }
   const v = { ...DEFAULTS, ...node.viewgen }
   const patch = (p: Partial<typeof v>) => onChange({ viewgen: { ...v, ...p } })
+
+  // 四视图只把上游描述当前 N 字当「辨认清单」——超出部分读不到，
+  // 这里必须把真实上限告诉用户，否则他会以为整段都进了模型。
+  const [limits, setLimits] = useState<PromptLimits | null>(null)
+  useEffect(() => {
+    let alive = true
+    loadPromptLimits().then((l) => { if (alive) setLimits(l) }).catch(() => undefined)
+    return () => { alive = false }
+  }, [])
 
   const meta = node.result?.viewMeta
   const isBack = v.view === 'back'
@@ -112,7 +125,9 @@ export default function ViewGenNode({
         </div>
         <div className="hint" style={{ marginTop: -4 }}>
           单侧配件（腰挎刀 / 单肩包 / 单侧护具）按「同一侧、同一高度、同样佩戴方式」
-          保留；正视图的角色描述会作为部件清单一起交给模型，防止细长配件漏画。
+          保留。上游的角色描述会作为「辨认清单」交给模型——只用来认出图里的部件，
+          <b>不是增补依据</b>：图里没有的，描述写了也不画。
+          {limits ? `最多读取前 ${limits.character.maxChars} 字。` : ''}
         </div>
         <div className="hint" style={{ marginTop: -4 }}>
           正视图抽卡几张，这里就对每张各生成一张（第 k 张 ↔ 第 k 组），

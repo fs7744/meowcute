@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image
 
 from .. import progress as progress_mod
+from ..prompt_limits import fit_seq_len
 
 # --------------------------------------------------------------------------- #
 # 方向定义
@@ -315,7 +316,9 @@ async def derive_direction(
         width=max(64, int(width) // 8 * 8),
         height=max(64, int(height) // 8 * 8),
         steps=steps, seed=seed, n=1, refs=[base],
-        task_id=task_id, max_seq_len=max_seq_len,
+        task_id=task_id,
+        # 立绘指令本身就有 100+ 字，不能让它落到管线默认 512
+        max_seq_len=fit_seq_len(instruction, max_seq_len),
     )
     rmeta = dict(result.meta or {})
     return result.images[0].convert("RGB"), {
@@ -396,6 +399,9 @@ async def generate_walk(
             num_frames=num_frames, fps=fps, max_side=max_side,
             task_id=task_id, pixel_art=pixel_art,
             negative=negative, guidance_scale=cur_gs,
+            # Wan 的 umT5 默认只有 226 token，而 walk_prompt 模板本身就有
+            # 173 字（≈288 token）——不显式给预算，默认提示词就已经被截了。
+            max_seq_len=fit_seq_len(prompt, max_seq_len, limit=512),
         )
         frames = list(result.images)
         stats = motion_stats(frames)

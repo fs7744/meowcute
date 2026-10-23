@@ -1,7 +1,7 @@
 import type {
   BackgroundOption, DoctorReport, GenerateResult, GenParams, MatteOptions, PixelOptions,
   Project, ProjectFilesInfo, ProjectSummary, PromptExample, PromptPreview, ResultImage,
-  Style, TaskProgress, Template, RefAsset, VideoAsset,
+  PromptLimits, Style, TaskProgress, Template, RefAsset, VideoAsset,
 } from './types'
 
 async function j<T>(r: Response): Promise<T> {
@@ -29,6 +29,11 @@ export type SettingsPayload = {
   pixel: Partial<PixelOptions> & { displayScale?: number }
   aiLabel?: boolean
 }
+
+/** 长度上限全站共用一份：画布上多张卡、不同节点都读同一口径 */
+let limitsCache: Promise<PromptLimits> | null = null
+export const loadPromptLimits = (): Promise<PromptLimits> =>
+  (limitsCache ??= api.limits().then((r) => r.limits))
 
 export const api = {
   health: () => fetch('/api/health').then(j<{
@@ -90,6 +95,9 @@ export const api = {
 
   deleteTemplate: (id: string) =>
     fetch(`/api/templates/custom/${id}`, { method: 'DELETE' }).then(j<{ ok: boolean }>),
+
+  /** 提示词长度上限：按画风与质量档位换算，用于输入框计数与硬限制 */
+  limits: () => fetch('/api/limits').then(j<{ limits: PromptLimits }>),
 
   styles: () => fetch('/api/styles').then(j<{
     styles: Style[]; backgrounds: BackgroundOption[]

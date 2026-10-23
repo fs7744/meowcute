@@ -43,6 +43,17 @@ export type Template = {
   updatedAt?: number
 }
 
+/** 提示词长度上限（后端按 token 预算换算，前端只负责展示与限制） */
+export type PromptLimits = {
+  charsPerToken: number
+  overheadTokens: number
+  seqLenMax: number
+  seqLenOptions: number[]
+  styles: Record<string, { plain: number; pixel: number }>
+  character: { maxChars: number; note: string }
+  walkAction: { maxChars: number; note: string }
+}
+
 export type PromptExample = {
   id: string
   category: string

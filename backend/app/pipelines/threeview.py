@@ -162,9 +162,15 @@ def _character_clause(character: str) -> str:
     if not text:
         return ""
     # 描述只承担「辨认」职责，不值得为它把守恒条款挤出文本预算。
-    # 240 字足够覆盖一整套装具名词；再长的部分对转视角没有增量信息。
-    if len(text) > 240:
-        text = text[:240]
+    # 上限与前端提示共用 prompt_limits.CHARACTER_MAX（改一处两边一起变）：
+    # 920 字指令 + 380 字描述 + 110 字透明声明 ≈ 1897 token，落在 1920 以内。
+    _limit = 380
+    try:
+        from ..prompt_limits import CHARACTER_MAX as _limit  # noqa: PLC0415
+    except Exception:
+        pass
+    if len(text) > _limit:
+        text = text[:_limit]
     return (
         "角色设定（只用来帮你认出参考图上的部件分别是什么，不是让你照着文字补齐）："
         + text + "。"
@@ -584,26 +590,15 @@ def cell_size(width: int, height: int) -> Tuple[int, int]:
 
 
 def _fit_seq_len(instruction: str, requested: Optional[int]) -> int:
-    """视角指令需要的文本序列长度：不短于指令本身，也不短于用户选的值。
+    """视角指令需要的文本序列长度（口径与生成卡共用 prompt_limits.fit_seq_len）。
 
     文本编码超长会被管线**静默截断**（截的是尾部，正好是最关键的配件守恒与
-    背覆守恒条款），表现成「指令写了没用」。中文约 1.3 token/字 + 64 余量，
-    向 128 取整，上限 1920。
-
-    为什么是 1920 而不是 1536：一条完整的视角指令约 920 字，用户自己的角色设定
-    上限 240 字，透明底还要加一段双段式声明（约 110 字），合计 1270 字
-    ≈ 1763 token。1536 会把这些内容截掉最后 150 字——正好是「姿势不变」和收尾。
-    1920 还给未来加条款留了约 120 token 余量。上限提高只影响文本编码器一次
-    前向，峰值显存增加有限。
+    背覆守恒条款），表现成「指令写了没用」。上限 1920 的依据见 prompt_limits。
     """
-    est = int(len(instruction or "") * 1.3) + 64
-    est = (est + 127) // 128 * 128
-    return max(int(requested or 0), 512, min(1920, est))
+    from ..prompt_limits import fit_seq_len
+    return fit_seq_len(instruction, requested)
 
 
-# --------------------------------------------------------------------------- #
-# 单步执行：侧/背/右视图（编辑底座指令接力）
-# --------------------------------------------------------------------------- #
 def _apply_background(instruction: str, background: str) -> str:
     """把背景要求**前置**到视角指令上（侧/背/右复用正视图参数）。
 

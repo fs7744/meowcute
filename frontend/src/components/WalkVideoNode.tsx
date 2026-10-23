@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api'
-import type { WalkVideoNode as WalkVideoNodeType, WalkDir, VideoAsset } from '../types'
+import { api, loadPromptLimits } from '../api'
+import type {
+  PromptLimits, WalkVideoNode as WalkVideoNodeType, WalkDir, VideoAsset,
+} from '../types' 
 
 type Props = {
   node: WalkVideoNodeType
@@ -70,6 +72,14 @@ export default function WalkVideoNode({
   const v = { ...DEFAULTS, ...node.walkvideo }
   const patch = (p: Partial<typeof v>) => onChange({ walkvideo: { ...v, ...p } })
   const sources = v.sources || {}
+  // 动作描述会拼进 Wan 的提示词模板，模板本身已占掉大半预算
+  const [limits, setLimits] = useState<PromptLimits | null>(null)
+  useEffect(() => {
+    let alive = true
+    loadPromptLimits().then((l) => { if (alive) setLimits(l) }).catch(() => undefined)
+    return () => { alive = false }
+  }, [])
+  const actionMax = limits?.walkAction.maxChars ?? 40
 
   const meta = node.meta
   const dirs = meta?.directions ?? []
@@ -238,8 +248,11 @@ export default function WalkVideoNode({
 
         <label className="gen-field">
           <span className="gen-field-label">动作</span>
-          <input className="input" value={v.action} maxLength={20}
+          <input className="input" value={v.action} maxLength={actionMax}
             onChange={(e) => patch({ action: e.target.value })} />
+          <span className="hint" style={{ marginTop: 2 }}>
+            {v.action.length} / {actionMax} 字
+          </span>
         </label>
 
         {/* ---- 方向立绘：每个真实方向用哪张图当参考（可预览 / 可自选） ---- */}

@@ -42,6 +42,7 @@ from . import doctor as doctor_mod
 from . import progress as progress_mod
 from . import projects as projects_mod
 from . import prompt_examples as examples_mod
+from . import prompt_limits as limits_mod
 from . import storage
 from . import custom_templates as ctpl
 from . import template_overrides as tov
@@ -343,6 +344,16 @@ async def delete_custom_template(tid: str) -> Dict[str, Any]:
     if not ctpl.delete(tid):
         raise HTTPException(404, "模板不存在")
     return {"ok": True}
+
+
+@app.get("/api/limits")
+async def prompt_limits() -> Dict[str, Any]:
+    """提示词长度上限（按画风 / 质量档位换算），前端用来做计数器与硬限制。
+
+    单一事实来源放在后端：上限取决于「画风词 + 像素契约占多少 token」，
+    前端自己拍一个数字，迟早和真实截断点对不上。
+    """
+    return {"limits": limits_mod.snapshot()}
 
 
 @app.get("/api/styles")
@@ -772,7 +783,10 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
             steps=params.steps, seed=seed, n=n,
             refs=refs or None,
             task_id=task_id,
-            max_seq_len=params.maxSeqLen,
+            # 「自动」= 按最终提示词（含风格词 / 像素契约）的实际长度估算。
+            # 之前 None 直接落到管线默认 512 token（约 344 字），而像素契约本身
+            # 就占 256 字，用户写 100 字就被截——界面上却显示「自动（推荐）」。
+            max_seq_len=limits_mod.fit_seq_len(built["prompt"], params.maxSeqLen),
             # 负面词必须真的传下去：以前只把 built["negative"] 塞进 meta 给
             # 界面看，provider 读的是设置里的默认值，像素模式的负面清单
             # （抗锯齿/渐变/半透明…）从未生效。
@@ -858,7 +872,11 @@ async def _run_generate(task_id: str, payload: GeneratePayload) -> None:
                 "family": meta.get("family"),
                 "mode": meta.get("mode"),
                 "steps": meta.get("steps"),
-                "seqLen": meta.get("seqLen"),
+                # provider 产出的键是 maxSeqLen（这条白名单以前写的是 seqLen，
+                # 而 provider 从来没产过那个键 —— 界面上「实际用了多少 token」
+                # 一直是空的，连排查都只能靠猜）
+                "maxSeqLen": meta.get("maxSeqLen"),
+                "seqLen": meta.get("maxSeqLen") or meta.get("seqLen"),
                 "seed": seed,
                 "seconds": elapsed,
                 "vramWarning": meta.get("vramWarning"),

@@ -719,6 +719,48 @@ def _run_checks(client) -> int:
     check("Wan 也把 max_sequence_length 传下去",
           "max_sequence_length" in _inspect.getsource(_dl.DiffusersProvider._run_wan))
 
+    print("== 提示词长度上限：前后端同一口径 ==")
+    # 文本超限会被管线静默截断，所以上限必须由一个地方算、由界面显示出来。
+    _lim = client.get("/api/limits").json()["limits"]
+    check("长度上限接口可用",
+          _lim["seqLenMax"] == 1920 and len(_lim["styles"]) >= 15,
+          f'{_lim["seqLenMax"]} / {len(_lim["styles"])}')
+    check("像素契约的固定开销被计入",
+          _lim["styles"]["pixel_16bit"]["pixel"] > _lim["styles"]["pixel_16bit"]["plain"] + 100,
+          str(_lim["styles"]["pixel_16bit"]))
+    check("自动档字符预算换算正确",
+          int((1920 - 64) / 1.3) == 1427, str(int((1920 - 64) / 1.3)))
+    check("四视图描述上限与后端常量同源",
+          _lim["character"]["maxChars"] == 380, str(_lim["character"]["maxChars"]))
+    check("超长描述被截到上限",
+          ("猫" * 380) in _vi("back", "猫" * 1000)
+          and ("猫" * 381) not in _vi("back", "猫" * 1000))
+
+    # 「自动」不能等于管线默认 512：像素契约本身就占 256 字，用户写 100 字就被截
+    from backend.app import prompt_limits as _pl
+    from backend.app.styles import build_prompt as _bp
+    _b = _bp("猫" * 400, "pixel_16bit", pixel=True, background="gray")
+    check("生成提示词按实长给序列长度（不再恒为 512）",
+          _pl.fit_seq_len(_b["prompt"], None) > 512, str(_pl.fit_seq_len(_b["prompt"], None)))
+    check("短提示词保底 512", _pl.fit_seq_len("猫", None) == 512)
+    # 接口层必须真的用它：算了但不用，等于没算
+    from backend.app import main as _main_mod
+    check("生成接口按最终提示词估算序列长度",
+          'limits_mod.fit_seq_len(built["prompt"]' in _inspect.getsource(_main_mod),
+          "main.py 里没有调用")
+    # 算出来的长度要能回到界面上（曾经白名单写 seqLen、provider 产 maxSeqLen，
+    # 结果「实际用了多少 token」永远是空的，排查只能靠猜）
+    check("结果 meta 带上实际序列长度",
+          '"maxSeqLen": meta.get("maxSeqLen")' in _inspect.getsource(_main_mod))
+
+    # 行走：walk_prompt 模板本身 173 字，umT5 默认 226 token 装不下
+    from backend.app.pipelines.walkvideo import walk_prompt as _wp
+    check("行走提示词预算覆盖模板本身",
+          _pl.fit_seq_len(_wp("行走"), None, limit=512) >= 384,
+          str(_pl.fit_seq_len(_wp("行走"), None, limit=512)))
+    check("Wan 调用把 max_sequence_length 传下去",
+          "max_sequence_length" in _inspect.getsource(_dl.DiffusersProvider._run_wan))
+
     print("== 视角生成：参数复用正视图 ==")
     from backend.app.pipelines.threeview import _apply_background
     instr = _apply_background("把角色转成侧面。", "gray")

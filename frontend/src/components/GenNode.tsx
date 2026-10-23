@@ -1,8 +1,8 @@
-import { useMemo, useRef, useState } from 'react'
-import { api } from '../api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { api, loadPromptLimits } from '../api'
 import type {
-  BackgroundOption, GenNode as GenNodeType, PixelOptions, PromptExample, RefAsset, Style,
-  TaskProgress,
+  BackgroundOption, GenNode as GenNodeType, PixelOptions, PromptExample, PromptLimits,
+  RefAsset, Style, TaskProgress,
 } from '../types'
 
 type Props = {
@@ -44,6 +44,24 @@ export default function GenNode({
   const fileRef = useRef<HTMLInputElement>(null)
 
   const style = useMemo(() => styles.find((s) => s.id === node.styleId) || null, [styles, node.styleId])
+
+  // 提示词上限：由后端按「token 预算 − 画风词/像素契约固定开销」算出来。
+  // 这里必须跟着 styleId / 质量档位 / 像素开关变，否则切到像素画风后
+  // 固定开销从 57 字涨到 256 字，界面还显示旧的余量，用户就会被静默截断。
+  const [limits, setLimits] = useState<PromptLimits | null>(null)
+  useEffect(() => {
+    let alive = true
+    loadPromptLimits().then((l) => { if (alive) setLimits(l) }).catch(() => undefined)
+    return () => { alive = false }
+  }, [])
+  const seqLen = node.params.maxSeqLen ?? limits?.seqLenMax ?? 1920
+  const fixedChars = limits?.styles[node.styleId || '']?.[node.pixel?.enabled ? 'pixel' : 'plain'] ?? 0
+  const budgetChars = Math.floor(
+    (seqLen - (limits?.overheadTokens ?? 64)) / (limits?.charsPerToken ?? 1.3))
+  const maxChars = Math.max(40, budgetChars - fixedChars)
+  const promptLen = (node.prompt || '').length
+  const overBy = promptLen - maxChars
+  const nearLimit = overBy <= 0 && promptLen >= maxChars * 0.88
   // 像素精修只对像素类画风开放：写实/卡通/水彩走了量化会把渐变和细节压成色块
   const isPixel = !!style?.pixelClass
   const running = !!task?.progress && !task.progress.doneAt
@@ -137,16 +155,40 @@ export default function GenNode({
         <div className="gen-field">
           <div className="gen-field-head">
             <span className="gen-field-label"><span className="idx">01</span>文字描述</span>
-            <span className="hint">{node.prompt.length} 字</span>
+            <span className="hint" style={overBy > 0
+              ? { color: 'var(--pink)' }
+              : nearLimit ? { color: 'var(--yellow)' } : undefined}>
+              {promptLen} / {maxChars} 字
+            </span>
           </div>
           <textarea
             ref={taRef}
             className="textarea"
             style={{ minHeight: 92 }}
+            maxLength={maxChars}
             placeholder="例：灰白英短猫武士，红色短披风，左腰侧挎武士刀，三头身比例，正面站立"
             value={node.prompt}
             onChange={(e) => onChange({ prompt: e.target.value })}
           />
+          {limits ? (
+            <div className="hint" style={{ marginTop: -4, lineHeight: 1.6,
+              color: overBy > 0 ? 'var(--pink)' : undefined }}>
+              {overBy > 0 ? (
+                <>
+                  超出 {overBy} 字：超出的部分模型读不到（会被截断）。
+                  <button className="btn btn-sm" style={{ marginLeft: 6, height: 22 }}
+                    onClick={() => onChange({ prompt: (node.prompt || '').slice(0, maxChars) })}>
+                    截到上限
+                  </button>
+                </>
+              ) : (
+                <>
+                  上限 = {seqLen} token 预算 − 画风「{style?.name || node.styleId || '默认'}」与像素契约
+                  占用的 {fixedChars} 字。改「提示词质量」或画风会改变这个数。
+                </>
+              )}
+            </div>
+          ) : null}
           <div className="ex-cat">
             {categories.map((c) => (
               <button key={c} className={exCat === c ? 'on' : ''} onClick={() => setExCat(c)}>{c}</button>
@@ -255,7 +297,8 @@ export default function GenNode({
             </label>
           </div>
           <div className="hint" style={{ marginTop: 4 }}>
-            质量越高，长提示词（含像素契约）越不容易被截断；只影响文本编码，
+            当前档位最多容纳 {maxChars} 字（已扣掉画风与像素契约的固定开销）；
+            质量越高越不容易截断；只影响文本编码，
             对出图速度影响很小。自动会按提示词长度选档。
           </div>
         </div>
