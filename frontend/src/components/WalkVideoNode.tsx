@@ -65,8 +65,8 @@ export default function WalkVideoNode({
   const DEFAULTS: WalkVideoNodeType['walkvideo'] = {
     enabled: true, dirMode: 'eight', action: '行走', styleId: null,
     steps: null, seed: null, width: 384, height: 512,
-    numFrames: 81, fps: 24, maxSide: 512, maxSeqLen: null,
-    guidanceScale: null, motionThreshold: 6.0, retries: 2,
+    numFrames: 49, fps: 16, maxSide: 512, maxSeqLen: null,
+    guidanceScale: null, motionThreshold: 5.5, retries: 1,
     sources: {},
   }
   const v = { ...DEFAULTS, ...node.walkvideo }
@@ -86,6 +86,13 @@ export default function WalkVideoNode({
 
   // ---- 视频来源面板状态 ----
   const realDirs = REAL_DIRS[v.dirMode] || REAL_DIRS.eight
+  // 本机实测拟合（4090 / fp8 / 384×512）：单方向视频 ≈ 31 + 0.0183 × 帧数 × 步数 秒。
+  // 81 帧/30 步实测 75.7s、49 帧/24 步 52.7s，两点拟合误差 < 1s。
+  // 再加上每方向一次立绘推导（28 步约 18s）与序列帧/拼表（约 25s）。
+  const vidSteps = v.steps ?? 30
+  const perVideoSec = Math.round(31 + 0.0183 * (v.numFrames || 49) * vidSteps)
+  const etaSec = Math.round(realDirs.length * (perVideoSec + 18) + 25)
+  const etaText = `${Math.floor(etaSec / 60)} 分 ${etaSec % 60} 秒`
   const [videos, setVideos] = useState<VideoAsset[] | null>(null)
   const [picking, setPicking] = useState<WalkDir | null>(null)
   const [uploadFor, setUploadFor] = useState<WalkDir | null>(null)
@@ -234,6 +241,20 @@ export default function WalkVideoNode({
 
         <div className="hint">
           参考：{sourceLabel ? <b>{sourceLabel}</b> : '未连线（把「生成图」或「选择图片」连到左侧端口）'}
+        </div>
+
+        <div className="hint" style={{ marginTop: -2, lineHeight: 1.6 }}>
+          预计 ≈ <b>{etaText}</b>（{realDirs.length} 个真实方向 × 视频 {perVideoSec}s +
+          立绘 18s + 后处理约 25s；{v.numFrames} 帧 / {vidSteps} 步，本机实测拟合）
+          {v.dirMode === 'eight' ? '。选「四方向」可少跑 2 次视频（约省 40%）' : ''}
+          {v.numFrames > 49 || (v.steps ?? 30) > 30 ? (
+            <button className="btn btn-sm" style={{ marginLeft: 6, height: 22 }}
+              onClick={() => patch({
+                numFrames: 49, fps: 16, steps: null, retries: 1, motionThreshold: 5.5,
+              })}>
+              用推荐参数
+            </button>
+          ) : null}
         </div>
 
         <label className="gen-field">

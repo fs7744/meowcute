@@ -102,15 +102,19 @@ DEFAULT_WALKVIDEO = {
     "seed": None,
     "width": 384,
     "height": 512,
-    "numFrames": 81,                        # Wan 帧数（内部对齐 4k+1）
-    "fps": 24,
+    # 帧数/帧率：49 帧 @16fps ≈ 3.1s 循环，和原来的 81@24（3.4s）时长接近，
+    # 但视频成本按帧数线性掉 40%。实测 81/30 单方向 75.7s，49/28 约 56s。
+    "numFrames": 49,                        # Wan 帧数（内部对齐 4k+1）
+    "fps": 16,
     "maxSide": 512,
     "maxSeqLen": None,
     # 行走动作控制（轻量闭环）：guidanceScale=None 用默认 5.0；
     # motionThreshold 是动作幅度合格线；retries 是不达标时自动加压重跑次数。
     "guidanceScale": None,
-    "motionThreshold": 6.0,
-    "retries": 2,
+    # 49 帧实测动作分约 6.5（阈值 6.0 太贴边，容易误触发重试），留 1.0 余量。
+    # 重试一次就是再跑 56s，默认最多重试 1 次（最坏 2 次，而不是 3 次）。
+    "motionThreshold": 5.5,
+    "retries": 1,
 }
 
 # walkvideo.sources 的合法方向键（顺时针一圈）

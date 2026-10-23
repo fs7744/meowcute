@@ -286,6 +286,7 @@ async def derive_direction(
     max_seq_len: Optional[int] = None,
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
+    progress: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Image.Image, Dict[str, Any]]:
     """从锚点图接力生成指定方向的立绘（编辑底座指令接力）。
 
@@ -315,10 +316,19 @@ async def derive_direction(
         prompt=instruction,
         width=max(64, int(width) // 8 * 8),
         height=max(64, int(height) // 8 * 8),
-        steps=steps, seed=seed, n=1, refs=[base],
+        # 立绘只是视频的第一帧锚点，不是最终交付图：28 步足够保住朝向与轮廓，
+        # 用默认 40 步是每方向白等 7 秒（八方向 5 个真实方向 = 35 秒）。
+        steps=28 if steps is None else steps,
+        seed=seed, n=1, refs=[base],
         task_id=task_id,
         # 立绘指令本身就有 100+ 字，不能让它落到管线默认 512
         max_seq_len=fit_seq_len(instruction, max_seq_len),
+        # 步进只更新 label（hold），不推进整体进度——否则每个子步骤都会
+        # 把 total 撞成 28，进度条来回跳
+        progress={"label": f"{DIR_LABELS[direction]}立绘",
+                  "base": int((progress or {}).get("base") or 0),
+                  "grand": int((progress or {}).get("grand") or 0),
+                  "hold": True},
     )
     rmeta = dict(result.meta or {})
     return result.images[0].convert("RGB"), {
@@ -339,14 +349,16 @@ async def generate_walk(
     seed: Optional[int] = None,
     width: int = 384,
     height: int = 512,
-    num_frames: int = 81,
-    fps: int = 24,
+    num_frames: int = 49,
+    fps: int = 16,
     max_side: int = 512,
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
     pixel_art: bool = False,
     guidance_scale: Optional[float] = None,
-    motion_threshold: float = 6.0,
+    motion_threshold: float = 5.5,
+    max_seq_len: Optional[int] = None,
+    progress: Optional[Dict[str, Any]] = None,
     retries: int = 2,
 ) -> Tuple[List[Image.Image], Dict[str, Any]]:
     """Wan2.2 TI2V-5B：方向立绘 + 动作提示词 → 行走视频帧序列。
@@ -402,6 +414,7 @@ async def generate_walk(
             # Wan 的 umT5 默认只有 226 token，而 walk_prompt 模板本身就有
             # 173 字（≈288 token）——不显式给预算，默认提示词就已经被截了。
             max_seq_len=fit_seq_len(prompt, max_seq_len, limit=512),
+            progress=progress,
         )
         frames = list(result.images)
         stats = motion_stats(frames)
@@ -498,6 +511,16 @@ async def run_walk(
     done = 0
     t0 = time.time()
 
+    # 开场先说清「要做多少、大概多久」。八方向是分钟级任务，只给一个不确定
+    # 进度条，用户在前 30 秒就会以为卡死（实测加载底座静默 30s、冷启动更久）。
+    if gen_dirs:
+        _per_video = 31 + 0.0183 * (num_frames or 49) * (steps or 30)
+        _eta_min = (len(gen_dirs) * (_per_video + 18) + 25) / 60
+        progress_mod.report(
+            task_id, 0, total_steps,
+            f"{len(gen_dirs)} 个真实方向（其余镜像）：预计约 {_eta_min:.1f} 分钟；"
+            "首次加载视频底座另加 1-3 分钟")
+
     # 第零轮：现成视频（不加载任何模型）
     clips: Dict[str, List[Image.Image]] = {}
     derive_meta: Dict[str, Dict[str, Any]] = {}
@@ -549,7 +572,8 @@ async def run_walk(
             img, meta = await derive_direction(
                 src_img, d, anchor=anchor_role, steps=steps, seed=seed,
                 width=width, height=height, max_seq_len=max_seq_len,
-                provider_cfg=provider_cfg, task_id=task_id)
+                provider_cfg=provider_cfg, task_id=task_id,
+                progress={"base": done, "grand": total_steps})
         except progress_mod.CancelledError:
             raise
         except Exception as e:
@@ -575,7 +599,10 @@ async def run_walk(
                 provider_cfg=provider_cfg, task_id=task_id,
                 pixel_art=pixel_art,
                 guidance_scale=guidance_scale,
-                motion_threshold=motion_threshold, retries=retries)
+                motion_threshold=motion_threshold, retries=retries,
+                max_seq_len=max_seq_len,
+                progress={"label": f"{DIR_LABELS[d]}行走视频",
+                          "base": done, "grand": total_steps, "hold": True})
         except progress_mod.CancelledError:
             raise
         except Exception as e:

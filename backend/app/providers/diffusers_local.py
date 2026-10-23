@@ -22,6 +22,7 @@ import asyncio
 import gc
 import json
 import os
+import threading
 from functools import lru_cache
 import time
 from typing import Any, Dict, List, Optional
@@ -184,6 +185,26 @@ def _normalize_refs(ref=None, refs=None) -> List[Any]:
     return out[:MAX_REFS]
 
 
+def _try_to_cuda(pipe: Any, tag: str = "wan") -> bool:
+    """把整条管线搬到显卡上常驻；放不下就返回 False（调用方退回 cpu offload）。
+
+    为什么值得试：model offload 的粒度是模块级——每个去噪步都要把 transformer
+    （Wan fp8 约 9.3GB）搬进显存、算完再搬回去。30 步就是 280GB 的 PCIe 往返，
+    这是视频生成慢的主因之一。24GB 卡上 fp8 权重（transformer 9.3 + umT5 5.3
+    + VAE 2.6）约 17GB，本来就该常驻。
+    """
+    try:
+        pipe.to("cuda")
+        return True
+    except Exception as e:
+        print(f"[meowcute] {tag} 常驻显存失败（{e}），退回 cpu offload", flush=True)
+        try:
+            pipe.to("cpu")
+        except Exception:
+            pass
+        return False
+
+
 @lru_cache(maxsize=8)
 def _accepts_max_seq(cls: Any) -> bool:
     """管线 __call__ 是否接受 max_sequence_length（结果按类缓存）。
@@ -196,6 +217,35 @@ def _accepts_max_seq(cls: Any) -> bool:
         return "max_sequence_length" in inspect.signature(cls.__call__).parameters
     except Exception:
         return False
+
+
+def start_heartbeat(task_id: Optional[str], label: str, *, hint: str = "") -> threading.Event:
+    """静默超过 3 秒就把「已等 Ns」写进 label，直到 stop.set()。
+
+    模型加载（首次 fp8 量化可达数分钟）、VAE 解码这两段都在 diffusers 的
+    步进回调之外，一条进度都不会有——界面只剩一个不动的「生成中」。
+    心跳只在**没有新上报**时才更新，所以正常推理的步进不会被它覆盖。
+    """
+    stop = threading.Event()
+    if not task_id:
+        return stop
+    tail = hint or "首次加载底座会久一些"
+
+    def _beat() -> None:
+        started = time.time()
+        while not stop.wait(3.0):
+            quiet = progress_mod.quiet_seconds(task_id)
+            if quiet is not None and quiet < 3.0:
+                continue
+            cur = progress_mod.get(task_id)
+            if cur is None or cur.done_at is not None:
+                return
+            progress_mod.report(
+                task_id, cur.done, cur.total,
+                f"{label} · 已等 {int(time.time() - started)}s（{tail}）")
+
+    threading.Thread(target=_beat, daemon=True).start()
+    return stop
 
 
 def _step_label(progress: Optional[Dict[str, Any]], i: int) -> str:
@@ -706,12 +756,23 @@ class DiffusersProvider(BaseProvider):
         # umT5-xxl 10.6GB：fp8 后约 5.3GB，offload 会在编码完成后把它搬出显存
         if os.environ.get("MEOWCUTE_QWEN_FP8", "1") != "0":
             self._quantize_fp8(pipe.text_encoder, "wan.text_encoder")
-        pipe.enable_model_cpu_offload()
+        # 默认 cpu offload（稳）。实测对照（384×512 / 81 帧 / 30 步）：
+        # offload 75.7s vs 常驻 72.9s —— 只差 3.7%，而常驻峰值 20.2GB/24GB，
+        # 留不下任何余量。视频慢的主因是「帧数 × 步数 × 方向数」，不是搬运。
+        # MEOWCUTE_WAN_OFFLOAD=0 可切常驻做对照。
+        if os.environ.get("MEOWCUTE_WAN_OFFLOAD", "1") == "1":
+            pipe.enable_model_cpu_offload()
+            residency = "fp8 + cpu offload"
+        elif _try_to_cuda(pipe, "wan"):
+            residency = "fp8 + 常驻显存"
+        else:
+            pipe.enable_model_cpu_offload()
+            residency = "fp8 + cpu offload（常驻失败）"
         pipe.set_progress_bar_config(disable=True)
         caps: Dict[str, Any] = {
             "family": "wan",
             "notes": ["Wan2.2 TI2V-5B：参考图 + 中文提示词 → 视频帧序列；"
-                      "fp8 + cpu offload"],
+                      + residency],
         }
         _CAPS[model_id] = caps
         _CACHE[model_id] = pipe
@@ -723,7 +784,8 @@ class DiffusersProvider(BaseProvider):
                  ref: Optional[Any], num_frames: int, fps: int, max_side: int,
                  task_id: Optional[str] = None, pixel_art: bool = False,
                  guidance_scale: Optional[float] = None,
-                 max_seq_len: Optional[int] = None):
+                 max_seq_len: Optional[int] = None,
+                 progress: Optional[Dict[str, Any]] = None):
         """图生视频：参考图 + 动作提示词 → 帧序列（PIL 列表）。
 
         - num_frames 必须是 4k+1（Wan 时序 VAE 的要求），内部向下取整；
@@ -736,6 +798,12 @@ class DiffusersProvider(BaseProvider):
 
         if ref is None:
             raise ValueError("Wan 图生视频需要一张参考图（ref）")
+        # 加载底座是「长时间没反应」的第一段：fp8 权重 + 量化缓存，冷启动
+        # 可能要 1-3 分钟，期间一条进度都没有。先报一条不确定态，让用户知道
+        # 是在加载而不是卡死。
+        progress_mod.report(task_id, 0, 0,
+                            "加载视频底座…（首次需 fp8 量化，约 1-3 分钟；"
+                            "之后走缓存只要几秒）")
         pipe = self._load(model_id)
         use_steps = 30 if not steps else max(20, min(int(steps), 50))
         # CFG 可调控：默认 5.0（TI2V-5B 官方推荐）。行走动作偏弱时上调能显著
@@ -786,9 +854,20 @@ class DiffusersProvider(BaseProvider):
             # 显式要 PIL：下游统一按 Image 处理，少一层 numpy 往返也少一处错位风险。
             output_type="pil",
             # 步进回调：30 步的视频生成是全场最长的等待，进度与取消都靠它
-            callback_on_step_end=progress_mod.make_step_callback(task_id, use_steps),
+            callback_on_step_end=progress_mod.make_step_callback(
+                task_id, use_steps,
+                label=str((progress or {}).get("label") or ""),
+                base=int((progress or {}).get("base") or 0),
+                grand=int((progress or {}).get("grand") or 0),
+                hold=bool((progress or {}).get("hold")),
+            ),
             **extra_kw,
         )
+        # 去噪完到能用的帧之间还有一段纯 VAE 解码（49 帧约 9s），也要报
+        progress_mod.report(
+            task_id, int((progress or {}).get("base") or 0),
+            int((progress or {}).get("grand") or use_steps),
+            f"{str((progress or {}).get('label') or '')} 解码 {len(out.frames)} 帧…".strip())
         imgs = _frames_to_pil(out.frames)
         # 峰值显存：用户抱怨「显存很大」时，最需要知道的就是这个数到底多少。
         # 注意报 reserved 而不是 allocated——分配器把峰值一直攥着不还，
@@ -1078,16 +1157,24 @@ class DiffusersProvider(BaseProvider):
         progress_mod.check_cancel(task_id)
         async with _LOCK:
             progress_mod.check_cancel(task_id)
+            # 加载底座（fp8 量化首次可达十几分钟）+ 文本编码都不在步进回调里，
+            # 没有心跳时界面会长时间停在「生成中」，看起来像卡死。
+            _stop_beat = start_heartbeat(
+                task_id, str((progress or {}).get("label") or "生成图片"),
+                hint="首次加载底座要做 fp8 量化，之后走缓存只要几秒")
             # 负面词：调用方显式给了就用它（像素契约/视角接力各有自己的负面
             # 清单），没给就回落到设置里的默认值。历史上这里只读设置，导致
             # 后端算出来的 built["negative"] 从来没到过模型——UI 展示了、
             # 推理没用上，属于静默失效。
             neg = self.cfg.get("negativePrompt", "") if negative is None else negative
-            images, meta = await asyncio.to_thread(
-                self._run, model_id, prompt, neg,
-                width, height, steps, seed, n, ref, all_refs or None,
-                task_id, max_seq_len, ref_bg, progress,
-            )
+            try:
+                images, meta = await asyncio.to_thread(
+                    self._run, model_id, prompt, neg,
+                    width, height, steps, seed, n, ref, all_refs or None,
+                    task_id, max_seq_len, ref_bg, progress,
+                )
+            finally:
+                _stop_beat.set()
         status = _torch_status()
         out_meta = {"provider": "diffusers", "model": model_id, "device": status.get("device"),
                     **meta, "caps": _CAPS.get(model_id)}
@@ -1109,6 +1196,7 @@ class DiffusersProvider(BaseProvider):
         negative: Optional[str] = None,
         guidance_scale: Optional[float] = None,
         max_seq_len: Optional[int] = None,
+        progress: Optional[Dict[str, Any]] = None,
     ) -> ProviderResult:
         """图生视频：参考图 + 提示词 → 帧序列（ProviderResult.images = 帧）。
 
@@ -1137,13 +1225,20 @@ class DiffusersProvider(BaseProvider):
         progress_mod.check_cancel(task_id)
         async with _LOCK:
             progress_mod.check_cancel(task_id)
-            images, meta = await asyncio.to_thread(
-                self._run_wan, model_id, prompt,
-                negative if negative is not None else self.cfg.get("negativePrompt", ""),
-                width, height, steps, seed, generator, ref,
-                int(num_frames), int(fps), int(max_side), task_id,
-                bool(pixel_art), guidance_scale, max_seq_len,
-            )
+            # 加载底座 / VAE 解码期间没有回调，靠心跳把「已等 Ns」写出来
+            _stop_beat = start_heartbeat(
+                task_id, str((progress or {}).get("label") or "视频生成"),
+                hint="首次加载视频底座会久一些")
+            try:
+                images, meta = await asyncio.to_thread(
+                    self._run_wan, model_id, prompt,
+                    negative if negative is not None else self.cfg.get("negativePrompt", ""),
+                    width, height, steps, seed, generator, ref,
+                    int(num_frames), int(fps), int(max_side), task_id,
+                    bool(pixel_art), guidance_scale, max_seq_len, progress,
+                )
+            finally:
+                _stop_beat.set()
         status = _torch_status()
         out_meta = {"provider": "diffusers", "model": model_id,
                     "device": status.get("device"), **meta,

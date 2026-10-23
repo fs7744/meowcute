@@ -15,7 +15,8 @@ class CancelledError(Exception):
 
 
 class TaskProgress:
-    __slots__ = ("task_id", "total", "done", "label", "created", "cancelled", "done_at", "error")
+    __slots__ = ("task_id", "total", "done", "label", "created", "cancelled",
+                 "done_at", "error", "updated_at")
 
     def __init__(self, task_id: str, total: int = 0, label: str = ""):
         self.task_id = task_id
@@ -23,6 +24,7 @@ class TaskProgress:
         self.done = 0
         self.label = label
         self.created = time.time()
+        self.updated_at = self.created
         self.cancelled = False
         self.done_at: Optional[float] = None
         self.error: Optional[str] = None
@@ -54,6 +56,18 @@ def get(task_id: str) -> Optional[TaskProgress]:
     return _TASKS.get(task_id)
 
 
+def quiet_seconds(task_id: Optional[str]) -> Optional[float]:
+    """距上一次上报过了多少秒（任务不存在返回 None）。
+
+    用途：模型加载阶段没有任何 diffusers 回调，界面会静默几十秒到几分钟。
+    心跳只在「静默 > 3s」时才覆盖 label，正常推理的步进不会被它打扰。
+    """
+    if not task_id:
+        return None
+    t = _TASKS.get(task_id)
+    return None if t is None else time.time() - t.updated_at
+
+
 def report(task_id: Optional[str], done: int, total: int, label: str = "") -> None:
     if not task_id:
         return
@@ -61,6 +75,7 @@ def report(task_id: Optional[str], done: int, total: int, label: str = "") -> No
     if t is None:
         return
     t.done, t.total, t.label = int(done), int(total), label
+    t.updated_at = time.time()
     for q in _WAITERS.get(task_id, []):
         try:
             q.put_nowait(t.snapshot())
@@ -119,7 +134,7 @@ def unsubscribe(task_id: str, q: "asyncio.Queue") -> None:
 
 
 def make_step_callback(task_id: Optional[str], total: int, label: str = "",
-                       base: int = 0, grand: int = 0):
+                       base: int = 0, grand: int = 0, hold: bool = False):
     """diffusers callback_on_step_end：每步结束报一次进度 + 检查取消。
 
     base/grand 用来把「一批里的第 k 张」映射到整批的进度条上：批量跑 4 张
@@ -128,8 +143,17 @@ def make_step_callback(task_id: Optional[str], total: int, label: str = "",
     """
     def _cb(pipe, step_index, timestep, callback_kwargs):
         check_cancel(task_id)
-        report(task_id, base + step_index + 1, grand or total,
-               label or f"第 {step_index + 1}/{total} 步")
+        if hold:
+            # 子步骤（一个方向的一段视频）内部不推进整体进度，只把步数写进
+            # label：进度条停在「这个方向开始」的位置，但文字每步都在动。
+            # 以前这里直接报 base+step/use_steps，整体 total 会被撞成 24，
+            # 进度条从 50% 掉到 4%，用户以为任务重来了。
+            report(task_id, base, grand or total,
+                   f"{label} {step_index + 1}/{total} 步" if label
+                   else f"第 {step_index + 1}/{total} 步")
+        else:
+            report(task_id, base + step_index + 1, grand or total,
+                   label or f"第 {step_index + 1}/{total} 步")
         return callback_kwargs
     return _cb
 

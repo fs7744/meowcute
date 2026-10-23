@@ -761,6 +761,36 @@ def _run_checks(client) -> int:
     check("Wan 调用把 max_sequence_length 传下去",
           "max_sequence_length" in _inspect.getsource(_dl.DiffusersProvider._run_wan))
 
+    print("== 长静默：加载底座/解码期间要有心跳 ==")
+    # 实测时间线（修复前）：视频任务前 30.5s 只有一条不动的 label，
+    # 然后再跳到 1/24 步。加载底座（首次 fp8 量化可达数分钟）与 VAE 解码
+    # 都不在 diffusers 回调里，没有心跳就完全静默。
+    import time as _t2
+    from backend.app import progress as _pg
+    from backend.app.providers.diffusers_local import start_heartbeat
+    _pg.create("t-hb", 0, "加载视频底座…")
+    _stop = start_heartbeat("t-hb", "正面行走视频", hint="测试用")
+    _t2.sleep(3.6)
+    _hb = _pg.get("t-hb").snapshot()
+    _stop.set()
+    check("静默 3 秒后心跳会把已等秒数写进 label",
+          "已等" in (_hb.get("label") or ""), str(_hb.get("label")))
+
+    # 视频步进不能把整体进度撞成 1/24：hold 模式只更新 label
+    _pg.create("t-hb2", 10, "")
+    _cb = _pg.make_step_callback("t-hb2", 24, label="正面行走视频", base=3, grand=10, hold=True)
+    _cb(None, 5, None, {})
+    _h2 = _pg.get("t-hb2").snapshot()
+    check("视频步进只更新 label、不动整体进度",
+          _h2["done"] == 3 and _h2["total"] == 10 and "6/24" in (_h2["label"] or ""),
+          str(_h2))
+
+    from backend.app.pipelines import walkvideo as _wv
+    check("行走任务开场给出方向数与预计时长",
+          "预计约" in _inspect.getsource(_wv.run_walk))
+    check("立绘推导不再用 40 步（首帧锚点 28 步足够）",
+          "28 if steps is None else steps" in _inspect.getsource(_wv.derive_direction))
+
     print("== 视角生成：参数复用正视图 ==")
     from backend.app.pipelines.threeview import _apply_background
     instr = _apply_background("把角色转成侧面。", "gray")
