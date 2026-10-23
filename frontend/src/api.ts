@@ -263,7 +263,9 @@ export const api = {
     /** 每个方向直接指定的立绘图（跳过推导，仍会跑 Wan） */
     dirImages?: { dir: string; file: string }[]
     /** 像素保真：像素素材用最近邻缩放 */
-    pixelArt?: boolean
+        /** 整段动作提示词：用户完整输入，程序不拼接；为空时后端退回 action 模板 */
+    prompt?: string
+pixelArt?: boolean
   }) =>
     fetch('/api/walkvideo', jsonInit(payload)).then(j<{ taskId: string }>),
 

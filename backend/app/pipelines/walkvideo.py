@@ -195,27 +195,40 @@ def walk_prompt(action: str = "行走", *, motion_emphasis: bool = False) -> str
     「别动」，结果出的是一张几乎静止的图。
 
     正确做法分两层，且必须用**不同主语**说清，否则模型偷懒定格：
-    1) 角色的运动（主语=角色）：双腿持续交替迈步、膝盖屈伸、脚掌离地落地、
-       身体随步伐上下颠动、手臂反向摆动——这是要强调的「动」；
+    1) 角色的运动（主语=角色）：双腿以自然步幅交替迈步、膝盖屈伸、双脚
+       依次离地前摆落地、身体随重心轻微颠动——这是要强调的「动」；
     2) 镜头的静止（主语=取景框/背景）：取景框与背景不动、角色始终居中、
        体型不变。**只说镜头/背景静止，绝不写「角色不动」**——
        「原地行走」≠「静止」，后者是模型最爱的偷懒解。
+
+    另一个反复踩的坑：**强调词会反噬**。「脚掌明确地反复抬起」「膝盖明显
+    弯曲」实测把步态推成高抬腿猛踏步（静止→猛抬腿→静止的突发放射）；
+    「手臂与腿反向摆动」与持枪角色自相矛盾。措辞要的是自然、平稳、连贯。
 
     motion_emphasis=True 用于动作不达标时的重试：进一步点名「全程动态、绝不
     定格、每帧都在变」，配合上调的 guidance_scale 把动作幅度逼出来。
     """
     act = (action or "行走").strip() or "行走"
+    # 三条都是实测踩坑换来的（用户反馈「一点都不像在举枪行走」）：
+    # 1) **不许写「手臂与腿反向摆动」**：双手持枪 / 扶握武器的角色手臂被占用，
+    #    这句话和参考图直接矛盾，模型要么忽略手臂、要么把动作做成怪异的补偿
+    #    晃动。改成条件句——持物时双臂与武器保持稳定。
+    # 2) **不要用「明确地 / 明显」强调抬脚和屈膝**：强调词会把自然步态推成
+    #    「高抬腿猛踏步」，实测出来是静止→猛抬腿→静止的突发放射，不是行走。
+    #    要的是「自然步幅、平稳连贯」。
+    # 3) 摆动部件（发饰/衣摆）保留：给模型一个「除了腿还有东西在动」的线索，
+    #    反而能让整体节奏更连续。
     motion = (
-        f"角色在原地{act}：双腿持续交替迈步，膝盖随步伐明显弯曲伸展，"
-        "脚掌明确地反复抬起、离地、再落地；身体随重心上下颠动，"
-        "手臂与腿反向自然摆动，发饰和衣摆随步伐轻微晃动。"
-        "动作连贯成循环，一只脚落地时另一只脚抬起，步态清晰可见。"
+        f"角色在原地{act}：双腿以自然步幅持续交替迈步，膝盖随步伐屈伸，"
+        "双脚依次离地、前摆、落地，步态平稳连贯；身体随重心轻微上下颠动；"
+        "手臂随步伐自然摆动，双手持枪或扶握武器时双臂与武器保持稳定；"
+        "发饰和衣摆随步伐轻微晃动。动作循环往复，一只脚落地时另一只脚抬起。"
     )
     if motion_emphasis:
         motion = (
-            "强烈的持续行走动作：" + motion +
+            "持续不停的行走动作：" + motion +
             " 全程保持动态，绝不定格、绝不站桩、绝不变成单张静态姿势；"
-            "每一帧肢体的位置都在变化，步伐明显而有力。"
+            "每一步都完整连贯，步伐稳定有节奏。"
         )
     stable = (
         "保持取景框与背景完全静止，角色始终位于画面中心、体型大小不变"
@@ -223,6 +236,13 @@ def walk_prompt(action: str = "行走", *, motion_emphasis: bool = False) -> str
     )
     return motion + stable
 
+
+
+# 动作不达标重试时追加的强调句。只追加、不替换——用户的提示词是主体。
+EMPHASIS_TAIL = (
+    " 全程保持动态，绝不定格、绝不站桩、绝不变成单张静态姿势；"
+    "每一步都完整连贯，步伐稳定有节奏。"
+)
 
 
 def directions_of(dir_mode: str) -> List[str]:
@@ -347,6 +367,7 @@ async def generate_walk(
     view: Image.Image,
     *,
     action: str = "行走",
+    prompt: Optional[str] = None,
     steps: Optional[int] = None,
     seed: Optional[int] = None,
     width: int = 384,
@@ -378,7 +399,10 @@ async def generate_walk(
     cfg = dict(provider_cfg or {})
     cfg["model"] = resolve_video_model(cfg.get("videoModel"))
     provider = DiffusersProvider(cfg)
-    base_prompt = walk_prompt(action)
+    # 整段提示词由用户输入（2026-10-23 起）：给了就用用户的，程序不再拼模板。
+    # 用户没给（老项目/接口直调）才退回按 action 拼的模板。
+    user_prompt = (prompt or "").strip()
+    base_prompt = user_prompt or walk_prompt(action)
     # 负向词直接对准用户反馈的现象：糊掉（涂抹/重影/低清）与闪烁/变形，
     # 再加「站桩/单帧定格/姿势不变/动作僵硬」——把模型最爱偷懒的静止解
     # 也写进黑名单，和正向的「持续运动」形成夹击。
@@ -394,8 +418,10 @@ async def generate_walk(
     best_motion = -1.0
     last_motion = 0.0
     for attempt in range(max_attempts):
-        emphasis = attempt > 0
-        prompt = walk_prompt(action, motion_emphasis=emphasis) if emphasis else base_prompt
+        # 重试加压：在**当前提示词尾部**追加强调句。用户自己写的提示词同样
+        # 享受这个闭环——把强调句拼在用户文本后面，而不是换回程序模板
+        # （那会覆盖用户刚写的东西）。
+        prompt = base_prompt if attempt == 0 else base_prompt + EMPHASIS_TAIL
         # 重试逐次加压：CFG 每次 +1.5（封顶 9.0），步数不够时每次 +5（封顶 50）。
         # CFG 上调对「运动幅度」是最直接的杠杆——这正是 _run_wan 把 CFG 改可调控的原因。
         cur_gs = min(9.0, base_gs + attempt * 1.5)
@@ -451,6 +477,7 @@ async def run_walk(
     *,
     dir_mode: str = "eight",
     action: str = "行走",
+    prompt: Optional[str] = None,
     steps: Optional[int] = None,
     seed: Optional[int] = None,
     width: int = 384,
@@ -595,7 +622,8 @@ async def run_walk(
                             f"{DIR_LABELS[d]}行走视频（Wan）…")
         try:
             frames, meta = await generate_walk(
-                views[d], action=action, steps=steps, seed=seed,
+                views[d], action=action, prompt=prompt,
+                steps=steps, seed=seed,
                 width=width, height=height, num_frames=num_frames,
                 fps=fps, max_side=max_side,
                 provider_cfg=provider_cfg, task_id=task_id,

@@ -131,7 +131,8 @@ def _run_checks(client) -> int:
     r = client.get("/api/prompt-examples")
     ex = r.json()
     check("示例库有内置条目", len(ex["examples"]) >= 10, str(len(ex["examples"])))
-    check("示例分类齐全", len(ex["categories"]) == 5)
+    check("示例分类齐全（含行走视频）", len(ex["categories"]) == 6,
+          str(ex["categories"]))
     r = client.post("/api/prompt-examples", json={
         "category": "角色描述", "title": "测试条目",
         "content": "一只测试用的像素小猫", "note": "测试备注"})
@@ -643,6 +644,55 @@ def _run_checks(client) -> int:
           and _back[5].convert("RGB").getpixel((15, 40)) == (200, 60, 60),
           f'{_back[0].convert("RGB").getpixel((15, 40))} vs '
           f'{_back[5].convert("RGB").getpixel((15, 40))}')
+
+    print("== 行走提示词：整段由用户输入，程序只给示例 ==")
+    # 2026-10-23：提示词不再由程序拼模板（用户反馈「一点都不像在举枪行走」，
+    # 根因之一是模板与持械参考图自相矛盾）。现在整段提示词是用户输入，
+    # 程序只提供完整示例；walk_prompt 退化为老项目的兼容路径。
+    import inspect as _isp          # _inspect 这个名字在本函数后面才导入，别撞
+    from backend.app.pipelines import walkvideo as _wv
+    from backend.app.pipelines.walkvideo import EMPHASIS_TAIL, walk_prompt
+    from backend.app.projects import DEFAULT_WALK_PROMPT, _clean_walkvideo
+    from backend.app import prompt_examples as pex
+
+    _walk_ex = [e for e in pex.load_examples() if e["category"] == "行走视频"]
+    check("示例库有行走视频分类（完整提示词）", len(_walk_ex) >= 4,
+          str([e["title"] for e in _walk_ex]))
+    check("每条示例都是完整提示词（含镜头静止段）",
+          all("取景框" in e["content"] and len(e["content"]) > 80 for e in _walk_ex),
+          str([len(e["content"]) for e in _walk_ex]))
+    check("默认提示词与示例库第一条同文（改一边不忘另一边）",
+          DEFAULT_WALK_PROMPT == next(e["content"] for e in _walk_ex
+                                      if e["id"] == "builtin-walk-walk"))
+    check("默认提示词不含自相矛盾的手臂摆动（持械角色会冲突）",
+          "手臂与腿反向自然摆动" not in DEFAULT_WALK_PROMPT
+          and "双臂与武器保持稳定" in DEFAULT_WALK_PROMPT)
+    check("默认提示词不用强调词（实测会出高抬腿猛踏步）",
+          "明确地" not in DEFAULT_WALK_PROMPT and "明显" not in DEFAULT_WALK_PROMPT)
+
+    # 老项目迁移：只有 action 时拼一句完整起始提示词，之后用户直接改全文
+    _mig = _clean_walkvideo({"action": "举枪行走"})
+    check("老项目迁移出完整提示词",
+          _mig["prompt"].startswith("角色在原地举枪行走")
+          and "取景框" in _mig["prompt"], _mig["prompt"][:40])
+    check("新节点默认带完整提示词", len(_clean_walkvideo({})["prompt"]) > 100)
+    check("用户提示词超长被夹（防 project.json 被撑爆）",
+          len(_clean_walkvideo({"prompt": "啊" * 900})["prompt"]) == 400)
+
+    # 管线：用户给了 prompt 就用用户的；重试只在尾部追加强调句
+    _src = _isp.getsource(_wv.generate_walk)
+    check("generate_walk 优先用用户提示词",
+          'user_prompt = (prompt or "").strip()' in _src
+          and "base_prompt = user_prompt or walk_prompt(action)" in _src)
+    check("重试强调句追加在用户提示词后（不换回模板）",
+          "base_prompt + EMPHASIS_TAIL" in _src)
+    check("强调句只追加不替换", len(EMPHASIS_TAIL) > 20)
+
+    # 长度预算接口
+    _lim = client.get("/api/limits").json()["limits"]
+    check("行走提示词上限已暴露给前端",
+          _lim["walkPrompt"]["maxChars"] == 300
+          and "示例库" in _lim["walkPrompt"]["note"], str(_lim.get("walkPrompt")))
 
     print("== 参数校验：恶意输入不许打挂服务 ==")
     import time as _time

@@ -52,6 +52,8 @@ export type PromptLimits = {
   styles: Record<string, { plain: number; pixel: number }>
   character: { maxChars: number; note: string }
   walkAction: { maxChars: number; note: string }
+  /** 行走视频整段提示词（用户完整输入）的字符上限 */
+  walkPrompt: { maxChars: number; note: string }
 }
 
 export type PromptExample = {
@@ -289,7 +291,11 @@ export type WalkVideoOptions = {
   enabled: boolean
   /** eight=八方向（5 实拍 + 3 镜像）/ four=四方向 / single=仅正面 */
   dirMode: 'eight' | 'four' | 'single'
-  action: string
+  /** 整段动作提示词：用户完整输入，程序不拼接。节点上直接改全文；
+   *  示例库「行走视频」分类可一键填入完整写法。 */
+  prompt?: string
+  /** 老项目的短动作词：仅在没有 prompt 时用于一次性迁移，界面上不再展示 */
+  action?: string
   /**
    * 现成视频来源：{方向: 项目内视频文件名}。填了的方向跳过「立绘推导 +
    * Wan 生成」，直接用文件里的帧；没填的照常生成。用来换参数重跑下游、

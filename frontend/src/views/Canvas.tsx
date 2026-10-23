@@ -628,10 +628,14 @@ export default function Canvas({ projectId, onBack }: Props) {
     const spot = at
       ? { x: Math.round(at.x), y: Math.round(at.y) }
       : canvasSpot(WALKVIDEO_W, 420)
+    // 提示词预填示例库「行走视频」的第一条（后端单一事实来源）；
+    // 没加载到示例时留空，后端会补默认值
+    const walkEx = examples.find((e) => e.category === '行走视频' && e.id === 'builtin-walk-walk')
     const node: WalkVideoNodeType = {
       id: newId('wk'), type: 'walkvideo', x: spot.x, y: spot.y,
       walkvideo: {
         enabled: true, dirMode: 'eight', action: '行走', styleId: null,
+        prompt: walkEx?.content || '',
         steps: null, seed: null, width: 384, height: 512,
         numFrames: 81, fps: 24, maxSide: 512, maxSeqLen: null,
         guidanceScale: null, motionThreshold: 6.0, retries: 2,
@@ -1375,6 +1379,8 @@ export default function Canvas({ projectId, onBack }: Props) {
       pixelArt: !!w?.pixelArt,
       dirMode: w?.dirMode ?? 'eight',
       action: w?.action ?? '行走',
+      // 整段提示词：用户完整输入，程序不拼接（为空时后端才退回 action 模板）
+      prompt: w?.prompt || '',
       styleId: w?.styleId ?? null,
       steps: w?.steps ?? null,
       seed: w?.seed ?? null,
@@ -2542,6 +2548,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               node={n}
               index={i}
               projectId={project.id}
+              examples={examples.filter((e) => e.category === '行走视频')}
               running={isRunning(n.id)}
               progress={tasks[n.id]?.progress?.label}
               sourceLabel={frontLabel(n.id)}

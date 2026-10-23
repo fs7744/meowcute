@@ -1318,6 +1318,9 @@ class WalkVideoPayload(BaseModel):
     origAssetId: str = ""
     dirMode: str = "eight"                     # eight | four | single
     action: str = "行走"
+    # 整段动作提示词：用户完整输入，程序不拼接。为空时退回按 action 拼的
+    # 模板（老项目 / 接口直调的兼容路径）。
+    prompt: Optional[str] = None
     styleId: Optional[str] = None
     steps: Optional[int] = None
     seed: Optional[int] = None
@@ -1422,6 +1425,7 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
         directions, meta = await walkvideo_mod.run_walk(
             base,
             dir_mode=payload.dirMode, action=payload.action,
+            prompt=(payload.prompt or "").strip() or None,
             steps=(_clamp(payload.steps, 4, 60, 30) if payload.steps else None),
             seed=payload.seed,
             width=w_w, height=w_h,

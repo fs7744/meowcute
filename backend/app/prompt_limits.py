@@ -23,6 +23,8 @@ SEQ_LEN_MAX = 1920
 CHARACTER_MAX = 380
 # 行走动作（Wan/umT5）：提示词模板本身约 60 字，226 token 预算下留足余量
 WALK_ACTION_MAX = 40
+# 行走视频整段提示词的字符上限（umT5 512 token ≈ 390 字，留余量）
+WALK_PROMPT_MAX = 300
 
 
 def chars_for_tokens(tokens: Optional[int]) -> int:
@@ -86,6 +88,15 @@ def snapshot() -> Dict[str, Any]:
             "maxChars": CHARACTER_MAX,
             "note": "四视图只把这段描述当「辨认清单」：用于认出图里的佩剑、包、护具，"
                     "不作为增补依据（图里没有的写了也不画）。超出部分读不到。",
+        },
+        # 行走视频的**整段**提示词（用户完整输入，不再由程序拼接）。
+        # 预算按 umT5 的 512 token 算：约 390 字，留出余量取 300。
+        # 超长不会报错，但尾部会被文本编码器静默截断——界面上要能看见。
+        "walkPrompt": {
+            "maxChars": WALK_PROMPT_MAX,
+            "note": "整段直接喂给视频底座的提示词。上限按 Wan 文本编码器的 512 "
+                    "token 折算（约 300 字）：写得更长尾部会被静默截断。"
+                    "示例库里「行走视频」分类有完整写法可改。",
         },
         "walkAction": {
             "maxChars": WALK_ACTION_MAX,

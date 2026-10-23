@@ -92,6 +92,17 @@ DEFAULT_THREEVIEW = {
 # 行走视频节点（八方向第一步）：正视图 → 各方向立绘 + Wan 行走视频。
 # dirMode=eight 时左侧 5 个方向真实生成、右侧 3 个方向镜像，见 walkvideo 模块。
 # sources={方向: 项目内视频文件}：该方向用现成视频，跳过推导 + Wan。
+# 行走视频的默认整段提示词。必须与 prompt_examples 的「原地行走（通用起点）」
+# 一致：smoke 里有断言看守，改一边不改另一边会红。
+DEFAULT_WALK_PROMPT = (
+    "角色在原地行走：双腿以自然步幅持续交替迈步，膝盖随步伐屈伸，"
+    "双脚依次离地、前摆、落地；身体随重心轻微上下颠动；手臂随步伐"
+    "自然摆动，双手持枪或扶握武器时双臂与武器保持稳定；头发和衣摆随"
+    "步伐轻微晃动。动作循环往复，一只脚落地时另一只脚抬起，步态平稳"
+    "连贯。保持取景框与背景完全静止，角色始终位于画面中心、体型大小"
+    "不变，不向画面任何方向平移、不旋转身体、镜头不动。"
+)
+
 DEFAULT_WALKVIDEO = {
     "enabled": True,
     "dirMode": "eight",                     # eight | four | single
@@ -104,6 +115,10 @@ DEFAULT_WALKVIDEO = {
     "height": 512,
     # 帧数/帧率：49 帧 @16fps ≈ 3.1s 循环，和原来的 81@24（3.4s）时长接近，
     # 但视频成本按帧数线性掉 40%。实测 81/30 单方向 75.7s，49/28 约 56s。
+    # 整段提示词由用户完整输入（2026-10-23 起不再由程序拼模板）。
+    # 默认值 = 示例库「原地行走」那条的全文，用户可随意改；示例库「行走视频」
+    # 分类里还有举枪/奔跑/待机/潜行等完整写法可一键填入。
+    "prompt": DEFAULT_WALK_PROMPT,
     "numFrames": 49,                        # Wan 帧数（内部对齐 4k+1）
     "fps": 16,
     "maxSide": 512,
@@ -602,9 +617,26 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
         f = str(f or "")[:120]
         if d in _WALK_DIRS and f and "/" not in f and "\\" not in f and ".." not in f:
             dir_imgs[d] = f
+    # 整段提示词（用户完整输入）。老项目只有 action：用动作词拼一句完整的
+    # 起始提示词做一次性迁移，之后用户直接在节点上改全文——程序不再拼接。
+    prompt = str(w.get("prompt") or "").strip()
+    if not prompt:
+        act = str(w.get("action") or "").strip()[:20]
+        if act and act != "行走":
+            prompt = (f"角色在原地{act}：双腿以自然步幅持续交替迈步，膝盖随步伐屈伸，"
+                      "双脚依次离地、前摆、落地，步态平稳连贯；身体随重心轻微上下颠动；"
+                      "手臂随步伐自然摆动，双手持枪或扶握武器时双臂与武器保持稳定。"
+                      "保持取景框与背景完全静止，角色始终位于画面中心、体型大小不变，"
+                      "不向画面任何方向平移、不旋转身体、镜头不动。")
+        else:
+            prompt = DEFAULT_WALK_PROMPT
+    # 上限 400：比 UI 建议的 300 字宽松（UI 只警告不拦截），但防止有人粘一篇
+    # 作文进来把 project.json 撑爆
+    prompt = prompt[:400]
     return {
         "enabled": bool(w.get("enabled", True)),
         "dirMode": mode,
+        "prompt": prompt,
         "action": str(w.get("action") or "行走")[:20] or "行走",
         "sources": srcs,
         "styleId": str(w.get("styleId") or "")[:40] or None,

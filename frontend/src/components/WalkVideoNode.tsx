@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, loadPromptLimits } from '../api'
 import type {
-  PromptLimits, WalkVideoNode as WalkVideoNodeType, WalkDir, VideoAsset,
+  PromptExample, PromptLimits, WalkVideoNode as WalkVideoNodeType, WalkDir,
+  VideoAsset,
 } from '../types' 
 
 type Props = {
@@ -20,6 +21,8 @@ type Props = {
   onStartLink: (id: string, client?: { clientX: number; clientY: number }) => void
   onFinishLink: (id: string) => void
   onPreview: (url: string, title: string) => void
+  /** 示例库「行走视频」分类的完整提示词：节点上一键填入再改 */
+  examples?: PromptExample[]
 }
 
 const DIR_MODE_CN: Record<string, string> = {
@@ -60,10 +63,11 @@ const shortName = (f: string) => (f.length > 22 ? `${f.slice(0, 10)}…${f.slice
  */
 export default function WalkVideoNode({
   node, index, projectId, running, progress, sourceLabel, onChange, onDelete, onDragStart,
-  onRun, onStartLink, onFinishLink, onPreview,
+  onRun, onStartLink, onFinishLink, onPreview, examples,
 }: Props) {
   const DEFAULTS: WalkVideoNodeType['walkvideo'] = {
     enabled: true, dirMode: 'eight', action: '行走', styleId: null,
+    prompt: '',
     steps: null, seed: null, width: 384, height: 512,
     numFrames: 49, fps: 16, maxSide: 512, maxSeqLen: null,
     guidanceScale: null, motionThreshold: 5.5, retries: 1,
@@ -79,7 +83,13 @@ export default function WalkVideoNode({
     loadPromptLimits().then((l) => { if (alive) setLimits(l) }).catch(() => undefined)
     return () => { alive = false }
   }, [])
-  const actionMax = limits?.walkAction.maxChars ?? 40
+  // 整段提示词（用户完整输入，程序不拼接）。节点上没有 prompt 时退回示例库
+  // 第一条的全文——老项目打开来也能看到完整提示词，而不是空框。
+  const walkExamples = useMemo(() => examples || [], [examples])
+  const fallbackPrompt = walkExamples.find((e) => e.id === 'builtin-walk-walk')?.content || ''
+  const promptText = v.prompt || fallbackPrompt
+  const promptMax = limits?.walkPrompt.maxChars ?? 300
+  const overBy = promptText.length - promptMax
 
   const meta = node.meta
   const dirs = meta?.directions ?? []
@@ -267,16 +277,43 @@ export default function WalkVideoNode({
           </select>
         </label>
 
-        <label className="gen-field">
-          <span className="gen-field-label">动作</span>
-          <input className="input" value={v.action}
-            onChange={(e) => patch({ action: e.target.value })} />
-          <span className="hint" style={{ marginTop: 2,
-            color: v.action.length > actionMax ? 'var(--yellow)' : undefined }}>
-            {v.action.length} / 建议 {actionMax} 字
-            {v.action.length > actionMax ? ' · 超出建议长度，仍会生效' : ''}
+        {/* 整段动作提示词：完全由用户输入，程序只提供示例（不再拼模板） */}
+        <div className="gen-field">
+          <div className="gen-field-head">
+            <span className="gen-field-label">动作提示词</span>
+            <span className="hint" style={{ color: overBy > 0 ? 'var(--pink)' : undefined }}>
+              {promptText.length} / {promptMax} 字
+            </span>
+          </div>
+          {walkExamples.length ? (
+            <div className="ex-chips" style={{ marginBottom: 6 }}>
+              {walkExamples.map((e) => (
+                <button key={e.id} type="button"
+                  className={`ex-chip${promptText === e.content ? ' on' : ''}`}
+                  title={`${e.content}\n\n${e.note || ''}`}
+                  onClick={() => patch({ prompt: e.content })}>
+                  {e.title}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <textarea
+            className="textarea"
+            style={{ minHeight: 116, fontSize: 12 }}
+            placeholder="整段写给视频底座的动作提示词：腿怎么走、身体怎么起伏、手臂与手持物怎么办、镜头怎么不动。点上面的示例可一键填入再改。"
+            value={promptText}
+            onChange={(e) => patch({ prompt: e.target.value })}
+          />
+          <span className="hint" style={{ marginTop: 2, lineHeight: 1.6,
+            color: overBy > 0 ? 'var(--pink)' : undefined }}>
+            {overBy > 0
+              ? <>超出 {overBy} 字：视频底座的文本编码器只读前 {promptMax} 字左右，
+                  尾部会被静默截断（镜头不动那句被吃掉时，画面会开始漂）。</>
+              : <>直接喂给视频底座的全文，不经过任何程序拼接。写法要点：腿的动作、
+                  身体的起伏、手臂与手持物、镜头静止，四段分开写；持械角色记得写上
+                  「双臂与武器保持稳定」。</>}
           </span>
-        </label>
+        </div>
 
         {/* ---- 方向立绘：每个真实方向用哪张图当参考（可预览 / 可自选） ---- */}
         <div className="walk-src" ref={imgRef}>
