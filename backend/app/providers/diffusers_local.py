@@ -305,6 +305,41 @@ def _ref_fill_color(rgba: Any) -> tuple:
     return tuple(int(v) for v in colors[counts.argmax()] + 8)
 
 
+# Wan2.2 TI2V 的尺寸硬约束：宽高必须是 vae_scale_factor_spatial(16) ×
+# patch_size(2) = 32 的倍数。差一点不报错——diffusers 只打一条 logger.warning
+# 就把 688 静默改成 672（"must be multiples of (32, 32) for proper
+# patchification"），生产日志里看不见，用户只会觉得「输出尺寸变了 / 画面怪」。
+_WAN_ALIGN = 32
+
+
+def _align_wan(v: Any, lo: int = 64) -> int:
+    """向下取整到 32 的倍数。TI2V 的 patchify 要求，见 _WAN_ALIGN。"""
+    return max(lo, int(v) // _WAN_ALIGN * _WAN_ALIGN)
+
+
+def _fit_aspect_to_ref(w: int, h: int, rw: int, rh: int,
+                       gap: float = 0.15) -> tuple:
+    """按参考图宽高比重算画布（面积预算不变）。
+
+    方形立绘塞进 16:9 画布时，letterbox 之后角色只占中间 1/3 宽度——有效像素
+    直接砍半（实测 768² 占 28.9%、绝对 590k 像素；1216×672 只剩 14.3% / 451k），
+    细节全丢，这就是「同一张参考图，切 720p 反而更糊」的原因。所以比例差得
+    明显时换画布，而不是让角色缩在灰带里。
+
+    gap=0.15 表示比例相差 15% 以内不折腾（1216×688 与 16:9 只差 3%，保持用户选择）。
+    """
+    import math
+
+    if min(w, h, rw, rh) <= 0:
+        return w, h
+    ref_ar = rw / rh
+    if abs(math.log((w / h) / ref_ar)) <= math.log(1 + gap):
+        return w, h
+    budget = float(w) * float(h)
+    nw = math.sqrt(budget * ref_ar)
+    return int(round(nw)), int(round(nw / ref_ar))
+
+
 def _prep_ref_images(refs: List[Any], w: int, h: int,
                      bg: Optional[Any] = None) -> List[Any]:
     """参考图进编辑管线前的归一化：**等比缩放居中 + 透明区铺底色**。
@@ -857,7 +892,7 @@ class DiffusersProvider(BaseProvider):
                  guidance_scale: Optional[float] = None,
                  max_seq_len: Optional[int] = None,
                  progress: Optional[Dict[str, Any]] = None,
-                 t2v: bool = False):
+                 t2v: bool = False, fit_aspect: bool = False):
         """视频生成：参考图 + 动作提示词 → 帧序列（PIL 列表）。
 
         t2v=False（默认）→ 图生视频：参考图进首帧 latent 通道；
@@ -894,13 +929,12 @@ class DiffusersProvider(BaseProvider):
         from PIL import Image as _Image
 
         if t2v:
-            # 纯文本：没有参考图可预处理，尺寸直接按 16 对齐取（长边超
-            # max_side 先降，与 I2V 同一套成本控制）。
-            w = int(width or 832) // 16 * 16
-            h = int(height or 480) // 16 * 16
+            # 纯文本：没有参考图可对齐比例，只保证 32 对齐（TI2V 的 patchify 硬约束）。
+            w = _align_wan(width or 832)
+            h = _align_wan(height or 480)
             if max(w, h) > max_side:
                 scale = max_side / max(w, h)
-                w, h = max(16, int(w * scale) // 16 * 16), max(16, int(h * scale) // 16 * 16)
+                w, h = _align_wan(w * scale), _align_wan(h * scale)
         else:
             # 参考图预处理：**不能**用 ref.convert("RGB")。透明底立绘的 alpha=0 区
             # RGB 是垃圾值（品红/黑），丢掉 alpha 后整片变成可见背景——实测八方向
@@ -909,12 +943,16 @@ class DiffusersProvider(BaseProvider):
             # 中灰是实测模型最愿意当成「什么都没有」的底色；图本身有实底时按它
             # 自己的边框色铺， letterbox 边带才不会有异色接缝。
             rgba = sanitize_alpha(ref.convert("RGBA"))
-            w = int(width or rgba.width) // 16 * 16
-            h = int(height or rgba.height) // 16 * 16
+            w = int(width or rgba.width)
+            h = int(height or rgba.height)
+            if fit_aspect:
+                # 方形/竖图立绘塞进横屏画布 = 角色只占中间一小条，细节被稀释。
+                # 按参考图比例重算画布（面积预算不变），角色才能吃满像素。
+                w, h = _fit_aspect_to_ref(w, h, rgba.width, rgba.height)
             if max(w, h) > max_side:
                 scale = max_side / max(w, h)
-                w, h = (max(16, int(w * scale) // 16 * 16),
-                        max(16, int(h * scale) // 16 * 16))
+                w, h = w * scale, h * scale
+            w, h = _align_wan(w), _align_wan(h)
             src = _prep_ref_images(
                 [rgba], w, h,
                 bg=None if transparent_ratio(rgba) < 0.02 else (128, 128, 128))[0]
@@ -1299,6 +1337,7 @@ class DiffusersProvider(BaseProvider):
         max_seq_len: Optional[int] = None,
         progress: Optional[Dict[str, Any]] = None,
         engine: Optional[str] = None,
+        fit_aspect: bool = False,
     ) -> ProviderResult:
         """视频生成：参考图（可选）+ 提示词 → 帧序列（ProviderResult.images = 帧）。
 
@@ -1357,7 +1396,7 @@ class DiffusersProvider(BaseProvider):
                     width, height, steps, seed, generator, ref,
                     int(num_frames), int(fps), int(max_side), task_id,
                     bool(pixel_art), guidance_scale, max_seq_len, progress,
-                    ref is None,
+                    ref is None, bool(fit_aspect),
                 )
             finally:
                 _stop_beat.set()

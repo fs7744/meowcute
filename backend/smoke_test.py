@@ -500,6 +500,24 @@ def _run_checks(client) -> int:
           _clean_txtvideo({"interpolate": True, "upscale": True})["interpolate"] is True)
     check("720p 宽高进白名单", _clean_txtvideo({"width": 1216})["width"] == 1216)
     check("maxSide 放到 1280", _clean_txtvideo({"maxSide": 1280})["maxSide"] == 1280)
+    # Wan/TI2V 的尺寸硬约束：宽高必须是 vae_scale_factor_spatial(16) ×
+    # patch_size(2) = 32 的倍数。差一点 diffusers 不报错，只打一条 logger.warning
+    # 就静默改小（1216×688 → 1216×672），生产里根本看不见。
+    from backend.app.providers.diffusers_local import (_align_wan,
+                                                       _fit_aspect_to_ref)
+    check("688 对齐到 672", _align_wan(688) == 672, str(_align_wan(688)))
+    check("848 对齐到 832", _align_wan(848) == 832, str(_align_wan(848)))
+    check("480 已是 32 倍数", _align_wan(480) == 480, str(_align_wan(480)))
+    # 方形立绘塞进 16:9 画布 = 角色只占中间一条，有效像素砍半（实测 590k→451k）。
+    # 比例差得明显时必须按参考图重算画布，面积预算不变。
+    _fw, _fh = _fit_aspect_to_ref(1216, 688, 768, 768)
+    check("方形参考图换方形画布", abs(_fw / _fh - 1.0) < 0.02, f"{_fw}×{_fh}")
+    check("换画布保持面积预算",
+          abs(_fw * _fh - 1216 * 688) / (1216 * 688) < 0.06, str(_fw * _fh))
+    _pw, _ph = _fit_aspect_to_ref(1216, 688, 1216, 688)
+    check("比例一致时不动画布", (_pw, _ph) == (1216, 688), f"{_pw}×{_ph}")
+    check("fitAspect 默认跟随（None）", _clean_txtvideo({})["fitAspect"] is None)
+    check("fitAspect 可显式关", _clean_txtvideo({"fitAspect": False})["fitAspect"] is False)
     # videofx：光流插帧 + 放大（合成帧，不依赖 GPU）
     from backend.app.pipelines import videofx as vfx
     from PIL import ImageDraw as _Draw

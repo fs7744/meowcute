@@ -166,7 +166,9 @@ DEFAULT_TXTVIDEO = {
     "negative": "",
     "steps": None,
     "seed": None,
-    "width": 848,
+    # 32 的倍数：Wan/TI2V 的 patchify 要求（16 VAE × 2 patch）。848×480 不是
+    # 32 的倍数，会被 diffusers 静默改成 832×480——预设必须一开始就给对。
+    "width": 832,
     "height": 480,
     "numFrames": 21,
     "fps": 12,
@@ -185,6 +187,8 @@ DEFAULT_TXTVIDEO = {
     "format": "mp4",
     # None=自动：无参考图时后端强制 wan（纯文本只有 Wan 支持）
     "engine": None,
+    # 画布跟随参考图宽高比（None=跟随）：方图立绘不该被塞进 16:9 画布
+    "fitAspect": None,
 }
 
 DEFAULT_RIGWALK = {
@@ -854,11 +858,11 @@ def _clean_txtvideo(t: Any) -> Dict[str, Any]:
         "negative": str(t.get("negative") or "")[:1000],
         "steps": _opt_i(t.get("steps"), 4, 60),
         "seed": _opt_i(t.get("seed"), 0, 2 ** 31),
-        "width": _i(t.get("width"), 848, 128, 1280),
+        "width": _i(t.get("width"), 832, 128, 1280),
         "height": _i(t.get("height"), 480, 128, 1280),
         "numFrames": _i(t.get("numFrames"), 21, 5, 193),
         "fps": _i(t.get("fps"), 12, 8, 30),
-        "maxSide": _i(t.get("maxSide"), 848, 256, 1280),
+        "maxSide": _i(t.get("maxSide"), 832, 256, 1280),
         "maxSeqLen": _opt_i(t.get("maxSeqLen"), 256, 1536),
         "pixelArt": bool(t.get("pixelArt", False)),
         "guidanceScale": _opt_f(t.get("guidanceScale"), 1.0, 9.0),
@@ -871,6 +875,9 @@ def _clean_txtvideo(t: Any) -> Dict[str, Any]:
         "upscale": bool(t.get("upscale", False)),
         "format": fmt if (fmt := t.get("format")) in ("mp4", "gif") else "mp4",
         "engine": engine if engine in ("auto", "wan", "hy15") else None,
+        # 三态：None=跟随参考图比例 / True=强制跟随 / False=按用户画幅不动
+        "fitAspect": (None if t.get("fitAspect") is None
+                      else bool(t.get("fitAspect"))),
     }
 
 

@@ -46,10 +46,11 @@ export default function TxtVideoNode({
   const DEFAULTS: TxtVideoNodeType['txtvideo'] = {
     enabled: true, prompt: '', negative: '',
     quality: 'standard', resolution: '480p',
-    steps: null, seed: null, width: 848, height: 480,
-    numFrames: 21, fps: 12, maxSide: 848, maxSeqLen: null,
+    steps: null, seed: null, width: 832, height: 480,
+    numFrames: 21, fps: 12, maxSide: 832, maxSeqLen: null,
     pixelArt: false, guidanceScale: null,
     interpolate: false, upscale: false, engine: null, format: 'mp4',
+    fitAspect: null,
   }
   const v = { ...DEFAULTS, ...node.txtvideo }
   const patch = (p: Partial<typeof v>) => onChange({ txtvideo: { ...v, ...p } })
@@ -70,8 +71,11 @@ export default function TxtVideoNode({
     },
   } as const
   const RES_PRESETS = {
-    '480p': { w: 848, h: 480, note: 'hy15 原生训练分辨率；Wan 也快' },
-    '720p': { w: 1216, h: 688, note: 'Wan 原生级；hy15 是 480p 蒸馏模型，超训练分辨率细节不升反降，建议切 Wan' },
+    // 全部取 32 的倍数：Wan/TI2V 的 patchify 要求（VAE 16 × patch 2）。
+    // 848×480 和 1216×688 都不是 32 的倍数，diffusers 会静默把 848→832、
+    // 688→672，只留一条用户看不见的 logger.warning。
+    '480p': { w: 832, h: 480, note: 'hy15 原生训练分辨率；Wan 也快' },
+    '720p': { w: 1280, h: 704, note: 'Wan 原生级；hy15 是 480p 蒸馏模型，超训练分辨率细节不升反降，建议切 Wan' },
   } as const
   const QUALITY_CN = { draft: '草稿', standard: '标准', fine: '精细' } as const
 
@@ -185,7 +189,7 @@ export default function TxtVideoNode({
             </select>
           </label>
           <label className="gen-field">
-            <span className="gen-field-label" title="480p=hy15 原生 848×480；720p=1216×688（Wan 原生级，hy15 超训练分辨率会警告）；自定义=宽高自由">分辨率</span>
+            <span className="gen-field-label" title="480p=832×480（hy15 原生 848×480）；720p=1280×704（Wan 原生级，hy15 超训练分辨率会警告）；自定义=宽高自由。所有值必须是 32 的倍数，否则底层会静默改小">分辨率</span>
             <select className="input" value={v.resolution}
               onChange={(e) => applyResolution(e.target.value as TxtVideoNodeType['txtvideo']['resolution'])}>
               <option value="480p">480p</option>
@@ -201,18 +205,42 @@ export default function TxtVideoNode({
           {v.resolution === '720p' && effEngine === 'hy15' ? '（⚠ 当前引擎是 hy15）' : ''}
         </div>
 
+        <label className="gen-field" style={{ marginBottom: 6 }}>
+          <span className="gen-field-label"
+            title="有参考图时，画布按参考图的宽高比重算（面积不变）。方形立绘塞进 16:9 画布，角色只占中间一条、有效像素砍半——这是「同一张图切 720p 反而更糊」的直接原因">
+            画幅
+          </span>
+          <select className="input"
+            value={v.fitAspect === false ? 'off' : 'fit'}
+            onChange={(e) => patch({ fitAspect: e.target.value === 'off' ? false : null })}>
+            <option value="fit">跟随参考图（推荐）</option>
+            <option value="off">按上面的宽高固定</option>
+          </select>
+        </label>
+        <div className="hint" style={{ marginTop: -2 }}>
+          {v.fitAspect === false
+            ? '固定画幅：参考图会被等比缩放居中，两侧或上下留底'
+            : '跟随参考图：方形立绘用方形画布，角色吃满像素；比例差 15% 内不调整'}
+        </div>
+
         <div className="param-grid">
           <label className="gen-field">
-            <span className="gen-field-label">宽度</span>
-            <input className="input" type="number" min={128} max={1280} step={16}
+            <span className="gen-field-label" title="必须是 32 的倍数（Wan patchify 约束）；不是的话后端会向下取整">宽度</span>
+            <input className="input" type="number" min={128} max={1280} step={32}
               value={v.width} onChange={(e) => patchSize({ width: Number(e.target.value) })} />
           </label>
           <label className="gen-field">
-            <span className="gen-field-label">高度</span>
-            <input className="input" type="number" min={128} max={1280} step={16}
+            <span className="gen-field-label" title="必须是 32 的倍数（Wan patchify 约束）；不是的话后端会向下取整">高度</span>
+            <input className="input" type="number" min={128} max={1280} step={32}
               value={v.height} onChange={(e) => patchSize({ height: Number(e.target.value) })} />
           </label>
         </div>
+        {(v.width % 32 !== 0 || v.height % 32 !== 0) && (
+          <div className="hint warn" style={{ marginTop: -2 }}>
+            {v.width}×{v.height} 不是 32 的倍数，会按 {Math.floor(v.width / 32) * 32}×
+            {Math.floor(v.height / 32) * 32} 跑（Wan/TI2V 的 patchify 要求）
+          </div>
+        )}
 
         <div className="param-grid">
           <label className="gen-field">

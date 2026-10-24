@@ -298,6 +298,8 @@ export const api = {
     /** 输出格式：mp4（默认）/ gif */
     format?: 'mp4' | 'gif'
     engine?: string | null
+    /** 画布跟随参考图宽高比：null=跟随（默认），false=按给定宽高固定 */
+    fitAspect?: boolean | null
   }) =>
     fetch('/api/txtvideo', jsonInit(payload)).then(j<{ taskId: string }>),
 

@@ -625,9 +625,13 @@ export type TxtVideoOptions = {
   /** 画质档位：按引擎映射步数+CFG（hy15 蒸馏 8/12/20 步无 CFG；Wan 20/30/40
    *  步 + CFG 3/5/6）。映射后 steps/guidanceScale 仍可手改，以手改值为准。 */
   quality: TxtVideoQuality
-  /** 分辨率预设：480p（hy15 原生 848×480）/ 720p（1216×688，Wan 原生级，
-   *  hy15 超训练分辨率会警告）/ custom（宽高自由）。 */
+  /** 分辨率预设：480p（Wan 832×480 / hy15 848×480）/ 720p（1280×704，Wan
+   *  原生级；hy15 是 480p 蒸馏，超训练分辨率会警告）/ custom（宽高自由）。
+   *  取值必须是 32 的倍数——TI2V 的 patchify 要求，否则 diffusers 会静默改小。 */
   resolution: TxtVideoResolution
+  /** 画布跟随参考图宽高比：null=跟随（默认）。方形立绘塞进 16:9 画布时角色
+   *  只占中间一条，有效像素砍半；要横屏成片时显式关掉。 */
+  fitAspect: boolean | null
   steps: number | null
   seed: number | null
   width: number

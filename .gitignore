@@ -74,3 +74,6 @@ tools/_icon/
 tools/icon_*.png
 .verify/
 tools/dbwalk/
+
+# 诊断/对照产物（tools/diag_wan_quality.py 等生成的 mp4 与网格图）
+out/

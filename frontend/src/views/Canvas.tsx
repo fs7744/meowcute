@@ -1638,10 +1638,11 @@ export default function Canvas({ projectId, onBack }: Props) {
       txtvideo: {
         enabled: true, prompt: '', negative: '',
         quality: 'standard', resolution: '480p',
-        steps: null, seed: null, width: 848, height: 480,
-        numFrames: 21, fps: 12, maxSide: 848, maxSeqLen: null,
+        steps: null, seed: null, width: 832, height: 480,
+        numFrames: 21, fps: 12, maxSide: 832, maxSeqLen: null,
         pixelArt: false, guidanceScale: null,
         interpolate: false, upscale: false, engine: null, format: 'mp4',
+        fitAspect: null,
       },
       result: null, meta: null, createdAt: Date.now() / 1000,
     }
@@ -1695,11 +1696,11 @@ export default function Canvas({ projectId, onBack }: Props) {
       negative: tv?.negative || '',
       steps: tv?.steps ?? null,
       seed: tv?.seed ?? null,
-      width: tv?.width ?? 848,
+      width: tv?.width ?? 832,
       height: tv?.height ?? 480,
       numFrames: tv?.numFrames ?? 21,
       fps: tv?.fps ?? 12,
-      maxSide: tv?.maxSide ?? 848,
+      maxSide: tv?.maxSide ?? 832,
       maxSeqLen: tv?.maxSeqLen ?? null,
       pixelArt: !!tv?.pixelArt,
       guidanceScale: tv?.guidanceScale ?? null,
@@ -1707,6 +1708,8 @@ export default function Canvas({ projectId, onBack }: Props) {
       upscale: !!tv?.upscale,
       format: tv?.format === 'gif' ? 'gif' : 'mp4',
       engine: tv?.engine ?? null,
+      // 画布跟随参考图宽高比（null=跟随）。方形立绘塞 16:9 会让角色只占中间一条
+      fitAspect: tv?.fitAspect ?? null,
     })
     activeTaskRef.current = taskId
     setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))

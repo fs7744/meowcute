@@ -1736,6 +1736,10 @@ class TxtVideoPayload(BaseModel):
     # 视频引擎：None=自动。两个引擎都支持纯文本（hy15 有 T2V 管线，Wan 文/图
     # 统一权重）；自动模式默认 hy15，权重不全时回退 wan。
     engine: Optional[str] = None
+    # 画布是否跟随参考图宽高比（None=跟随）。方形/竖图立绘塞进 16:9 画布时
+    # 角色只占中间一小条，有效像素被砍掉一半——这是「同一张图切 720p 反而更糊」
+    # 的直接原因。显式 false 表示用户就是要这个画幅（风景/全景素材）。
+    fitAspect: Optional[bool] = None
 
 
 async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
@@ -1786,6 +1790,8 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
             # 叫成「行走视频」（它按有无 ref 猜），这里显式指定。
             progress={"label": "文生视频"},
             engine=engine,
+            # 跟随参考图宽高比（默认开）：方形立绘用方形画布，角色才吃满像素。
+            fit_aspect=True if payload.fitAspect is None else bool(payload.fitAspect),
         )
         # 出片后处理：插帧/放大都是纯 CPU 确定性操作（光流 + 缩放），
         # 丢线程池别堵事件循环；两关都关时零开销。
