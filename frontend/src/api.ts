@@ -295,6 +295,8 @@ export const api = {
     guidanceScale?: number | null
     interpolate?: boolean
     upscale?: boolean
+    /** 输出格式：mp4（默认）/ gif */
+    format?: 'mp4' | 'gif'
     engine?: string | null
   }) =>
     fetch('/api/txtvideo', jsonInit(payload)).then(j<{ taskId: string }>),

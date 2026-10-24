@@ -421,6 +421,7 @@ TEMPLATES: List[Dict[str, Any]] = [
                               "guidanceScale": None,
                               "quality": "standard", "resolution": "480p",
                               "interpolate": False, "upscale": False,
+                              "format": "mp4",
                               "engine": None},
                  "result": None},
                 {"id": "rs1", "type": "result", "x": 1020, "y": 140,

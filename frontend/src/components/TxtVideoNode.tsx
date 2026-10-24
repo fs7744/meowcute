@@ -43,7 +43,7 @@ export default function TxtVideoNode({
     steps: null, seed: null, width: 848, height: 480,
     numFrames: 21, fps: 12, maxSide: 848, maxSeqLen: null,
     pixelArt: false, guidanceScale: null,
-    interpolate: false, upscale: false, engine: null,
+    interpolate: false, upscale: false, engine: null, format: 'mp4',
   }
   const v = { ...DEFAULTS, ...node.txtvideo }
   const patch = (p: Partial<typeof v>) => onChange({ txtvideo: { ...v, ...p } })
@@ -240,6 +240,15 @@ export default function TxtVideoNode({
             </select>
           </label>
         </div>
+
+        <label className="gen-field">
+          <span className="gen-field-label" title="mp4（默认）：H.264 + yuv420p，浏览器 video 原生播，体积小无帧间压缩损失——最终成片用它。gif：256 色、img 直接播，同规格大数倍且有色带——适合当精灵管线的中间产物">输出格式</span>
+          <select className="input" value={v.format ?? 'mp4'}
+            onChange={(e) => patch({ format: e.target.value as 'mp4' | 'gif' })}>
+            <option value="mp4">MP4（H.264，默认）</option>
+            <option value="gif">GIF（256 色）</option>
+          </select>
+        </label>
 
         <div className="switch-row" style={{ marginTop: 6 }}>
           <span className="t" style={{ fontSize: 12 }}

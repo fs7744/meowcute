@@ -57,6 +57,7 @@ from .pipelines import parts as parts_mod
 from .pipelines import rigwalk as rigwalk_mod
 from .pipelines import spritesheet as spritesheet_mod
 from .pipelines import threeview as threeview_mod
+from .pipelines import mp4encode as mp4encode_mod
 from .pipelines import videofx as videofx_mod
 from .pipelines import walkvideo as walkvideo_mod
 from .providers.diffusers_local import DiffusersProvider
@@ -1705,6 +1706,10 @@ class TxtVideoPayload(BaseModel):
     # 整数放大，其余 Lanczos+USM，非 AI 超分）。
     interpolate: bool = False
     upscale: bool = False
+    # 输出格式：mp4（默认，H.264 + yuv420p + faststart，浏览器 <video> 原生
+    # 播）/ gif（256 色、<img> 播，精灵管线中间产物语境）。MP4 才是「最终
+    # 成片」场景的格式——GIF 无帧间压缩，同规格大数倍且有 256 色色带。
+    format: str = "mp4"
     # 视频引擎：None=自动。两个引擎都支持纯文本（hy15 有 T2V 管线，Wan 文/图
     # 统一权重）；自动模式默认 hy15，权重不全时回退 wan。
     engine: Optional[str] = None
@@ -1764,22 +1769,44 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
                 videofx_mod.postprocess, frames,
                 interpolate=bool(payload.interpolate), upscale=bool(payload.upscale),
                 pixel_art=bool(payload.pixelArt))
-        gif = storage.save_gif(payload.projectId, frames,
-                               prefix="txtvideo", fps=payload.fps)
+        fmt = (payload.format or "mp4").lower()
+        if fmt not in ("mp4", "gif"):
+            raise RuntimeError(f"不支持的输出格式：{fmt}（可选 mp4 / gif）")
+        if fmt == "mp4":
+            # H.264 MP4：imageio-ffmpeg 静态 ffmpeg（系统 PATH 没有 ffmpeg，
+            # 这正是 GIF 长期当默认的历史原因）。编码也丢线程池——子进程
+            # 编码 25 帧约 1-2s，但事件循环不该等任何 IO。
+            tmp, enc = await asyncio.to_thread(
+                mp4encode_mod.encode_mp4, frames, fps=payload.fps)
+            try:
+                with open(tmp, "rb") as f:
+                    saved = storage.save_video_stream(
+                        payload.projectId, f, suffix=".mp4", prefix="txtvideo")
+            finally:
+                tmp.unlink(missing_ok=True)
+            # save_video_stream 的键是 id/file/url/bytes，结果卡要 assetId
+            # （GIF 分支显式映射过，这里不能直接塞——漏了前端就拿不到资产 id）
+            asset = {"assetId": saved["id"], "url": saved["url"],
+                     "width": enc["size"][0], "height": enc["size"][1]}
+        else:
+            gif = storage.save_gif(payload.projectId, frames,
+                                   prefix="txtvideo", fps=payload.fps)
+            asset = {
+                "assetId": gif["id"], "url": gif["url"],
+                "width": gif["width"], "height": gif["height"],
+            }
         meta = dict(result.meta or {})
         after = DiffusersProvider.vram_gb().get("reserved")
         if after is not None:
             meta["vramAfterGB"] = after
         if fx:
             meta["post"] = fx
-        # 结果卡徽章显示最终帧数：插帧后 GIF 里是 25 帧，不该显示生成时的 13
+        # 结果卡徽章显示最终帧数：插帧后是 25 帧，不该显示生成时的 13
         meta["frames"] = len(frames)
+        meta["format"] = fmt
         task_results[task_id] = {
             "taskId": task_id,
-            "images": [{
-                "assetId": gif["id"], "url": gif["url"],
-                "width": gif["width"], "height": gif["height"],
-            }],
+            "images": [asset],
             "video": {**meta, "engine": engine or "auto",
                       "hasRef": ref is not None,
                       "seconds": round(time.time() - t0, 1)},

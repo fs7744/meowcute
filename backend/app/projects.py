@@ -181,6 +181,8 @@ DEFAULT_TXTVIDEO = {
     "resolution": "480p",
     "interpolate": False,
     "upscale": False,
+    # 输出格式：mp4（默认，H.264 浏览器原生播）/ gif（<img> 播，精灵管线语境）
+    "format": "mp4",
     # None=自动：无参考图时后端强制 wan（纯文本只有 Wan 支持）
     "engine": None,
 }
@@ -865,6 +867,9 @@ def _clean_txtvideo(t: Any) -> Dict[str, Any]:
         "quality": quality if quality in ("draft", "standard", "fine") else "standard",
         "resolution": (resolution if resolution in ("480p", "720p", "custom")
                        else "480p"),
+        "interpolate": bool(t.get("interpolate", False)),
+        "upscale": bool(t.get("upscale", False)),
+        "format": fmt if (fmt := t.get("format")) in ("mp4", "gif") else "mp4",
         "engine": engine if engine in ("auto", "wan", "hy15") else None,
     }
 

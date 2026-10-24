@@ -560,6 +560,13 @@ button { cursor: pointer; }
   max-width: 100%; max-height: 300px; display: block;
   image-rendering: pixelated;
 }
+
+/* MP4 视频结果：<video controls> 原生播放（H.264 浏览器都放）。
+   像素图保留硬边；max-height 与 img 一致，卡片高度不跳。 */
+.result-img-wrap video {
+  max-width: 100%; max-height: 300px; display: block;
+  image-rendering: pixelated; background: #000;
+}
 .result-img-wrap .orig-badge {
   position: absolute; left: 6px; top: 6px; font-family: var(--chip); font-size: 8px;
   padding: 2px 5px; background: rgba(0, 0, 0, 0.7); border: 1px solid var(--yellow); color: var(--yellow);

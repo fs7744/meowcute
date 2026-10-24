@@ -642,6 +642,9 @@ export type TxtVideoOptions = {
   /** 后处理：插帧 2×（OpenCV 光流，非 AI）/ 放大 2×（像素最近邻 / 其余 Lanczos+锐化） */
   interpolate: boolean
   upscale: boolean
+  /** 输出格式：mp4（默认，H.264 + yuv420p，浏览器 video 原生播，最终成片语境）/
+   *  gif（256 色，img 播，精灵管线中间产物语境——同规格大数倍） */
+  format: 'mp4' | 'gif'
   /** 视频引擎：null=自动（默认 hy15，权重不全回退 wan） */
   engine: string | null
 }
@@ -673,6 +676,8 @@ export type TxtVideoMeta = {
   vramAfterGB?: number
   /** 后处理记录：in/out 帧数 + interpolated/upscaled 标记 */
   post?: { in?: number; out?: number; interpolated?: boolean; upscaled?: boolean }
+  /** 输出格式：mp4 / gif（决定结果卡用 video 还是 img 播） */
+  format?: 'mp4' | 'gif'
   hasRef?: boolean
   seconds?: number
 }

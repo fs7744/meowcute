@@ -426,6 +426,11 @@ def _run_checks(client) -> int:
         check("模板含 txtvideo 节点", "txtvideo" in _tx_types, str(_tx_types))
         check("模板入链是可选参考图（input）", "input" in _tx_types, str(_tx_types))
         check("模板出链是结果卡", "result" in _tx_types, str(_tx_types))
+        _tx_node = next((n for n in _tx_tpl["graph"]["nodes"]
+                         if n.get("type") == "txtvideo"), {})
+        check("模板默认输出 MP4",
+              _tx_node.get("txtvideo", {}).get("format") == "mp4",
+              str(_tx_node.get("txtvideo", {}).get("format")))
         check("模板默认帧数 81", _tx_tpl.get("defaults", {}).get("numFrames") == 81)
     check("DEFAULT_TXTVIDEO 字段齐全",
           {"prompt", "numFrames", "engine", "pixelArt"} <= set(DEFAULT_TXTVIDEO),
@@ -439,6 +444,10 @@ def _run_checks(client) -> int:
     check("空步数保持 None", ct["steps"] is None, str(ct["steps"]))
     check("空种子保持 None", ct["seed"] is None, str(ct["seed"]))
     check("wan 引擎进白名单", _clean_txtvideo({"engine": "wan"})["engine"] == "wan")
+    # 输出格式：默认 mp4（用户要求），gif 可选，非法值回 mp4
+    check("默认输出格式 mp4", _clean_txtvideo({})["format"] == "mp4")
+    check("gif 进白名单", _clean_txtvideo({"format": "gif"})["format"] == "gif")
+    check("非法格式回 mp4", _clean_txtvideo({"format": "avi"})["format"] == "mp4")
     # 画质档位 / 分辨率预设 / 后处理开关（2026-10-24 晚新增）
     check("默认档位 standard", _clean_txtvideo({})["quality"] == "standard")
     check("非法档位回 standard", _clean_txtvideo({"quality": "ultra"})["quality"] == "standard")

@@ -1641,7 +1641,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         steps: null, seed: null, width: 848, height: 480,
         numFrames: 21, fps: 12, maxSide: 848, maxSeqLen: null,
         pixelArt: false, guidanceScale: null,
-        interpolate: false, upscale: false, engine: null,
+        interpolate: false, upscale: false, engine: null, format: 'mp4',
       },
       result: null, meta: null, createdAt: Date.now() / 1000,
     }
@@ -1698,6 +1698,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       guidanceScale: tv?.guidanceScale ?? null,
       interpolate: !!tv?.interpolate,
       upscale: !!tv?.upscale,
+      format: tv?.format === 'gif' ? 'gif' : 'mp4',
       engine: tv?.engine ?? null,
     })
     activeTaskRef.current = taskId
