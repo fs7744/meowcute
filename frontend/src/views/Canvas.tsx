@@ -11,6 +11,8 @@ import PromptModal from '../components/PromptModal'
 import RefineNode from '../components/RefineNode'
 import ResultNode from '../components/ResultNode'
 import SequenceNode from '../components/SequenceNode'
+import PartsNode from '../components/PartsNode'
+import RigWalkNode from '../components/RigWalkNode'
 import SpriteSheetNode from '../components/SpriteSheetNode'
 import ThreeViewNode from '../components/ThreeViewNode'
 import ViewGenNode from '../components/ViewGenNode'
@@ -21,6 +23,7 @@ import type {
   Project, PromptExample, PromptLimits, PromptPreview, RefineNode as RefineNodeType,
   ResultImage,
   ResultMeta, ResultNode as ResultNodeType, SequenceNode as SequenceNodeType,
+  PartsNode as PartsNodeType, RigWalkNode as RigWalkNodeType,
   SpriteSheetNode as SpriteSheetNodeType, Style, TaskProgress, Template,
   ThreeViewNode as ThreeViewNodeType, ViewGenNode as ViewGenNodeType,
   WalkVideoNode as WalkVideoNodeType,
@@ -149,6 +152,15 @@ const NODE_CATALOG: {
         hint: '共享缩放规整后拼成每方向一张横排精灵表' },
       { type: 'play', label: '可操控预览', dot: 'd-play',
         hint: '方向键 / 按钮切换八个方向播放行走循环' },
+    ],
+  },
+  {
+    id: 'rig', label: '骨骼路线', hint: '拆件 → 骨骼行走：纯 CPU、确定性、不闪烁',
+    items: [
+      { type: 'parts', label: '拆件', dot: 'd-matte',
+        hint: 'see-through 出躯干/四肢/道具 + 爆炸图补头 → 6 个骨骼部件' },
+      { type: 'rigwalk', label: '骨骼行走', dot: 'd-play',
+        hint: '6 个部件 → 8 帧行走循环，约 1 秒，天然透明底' },
     ],
   },
   {
@@ -583,6 +595,8 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
     else if (type === 'threeview') addThreeViewNode(at)
     else if (type === 'walkvideo') addWalkVideoNode(at)
+    else if (type === 'parts') addPartsNode(at)
+    else if (type === 'rigwalk') addRigWalkNode(at)
     else if (type === 'sequence') addSequenceNode(at)
     else if (type === 'spritesheet') addSpriteSheetNode(at)
     else if (type === 'play') addPlayNode(at)
@@ -641,6 +655,31 @@ export default function Canvas({ projectId, onBack }: Props) {
         numFrames: 21, fps: 12, maxSide: 512, maxSeqLen: null,
         guidanceScale: null, motionThreshold: 6.0, retries: 2,
       },
+      result: null, images: [], meta: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addPartsNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at ? { x: Math.round(at.x), y: Math.round(at.y) } : canvasSpot(400, 420)
+    const node: PartsNodeType = {
+      id: newId('pt'), type: 'parts', x: spot.x, y: spot.y,
+      parts: { enabled: true, resolution: 1280, withHead: true, seed: 7 },
+      result: null, images: [], meta: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addRigWalkNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at ? { x: Math.round(at.x), y: Math.round(at.y) } : canvasSpot(390, 460)
+    const node: RigWalkNodeType = {
+      id: newId('rw'), type: 'rigwalk', x: spot.x, y: spot.y,
+      rigwalk: { enabled: true, frames: 8, swing: 13, arm: 12, bob: 5, lift: 7,
+        hold: false, fps: 8 },
       result: null, images: [], meta: null, createdAt: Date.now() / 1000,
     }
     setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
@@ -1526,6 +1565,131 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
   }
 
+
+  // ---- 骨骼路线：拆件 → 骨骼行走（纯 CPU，确定性） ----
+  const executeParts = async (
+    node: PartsNodeType, runtime?: Map<string, ResultImage[]>,
+    metaRuntime?: Map<string, any>,
+  ): Promise<{ images: ResultImage[]; meta: any }> => {
+    if (!project) throw new Error('项目未加载')
+    const up = resolveChainInput(node, runtime, metaRuntime)
+    const src = up.out.images[0]
+    if (!src) throw new Error('上游没有角色图：先连「选择图片」或「生成图」')
+    const pt = node.parts
+    const { taskId } = await api.parts({
+      projectId: project.id,
+      sourceKind: 'images',
+      sourceFile: src.assetId,
+      resolution: pt?.resolution ?? 1280,
+      withHead: pt?.withHead ?? true,
+      seed: pt?.seed ?? 7,
+    })
+    activeTaskRef.current = taskId
+    setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+    const r: any = await awaitTask<any>(taskId, node.id)
+    if (activeTaskRef.current === taskId) activeTaskRef.current = null
+    const res: any = r.parts || {}
+    const pmap: Record<string, any> = res.parts || {}
+    const images: ResultImage[] = Object.entries(pmap).map(([role, o]: any) => ({
+      assetId: o.assetId, url: o.url, width: o.width, height: o.height,
+      origAssetId: src.assetId, origUrl: src.url, walkDir: role,
+    }))
+    const meta = {
+      parts: pmap,
+      weapon: res.weapon || null,
+      source: res.source,
+      seconds: res.seconds,
+    }
+    return { images, meta }
+  }
+
+  const applyPartsResult = (node: PartsNodeType, images: ResultImage[], meta: any) => {
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => n.id === node.id
+        ? ({ ...n, result: images[0] ?? null, images, meta } as CanvasNode) : n),
+    } : p)
+    pushDownstreamResult(node.id, images, { parts: meta })
+  }
+
+  const runParts = async (node: PartsNodeType) => {
+    if (!node.parts?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const { images, meta } = await executeParts(node)
+      applyPartsResult(node, images, meta)
+    } catch (e: any) {
+      alert(`拆件失败：${e.message || e}`)
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
+  }
+
+  const executeRigWalk = async (
+    node: RigWalkNodeType, runtime?: Map<string, ResultImage[]>,
+    metaRuntime?: Map<string, any>,
+  ): Promise<{ images: ResultImage[]; meta: any }> => {
+    if (!project) throw new Error('项目未加载')
+    resolveChainInput(node, runtime, metaRuntime)   // 仅用于校验上游已连线
+    const rw = node.rigwalk
+    const { taskId } = await api.rigwalk({
+      projectId: project.id,
+      frames: rw?.frames ?? 8,
+      swing: rw?.swing ?? 13,
+      arm: rw?.arm ?? 12,
+      bob: rw?.bob ?? 5,
+      lift: rw?.lift ?? 7,
+      hold: rw?.hold ?? false,
+      fps: rw?.fps ?? 8,
+    })
+    activeTaskRef.current = taskId
+    setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+    const r: any = await awaitTask<any>(taskId, node.id)
+    if (activeTaskRef.current === taskId) activeTaskRef.current = null
+    const meta: any = r.rig || {}
+    const images: ResultImage[] = (r.images || []).map((o: any) => ({
+      assetId: o.assetId, url: o.url, width: o.width, height: o.height,
+    }))
+    return { images, meta }
+  }
+
+  const applyRigWalkResult = (node: RigWalkNodeType, images: ResultImage[], meta: any) => {
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => n.id === node.id
+        ? ({ ...n, result: images[0] ?? null, images, meta } as CanvasNode) : n),
+    } : p)
+    pushDownstreamResult(node.id, images, { rigwalk: meta })
+    if (!projectRef.current?.edges.some((e) => e.from === node.id)) {
+      ensureResultCard(node, images, { rigwalk: meta })
+    }
+  }
+
+  const runRigWalk = async (node: RigWalkNodeType) => {
+    if (!node.rigwalk?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const { images, meta } = await executeRigWalk(node)
+      applyRigWalkResult(node, images, meta)
+    } catch (e: any) {
+      alert(`骨骼行走失败：${e.message || e}`)
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
+  }
+
   const executeSpriteSheet = async (
     node: SpriteSheetNodeType, runtime?: Map<string, ResultImage[]>,
     metaRuntime?: Map<string, any>,
@@ -2272,6 +2436,14 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is SequenceNodeType => n.type === 'sequence'),
     [project?.nodes],
   )
+  const partsNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is PartsNodeType => n.type === 'parts'),
+    [project?.nodes],
+  )
+  const rigWalkNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is RigWalkNodeType => n.type === 'rigwalk'),
+    [project?.nodes],
+  )
   const spriteSheetNodes = useMemo(
     () => (project?.nodes || []).filter((n): n is SpriteSheetNodeType => n.type === 'spritesheet'),
     [project?.nodes],
@@ -2570,6 +2742,42 @@ export default function Canvas({ projectId, onBack }: Props) {
               onDelete={() => deleteNode(n.id)}
               onDragStart={startDragNode(n.id)}
               onRun={() => runWalkVideo(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {partsNodes.map((n, i) => (
+            <PartsNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={isRunning(n.id)}
+              progress={tasks[n.id]?.progress?.label}
+              sourceLabel={upstreamLabel(n.id)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runParts(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {rigWalkNodes.map((n, i) => (
+            <RigWalkNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={isRunning(n.id)}
+              progress={tasks[n.id]?.progress?.label}
+              upstreamLabel={upstreamLabel(n.id)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runRigWalk(n)}
               onStartLink={startLink}
               onFinishLink={finishLink}
               onPreview={(url, title) => setPreview({ src: url, title })}

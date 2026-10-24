@@ -44,6 +44,7 @@ def _lock(pid: str) -> threading.Lock:
 
 
 ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen",
+                  "parts", "rigwalk",
                  "threeview", "walkvideo", "sequence", "spritesheet", "play")
 
 # 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
@@ -145,6 +146,30 @@ DEFAULT_WALKVIDEO = {
 # walkvideo.sources 的合法方向键（顺时针一圈）
 _WALK_DIRS = ("down", "down-left", "left", "up-left", "up",
               "up-right", "right", "down-right")
+
+# 拆件节点：角色立绘 → 6 个骨骼部件 + 武器（混合路线，见 pipelines/parts.py）。
+# 这条链路替代的是「视频扩散出行走帧」：纯 CPU、确定性、天然带 alpha。
+DEFAULT_PARTS = {
+    "enabled": True,
+    # see-through 1280 约 3 分钟；768 更快但部件细节和手臂完整度会掉
+    "resolution": 1280,
+    # 半写实角色的头部 see-through 会崩（back hair 变成全身鬼影），默认用爆炸图补
+    "withHead": True,
+    "seed": 7,
+}
+
+DEFAULT_RIGWALK = {
+    "enabled": True,
+    "frames": 8,
+    # 12° 干净、18° 动作大但腿根外翻；13 是实测折中
+    "swing": 13,
+    "arm": 12,
+    "bob": 5,
+    "lift": 7,
+    # 双手持枪/握把的角色必须开：两只手分属不同骨骼，各转各的会脱手
+    "hold": False,
+    "fps": 8,
+}
 
 # 序列帧节点（八方向第二步）：每方向视频 → 抽帧 / 去重 / 抠图 → 透明底帧。
 DEFAULT_SEQUENCE = {
@@ -265,6 +290,12 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                                   **(n.get("threeview") if isinstance(n.get("threeview"), dict) else {})}
                 # 模板里没有产出图，选图记录一并清空（否则指向不存在的 assetId）
                 n["threeview"]["picks"] = {}
+            elif n["type"] == "parts":
+                n["parts"] = {**DEFAULT_PARTS,
+                              **(n.get("parts") if isinstance(n.get("parts"), dict) else {})}
+            elif n["type"] == "rigwalk":
+                n["rigwalk"] = {**DEFAULT_RIGWALK,
+                                **(n.get("rigwalk") if isinstance(n.get("rigwalk"), dict) else {})}
             elif n["type"] == "walkvideo":
                 n["result"] = None
                 n["walkvideo"] = {**DEFAULT_WALKVIDEO,
@@ -413,6 +444,22 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         elif n["type"] == "walkvideo":
             item.update({
                 "walkvideo": _clean_walkvideo(n.get("walkvideo")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "parts":
+            item.update({
+                "parts": _clean_parts(n.get("parts")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "rigwalk":
+            item.update({
+                "rigwalk": _clean_rigwalk(n.get("rigwalk")),
                 "result": n.get("result") if isinstance(n.get("result"), dict) else None,
                 "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
                 "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
@@ -683,6 +730,52 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
                           if w.get("guidanceScale") not in (None, "") else None),
         "motionThreshold": round(max(0.0, min(float(w.get("motionThreshold") or 6.0), 60.0)), 2),
         "retries": _i(w.get("retries"), 2, 0, 5),
+    }
+
+
+def _clean_parts(p: Any) -> Dict[str, Any]:
+    """拆件参数：分辨率夹 768-1600（低于 768 手臂会断）。"""
+    p = p if isinstance(p, dict) else {}
+
+    def _i(val, d, lo, hi):
+        try:
+            return max(lo, min(int(val), hi))
+        except Exception:
+            return d
+
+    return {
+        "enabled": bool(p.get("enabled", True)),
+        "resolution": _i(p.get("resolution"), 1280, 768, 1600),
+        "withHead": bool(p.get("withHead", True)),
+        "seed": _i(p.get("seed"), 7, 0, 2**31 - 1),
+    }
+
+
+def _clean_rigwalk(r: Any) -> Dict[str, Any]:
+    """骨骼行走参数：帧数 4-24，摆角 6-24（超过 24 腿根必外翻）。"""
+    r = r if isinstance(r, dict) else {}
+
+    def _f(val, d, lo, hi):
+        try:
+            return max(lo, min(float(val), hi))
+        except Exception:
+            return d
+
+    def _i(val, d, lo, hi):
+        try:
+            return max(lo, min(int(val), hi))
+        except Exception:
+            return d
+
+    return {
+        "enabled": bool(r.get("enabled", True)),
+        "frames": _i(r.get("frames"), 8, 4, 24),
+        "swing": _f(r.get("swing"), 13, 6, 24),
+        "arm": _f(r.get("arm"), 12, 0, 30),
+        "bob": _f(r.get("bob"), 5, 0, 16),
+        "lift": _f(r.get("lift"), 7, 0, 20),
+        "hold": bool(r.get("hold", False)),
+        "fps": _i(r.get("fps"), 8, 4, 24),
     }
 
 

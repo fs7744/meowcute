@@ -553,6 +553,75 @@ export type SequenceNode = {
   createdAt?: number
 }
 
+/** 拆件节点：角色立绘 → 6 个骨骼部件 + 武器。
+ *  混合路线：see-through 出躯干/四肢/道具（道具单独成层不会丢），爆炸图只出头
+ *  （半写实角色的头部 see-through 会崩）。实测面积稳定性 ±2% vs 纯视频 ±5%。 */
+export type PartsOptions = {
+  enabled: boolean
+  /** see-through 生成分辨率（1280 约 3 分钟） */
+  resolution: number
+  /** 是否用爆炸图补头（关掉快 45s，但半写实角色的头可能崩） */
+  withHead: boolean
+  seed: number
+}
+
+export type PartsNode = {
+  id: string
+  type: 'parts'
+  x: number
+  y: number
+  parts: PartsOptions
+  result?: ResultImage | null
+  images?: ResultImage[]
+  meta?: PartsMeta | null
+  createdAt?: number
+}
+
+export type PartsMeta = {
+  source?: string
+  seconds?: number
+  parts?: Partial<Record<'head' | 'torso' | 'arm_l' | 'arm_r' | 'leg_l' | 'leg_r', ResultImage>>
+  weapon?: ResultImage | null
+}
+
+/** 骨骼行走节点：已拆好的部件 → 8 帧循环（纯 CPU、确定性、不闪烁）。 */
+export type RigWalkOptions = {
+  enabled: boolean
+  frames: number
+  /** 腿摆角：12 干净 / 18 动作大但腿根会外翻 */
+  swing: number
+  arm: number
+  bob: number
+  lift: number
+  /** 握持模式：双臂同向小摆，双手持枪不脱手 */
+  hold: boolean
+  fps: number
+}
+
+export type RigWalkNode = {
+  id: string
+  type: 'rigwalk'
+  x: number
+  y: number
+  rigwalk: RigWalkOptions
+  result?: ResultImage | null
+  images?: ResultImage[]
+  meta?: RigWalkMeta | null
+  createdAt?: number
+}
+
+export type RigWalkMeta = {
+  frames?: number
+  stridePx?: number
+  areaMean?: number
+  areaStdPct?: number
+  loopGap?: number
+  motion?: number
+  renderSecs?: number
+  seconds?: number
+  gif?: { id: string; url: string; width: number; height: number } | null
+}
+
 /** 精灵整图节点：每方向透明帧 → 共享缩放规整 → 横排精灵表 + 总览。 */
 export type SpriteSheetNode = {
   id: string
@@ -642,6 +711,10 @@ export type ResultMeta = {
   walk?: WalkMeta
   /** 序列帧节点的产出（八方向链） */
   sequence?: SequenceMeta
+  /** 拆件节点的产出 */
+  parts?: PartsMeta
+  /** 骨骼行走节点的产出 */
+  rigwalk?: RigWalkMeta
   /** 精灵整图节点的产出（八方向链） */
   sheet?: SheetMeta
   /** 可操控预览节点的播放载荷（八方向链） */
@@ -664,6 +737,7 @@ export type ResultNode = {
 export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode | MatteNode
   | ViewGenNode | ThreeViewNode
   | WalkVideoNode | SequenceNode | SpriteSheetNode | PlayNode
+  | PartsNode | RigWalkNode
 export type Edge = { from: string; to: string }
 
 export type Project = {

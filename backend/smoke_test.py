@@ -1583,6 +1583,80 @@ def _run_checks(client) -> int:
 
     client.delete(f"/api/projects/{vpid}")
 
+    print("== 拆件 + 骨骼行走（CPU 部分不碰 GPU） ==")
+    # 骨骼渲染用合成部件直接跑：这条链路的核心价值就是「确定性 + 纯 CPU」，
+    # 不依赖任何模型就能验证帧数、步幅、面积稳定性。
+    import json as _json
+    import tempfile
+    from pathlib import Path as _Path
+
+    from PIL import Image as _Image
+
+    _tmp = _Path(tempfile.mkdtemp(prefix="rigparts-"))
+    _spec = {"head": (60, 50, (240, 200, 160)), "torso": (80, 120, (30, 120, 200)),
+             "arm_l": (24, 100, (200, 60, 60)), "arm_r": (24, 100, (200, 60, 60)),
+             "leg_l": (30, 110, (80, 60, 40)), "leg_r": (30, 110, (80, 60, 40))}
+    _roles = {}
+    for _r, (_w, _h, _c) in _spec.items():
+        _Image.new("RGBA", (_w, _h), (*_c, 255)).save(_tmp / f"{_r}.png")
+        _roles[_r] = {"file": f"{_r}.png", "bbox": [0, 0, _w, _h],
+                      "area": _w * _h, "mirrored": False}
+    (_tmp / "parts.json").write_text(_json.dumps({"roles": _roles}), encoding="utf-8")
+
+    from backend.app.pipelines import rigwalk as _rw
+
+    _frames, _rmeta = _rw.render(_tmp)
+    check("骨骼渲染出 8 帧", len(_frames) == 8, str(len(_frames)))
+    check("骨骼渲染有步幅", _rmeta["stridePx"] > 0, str(_rmeta["stridePx"]))
+    check("骨骼渲染面积稳定", _rmeta["areaStdPct"] < 8, str(_rmeta["areaStdPct"]))
+    check("骨骼渲染耗时 < 1s（纯 CPU 确定性）", _rmeta["renderSecs"] < 1.0, str(_rmeta["renderSecs"]))
+
+    # 节点类型与参数白名单：新节点必须同时进 ALLOWED_TYPES + 默认值 + 存盘白名单，
+    # 缺一个就是「界面上改了存不下、刷新就丢」（这个项目在 hybrid 参数上踩过）。
+    from backend.app.projects import (
+        ALLOWED_TYPES as _AT, DEFAULT_PARTS as _DP, DEFAULT_RIGWALK as _DR,
+    )
+    check("parts / rigwalk 进允许类型", {"parts", "rigwalk"} <= set(_AT), str(_AT))
+    check("拆件默认用爆炸图补头", _DP["withHead"] is True, str(_DP))
+    check("骨骼行走默认 8 帧 13°", (_DR["frames"], _DR["swing"]) == (8, 13), str(_DR))
+    from backend.app.projects import _clean_parts as _cp, _clean_rigwalk as _cr
+    check("拆件分辨率夹到 1600", _cp({"resolution": 4000})["resolution"] == 1600,
+          str(_cp({"resolution": 4000})["resolution"]))
+    check("腿摆角夹到 24", _cr({"swing": 99})["swing"] == 24, str(_cr({"swing": 99})["swing"]))
+    check("骨骼帧数夹到 24", _cr({"frames": 999})["frames"] == 24)
+
+    # 存盘往返：parts / rigwalk 节点要能存下来再读回来
+    _r = client.post("/api/projects", json={"name": "rig-nodes", "templateId": "pixel_sprite_txt2img"})
+    _npid = _r.json()["project"]["id"]
+    _proj = client.get(f"/api/projects/{_npid}").json()["project"]
+    _proj["nodes"] = _proj["nodes"] + [
+        {"id": "pt1", "type": "parts", "x": 10, "y": 10,
+         "parts": {"resolution": 1024, "withHead": False, "seed": 3}},
+        {"id": "rw1", "type": "rigwalk", "x": 300, "y": 10,
+         "rigwalk": {"frames": 12, "swing": 9, "hold": True}},
+    ]
+    _put = client.put(f"/api/projects/{_npid}", json=_proj)
+    _back = client.get(f"/api/projects/{_npid}").json()["project"]
+    _pt = next((n for n in _back["nodes"] if n["id"] == "pt1"), {})
+    _rw = next((n for n in _back["nodes"] if n["id"] == "rw1"), {})
+    check("parts 节点存盘往返", _put.status_code == 200
+          and _pt.get("parts", {}).get("resolution") == 1024
+          and _pt.get("parts", {}).get("withHead") is False, str(_pt.get("parts")))
+    check("rigwalk 节点存盘往返", _rw.get("rigwalk", {}).get("frames") == 12
+          and _rw.get("rigwalk", {}).get("hold") is True, str(_rw.get("rigwalk")))
+
+    # 路由校验：缺输入/缺上游时任务要明确报错，而不是静默挂住
+    _r = client.post("/api/parts", json={"projectId": wpid})
+    _j = wait_task(_r.json()["taskId"], 30)
+    check("拆件缺输入图明确报错",
+          "没有输入角色图" in (_j.get("progress", {}).get("error") or ""),
+          str(_j.get("progress", {}).get("error"))[:40])
+    _r = client.post("/api/rigwalk", json={"projectId": wpid})
+    _j = wait_task(_r.json()["taskId"], 30)
+    check("骨骼行走在未拆件时明确报错",
+          "拆件" in (_j.get("progress", {}).get("error") or ""),
+          str(_j.get("progress", {}).get("error"))[:40])
+
     print("== 删除项目 ==")
     r = client.delete(f"/api/projects/{pid}")
     check("删除项目", r.status_code == 200)

@@ -311,6 +311,31 @@ pixelArt?: boolean
   }) =>
     fetch('/api/walkvideo', jsonInit(payload)).then(j<{ taskId: string }>),
 
+  /** 拆件：角色立绘 → 6 个骨骼部件 + 武器（see-through 出身体 + 爆炸图出头）。 */
+  parts: (payload: {
+    projectId: string
+    sourceKind?: 'images' | 'refs'
+    sourceFile?: string
+    resolution?: number
+    withHead?: boolean
+    seed?: number
+    force?: boolean
+  }) =>
+    fetch('/api/parts', jsonInit(payload)).then(j<{ taskId: string }>),
+
+  /** 骨骼行走：已拆好的部件 → 8 帧循环（纯 CPU、确定性、天然透明底）。 */
+  rigwalk: (payload: {
+    projectId: string
+    frames?: number
+    swing?: number
+    arm?: number
+    bob?: number
+    lift?: number
+    hold?: boolean
+    fps?: number
+  }) =>
+    fetch('/api/rigwalk', jsonInit(payload)).then(j<{ taskId: string }>),
+
   /** 八方向 · 行走视频：项目内可选的现成视频（历史生成 + 上传）。 */
   listProjectVideos: (projectId: string) =>
     fetch(`/api/projects/${encodeURIComponent(projectId)}/videos`)

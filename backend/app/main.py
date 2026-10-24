@@ -52,6 +52,8 @@ from .config import DATA_DIR, ROOT, load_settings, save_settings, scan_models
 from .pipelines import matte as matte_mod
 from .pipelines import refine as refine_mod
 from .pipelines import sequence as sequence_mod
+from .pipelines import parts as parts_mod
+from .pipelines import rigwalk as rigwalk_mod
 from .pipelines import spritesheet as spritesheet_mod
 from .pipelines import threeview as threeview_mod
 from .pipelines import walkvideo as walkvideo_mod
@@ -1668,6 +1670,129 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
     except Exception as e:
         progress_mod.finish(task_id, str(e)[:600])
         task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+# ---------------------------------------------------------------- 拆件 + 骨骼行走
+class PartsPayload(BaseModel):
+    """拆件：角色立绘 → 6 个骨骼部件 + 武器。
+
+    混合路线（see-through 出躯干/四肢/道具 + 爆炸图出头），理由见
+    backend/app/pipelines/parts.py 与 tools/extract_parts.py 的模块文档。
+    """
+    projectId: str
+    sourceKind: str = "images"
+    sourceFile: Optional[str] = None
+    resolution: int = 1280
+    withHead: bool = True                       # False = 纯 see-through（快 45s，头可能崩）
+    seed: int = 7
+    force: bool = False
+
+
+async def _run_parts(task_id: str, payload: PartsPayload) -> None:
+    t0 = time.time()
+    try:
+        if projects_mod.load_project(payload.projectId) is None:
+            raise RuntimeError("项目不存在")
+        if not payload.sourceFile:
+            raise RuntimeError("没有输入角色图：请连线或选择一张图")
+        # 前端传的是 assetId（无扩展名），load_image 要文件名
+        _name = payload.sourceFile
+        if not _name.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            _name = f"{_name}.png"
+        img = storage.load_image(payload.projectId, payload.sourceKind, _name)
+        if img is None:
+            raise RuntimeError(f"图片读不出来：{_name}")
+        result = await parts_mod.extract(
+            payload.projectId, img,
+            resolution=_clamp(payload.resolution, 768, 1600, 1280),
+            with_head=bool(payload.withHead), seed=int(payload.seed),
+            task_id=task_id, force=bool(payload.force))
+        task_results[task_id] = {"taskId": task_id, "parts": result,
+                                 "seconds": round(time.time() - t0, 1)}
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/parts")
+async def parts_create(payload: PartsPayload) -> Dict[str, Any]:
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备拆件…")
+    asyncio.create_task(_run_parts(task_id, payload))
+    return {"taskId": task_id}
+
+
+class RigWalkPayload(BaseModel):
+    """骨骼行走：已拆好的部件 → 8 帧循环（纯 CPU、确定性、无闪烁）。"""
+    projectId: str
+    frames: int = 8
+    swing: float = 13.0                         # 腿摆角：12 干净 / 18 动作大但腿根外翻
+    arm: float = 12.0
+    bob: float = 5.0
+    lift: float = 7.0
+    hold: bool = False                          # 握持模式：双臂同向小摆，不脱手
+    fps: int = 8
+
+
+async def _run_rigwalk(task_id: str, payload: RigWalkPayload) -> None:
+    t0 = time.time()
+    try:
+        if projects_mod.load_project(payload.projectId) is None:
+            raise RuntimeError("项目不存在")
+        pdir = parts_mod.parts_dir_of(payload.projectId)
+        if pdir is None:
+            raise RuntimeError("还没有拆件结果：先跑「拆件」")
+        progress_mod.report(task_id, 0, 1, "渲染行走帧…")
+        frames, meta = await asyncio.to_thread(
+            rigwalk_mod.render, pdir,
+            frames=_clamp(payload.frames, 4, 24, 8),
+            swing=float(payload.swing), arm=float(payload.arm),
+            bob=float(payload.bob), lift=float(payload.lift),
+            hold=bool(payload.hold))
+
+        # 帧 + 精灵条 + GIF 都存进项目资产
+        infos = []
+        for i, f in enumerate(frames):
+            info = storage.save_image(payload.projectId, f, kind="images",
+                                      prefix="rigframe", seq=i)
+            infos.append({"assetId": info["id"], "url": info["url"],
+                          "width": info["width"], "height": info["height"]})
+        W = sum(f.width for f in frames) + 4 * (len(frames) - 1)
+        strip = Image.new("RGB", (W, frames[0].height), (40, 44, 52))
+        x = 0
+        for f in frames:
+            strip.paste(f.convert("RGB"), (x, 0), f)
+            x += f.width + 4
+        strip_info = storage.save_image(payload.projectId, strip, kind="images", prefix="rigstrip")
+        gif_info = storage.save_gif(payload.projectId, frames,
+                                    fps=_clamp(payload.fps, 4, 24, 8), prefix="rigwalk")
+        task_results[task_id] = {
+            "taskId": task_id,
+            "frames": infos,
+            "images": [{"assetId": strip_info["id"], "url": strip_info["url"],
+                        "width": strip_info["width"], "height": strip_info["height"]}],
+            "rig": {**meta, "gif": gif_info, "strip": strip_info,
+                    "seconds": round(time.time() - t0, 1)},
+        }
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/rigwalk")
+async def rigwalk_create(payload: RigWalkPayload) -> Dict[str, Any]:
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备渲染…")
+    asyncio.create_task(_run_rigwalk(task_id, payload))
+    return {"taskId": task_id}
 
 
 @app.post("/api/walkvideo")

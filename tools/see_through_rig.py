@@ -100,18 +100,13 @@ def split_lr(img: Image.Image):
     return [(left, (0, 0)), (right, (cx, 0))]
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--psd", required=True)
-    ap.add_argument("--out", required=True)
-    args = ap.parse_args()
-
-    psd_path = Path(args.psd)
-    out = Path(args.out)
+def build_from_psd(psd_path: Path, out: Path, quiet: bool = False) -> dict:
+    """PSD -> 6 个骨骼槽位 + weapon.png，返回 roles meta。供 CLI 与管线复用。"""
     out.mkdir(parents=True, exist_ok=True)
+    _log = (lambda *a, **k: None) if quiet else print
     layers, size = load_layers(psd_path)
     names = [n for n, _, _ in layers]
-    print(f"[i] 画布 {size}，{len(layers)} 层：{names}", flush=True)
+    _log(f"[i] 画布 {size}，{len(layers)} 层：{names}")
 
     head = [(im, off) for n, im, off in layers if n in HEAD_NAMES]
     torso = [(im, off) for n, im, off in layers if n in TORSO_NAMES]
@@ -121,7 +116,7 @@ def main() -> int:
     used = HEAD_NAMES | TORSO_NAMES | ARM_NAMES | LEG_NAMES | WEAPON_NAMES
     rest = [n for n in names if n not in used]
     if rest:
-        print(f"[warn] 未归类的层（已忽略）：{rest}", flush=True)
+        _log(f"[warn] 未归类的层（已忽略）：{rest}")
 
     if not torso:
         raise SystemExit("没找到躯干层（topwear/bottomwear）")
@@ -159,14 +154,23 @@ def main() -> int:
     if weapon:
         w = crop_alpha(composite(size, weapon))
         w.save(out / "weapon.png")
-        print(f"[i] 武器/道具层 -> weapon.png {w.size}", flush=True)
+        _log(f"[i] 武器/道具层 -> weapon.png {w.size}")
 
     (out / "parts.json").write_text(
         json.dumps({"roles": meta, "src": str(psd_path), "source": "see-through"},
                    ensure_ascii=False, indent=2), encoding="utf-8")
     for r, im in parts.items():
-        print(f"  {r:7s} {im.size}", flush=True)
-    print(f"DONE {out}", flush=True)
+        _log(f"  {r:7s} {im.size}")
+    return meta
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--psd", required=True)
+    ap.add_argument("--out", required=True)
+    args = ap.parse_args()
+    build_from_psd(Path(args.psd), Path(args.out))
+    print(f"DONE {args.out}")
     return 0
 
 
