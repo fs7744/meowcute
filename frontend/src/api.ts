@@ -277,6 +277,26 @@ export const api = {
   }) =>
     fetch('/api/threeview/compose', jsonInit(payload)).then(j<{ ok: boolean; image: ResultImage }>),
 
+  /** 文本生视频：提示词 + 可选参考图 → 一段视频 GIF（任务制）。
+   *  不传 origAssetId/sourceFile 就是纯文本（Wan2.2 TI2V-5B T2V 路径）。 */
+  txtvideo: (payload: {
+    projectId: string
+    origAssetId?: string
+    sourceKind?: 'images' | 'refs'; sourceFile?: string
+    prompt: string
+    negative?: string
+    steps?: number | null
+    seed?: number | null
+    width?: number; height?: number
+    numFrames?: number; fps?: number
+    maxSide?: number
+    maxSeqLen?: number | null
+    pixelArt?: boolean
+    guidanceScale?: number | null
+    engine?: string | null
+  }) =>
+    fetch('/api/txtvideo', jsonInit(payload)).then(j<{ taskId: string }>),
+
   /** 八方向 · 行走视频：正视图 → 各方向立绘 + Wan 行走视频（任务制）。
    *  sources 里填了文件名的方向跳过生成，直接用现成视频。 */
   walkVideo: (payload: {

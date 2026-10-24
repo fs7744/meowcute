@@ -417,6 +417,35 @@ def _run_checks(client) -> int:
               (_wk_node or {}).get("walkvideo", {}).get("engine") == "hy15",
               str((_wk_node or {}).get("walkvideo", {}).get("engine")))
 
+    print("== 文本生视频（提示词 + 可选参考图）==")
+    from backend.app.projects import DEFAULT_TXTVIDEO, _clean_txtvideo
+    _tx_tpl = next((t for t in ts if t.get("id") == "txt_video"), None)
+    check("有文本生视频模板", _tx_tpl is not None)
+    if _tx_tpl:
+        _tx_types = [n.get("type") for n in _tx_tpl.get("graph", {}).get("nodes", [])]
+        check("模板含 txtvideo 节点", "txtvideo" in _tx_types, str(_tx_types))
+        check("模板入链是可选参考图（input）", "input" in _tx_types, str(_tx_types))
+        check("模板出链是结果卡", "result" in _tx_types, str(_tx_types))
+        check("模板默认帧数 81", _tx_tpl.get("defaults", {}).get("numFrames") == 81)
+    check("DEFAULT_TXTVIDEO 字段齐全",
+          {"prompt", "numFrames", "engine", "pixelArt"} <= set(DEFAULT_TXTVIDEO),
+          str(sorted(DEFAULT_TXTVIDEO)))
+    ct = _clean_txtvideo({"numFrames": 999, "width": 77, "guidanceScale": 99,
+                          "engine": "sora", "steps": "", "seed": None})
+    check("帧数夹到 193", ct["numFrames"] == 193, str(ct["numFrames"]))
+    check("宽度夹到 128", ct["width"] == 128, str(ct["width"]))
+    check("引导强度夹到 9", ct["guidanceScale"] == 9.0, str(ct["guidanceScale"]))
+    check("非法引擎回 None（自动）", ct["engine"] is None, str(ct["engine"]))
+    check("空步数保持 None", ct["steps"] is None, str(ct["steps"]))
+    check("空种子保持 None", ct["seed"] is None, str(ct["seed"]))
+    check("wan 引擎进白名单", _clean_txtvideo({"engine": "wan"})["engine"] == "wan")
+    # 端点注册 + 载荷校验：不存在的项目 → 任务落 error（不 500）
+    r = client.post("/api/txtvideo", json={
+        "projectId": "no-such-project", "prompt": "一只猫在跑",
+    })
+    check("txtvideo 端点注册", r.status_code == 200 and "taskId" in r.json(),
+          f"{r.status_code} {r.text[:80]}")
+
     print("== 生成卡负面词：三层来源 + 可整段覆盖 ==")
     r = client.post("/api/generate/preview", json={
         "prompt": "一只猫", "styleId": "pixel_16bit", "width": 512, "height": 512,

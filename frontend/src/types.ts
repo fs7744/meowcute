@@ -610,8 +610,59 @@ export type RigWalkNode = {
   createdAt?: number
 }
 
-export type RigWalkMeta = {
+/** 文本生视频参数（对应后端 TxtVideoPayload）。
+ *  与行走视频的本质区别：参考图可选——没有图也能跑（Wan2.2 TI2V-5B
+ *  纯文生视频路径），连了上游图就走图生视频。 */
+export type TxtVideoOptions = {
+  enabled: boolean
+  /** 整段画面/动作提示词：用户完整输入，程序不拼接 */
+  prompt: string
+  negative: string
+  steps: number | null
+  seed: number | null
+  width: number
+  height: number
+  numFrames: number
+  fps: number
+  maxSide: number
+  maxSeqLen: number | null
+  /** 像素保真：像素素材用最近邻缩放，别被视频底座糊掉 */
+  pixelArt: boolean
+  guidanceScale: number | null
+  /** 视频引擎：null=自动（无参考图时后端强制 wan——纯文生视频只有 Wan 支持） */
+  engine: string | null
+}
+
+/** 文本视频节点：提示词 + 可选参考图 → 一段视频（GIF）。 */
+export type TxtVideoNode = {
+  id: string
+  type: 'txtvideo'
+  x: number
+  y: number
+  txtvideo: TxtVideoOptions
+  result?: ResultImage | null
+  meta?: TxtVideoMeta | null
+  createdAt?: number
+}
+
+/** 文本视频的 meta：provider 产出的显存/帧数/模式 + 任务耗时。 */
+export type TxtVideoMeta = {
+  steps?: number
+  cfg?: number
+  family?: string
+  /** t2v=纯文本 / i2v=带了参考图 */
+  mode?: string
   frames?: number
+  fps?: number
+  size?: [number, number]
+  vram?: { peakGB?: number; reservedGB?: number; totalGB?: number }
+  vramAfterGB?: number
+  engine?: string
+  hasRef?: boolean
+  seconds?: number
+}
+
+export type RigWalkMeta = {  frames?: number
   stridePx?: number
   areaMean?: number
   areaStdPct?: number
@@ -737,7 +788,7 @@ export type ResultNode = {
 export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode | MatteNode
   | ViewGenNode | ThreeViewNode
   | WalkVideoNode | SequenceNode | SpriteSheetNode | PlayNode
-  | PartsNode | RigWalkNode
+  | PartsNode | RigWalkNode | TxtVideoNode
 export type Edge = { from: string; to: string }
 
 export type Project = {

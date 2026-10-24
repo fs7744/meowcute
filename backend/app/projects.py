@@ -158,9 +158,28 @@ DEFAULT_PARTS = {
     "seed": 7,
 }
 
-DEFAULT_RIGWALK = {
+# 文本生视频节点：提示词 + 可选参考图 → 视频（Wan2.2 TI2V-5B，
+# 纯文本与图生视频是同一份权重的两条管线类）
+DEFAULT_TXTVIDEO = {
     "enabled": True,
-    "frames": 8,
+    "prompt": "",
+    "negative": "",
+    "steps": None,
+    "seed": None,
+    "width": 832,
+    "height": 480,
+    "numFrames": 81,
+    "fps": 24,
+    "maxSide": 832,
+    "maxSeqLen": None,
+    "pixelArt": False,
+    "guidanceScale": None,
+    # None=自动：无参考图时后端强制 wan（纯文本只有 Wan 支持）
+    "engine": None,
+}
+
+DEFAULT_RIGWALK = {
+    "enabled": True,    "frames": 8,
     # 12° 干净、18° 动作大但腿根外翻；13 是实测折中
     "swing": 13,
     "arm": 12,
@@ -296,6 +315,10 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
             elif n["type"] == "rigwalk":
                 n["rigwalk"] = {**DEFAULT_RIGWALK,
                                 **(n.get("rigwalk") if isinstance(n.get("rigwalk"), dict) else {})}
+            elif n["type"] == "txtvideo":
+                n["result"] = None
+                n["txtvideo"] = {**DEFAULT_TXTVIDEO,
+                                 **(n.get("txtvideo") if isinstance(n.get("txtvideo"), dict) else {})}
             elif n["type"] == "walkvideo":
                 n["result"] = None
                 n["walkvideo"] = {**DEFAULT_WALKVIDEO,
@@ -460,6 +483,14 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         elif n["type"] == "rigwalk":
             item.update({
                 "rigwalk": _clean_rigwalk(n.get("rigwalk")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "txtvideo":
+            item.update({
+                "txtvideo": _clean_txtvideo(n.get("txtvideo")),
                 "result": n.get("result") if isinstance(n.get("result"), dict) else None,
                 "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
                 "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
@@ -776,6 +807,51 @@ def _clean_rigwalk(r: Any) -> Dict[str, Any]:
         "lift": _f(r.get("lift"), 7, 0, 20),
         "hold": bool(r.get("hold", False)),
         "fps": _i(r.get("fps"), 8, 4, 24),
+    }
+
+
+def _clean_txtvideo(t: Any) -> Dict[str, Any]:
+    """文本生视频参数：尺寸/帧数/fps 夹在与 Wan 解码器一致的范围里。"""
+    t = t if isinstance(t, dict) else {}
+
+    def _i(val, d, lo, hi):
+        try:
+            return max(lo, min(int(val), hi))
+        except Exception:
+            return d
+
+    def _opt_i(val, lo, hi):
+        if val is None or val == "":
+            return None
+        try:
+            return max(lo, min(int(val), hi))
+        except Exception:
+            return None
+
+    def _opt_f(val, lo, hi):
+        if val is None or val == "":
+            return None
+        try:
+            return max(lo, min(float(val), hi))
+        except Exception:
+            return None
+
+    engine = t.get("engine")
+    return {
+        "enabled": bool(t.get("enabled", True)),
+        "prompt": str(t.get("prompt") or "")[:4000],
+        "negative": str(t.get("negative") or "")[:1000],
+        "steps": _opt_i(t.get("steps"), 4, 60),
+        "seed": _opt_i(t.get("seed"), 0, 2 ** 31),
+        "width": _i(t.get("width"), 832, 128, 1024),
+        "height": _i(t.get("height"), 480, 128, 1024),
+        "numFrames": _i(t.get("numFrames"), 81, 5, 193),
+        "fps": _i(t.get("fps"), 24, 8, 30),
+        "maxSide": _i(t.get("maxSide"), 832, 256, 1024),
+        "maxSeqLen": _opt_i(t.get("maxSeqLen"), 256, 1536),
+        "pixelArt": bool(t.get("pixelArt", False)),
+        "guidanceScale": _opt_f(t.get("guidanceScale"), 1.0, 9.0),
+        "engine": engine if engine in ("auto", "wan", "hy15") else None,
     }
 
 

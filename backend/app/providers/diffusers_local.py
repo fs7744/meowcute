@@ -524,17 +524,23 @@ class DiffusersProvider(BaseProvider):
     def _load(self, model_id: str):
         if model_id in _CACHE:
             return _CACHE[model_id]
-        family = detect_family(model_id)
+        # "#t2v" 后缀 = 同一份 Wan 权重的纯文生视频管线（缓存键后缀约定，
+        # 见 _load_wan）。这里必须把后缀解析出来再分发——否则 _load_wan 会
+        # 以 t2v=False 加载 I2V 管线，却存进 #t2v 键，纯文本路径拿到图生视频
+        # 管线直接报 unexpected keyword 'image' 的反向错误。
+        t2v = model_id.endswith("#t2v")
+        real_id = model_id[:-4] if t2v else model_id
+        family = detect_family(real_id)
         if family not in ("qwen21", "wan"):
             raise RuntimeError(
                 f"暂不支持的模型：{model_id}。当前版本只支持 Qwen-Image-2.1"
                 "（文生图 / 参考图编辑 / 原生 RGBA 三合一）与 Wan2.2 TI2V-5B"
-                "（图生视频）。")
+                "（图生视频 / 纯文生视频）。")
         # 单卡 24GB 只容一个大家族：切换前先把另一大族卸了，否则共存必 OOM
         _evict_other_families(family)
         if family == "qwen21":
-            return self._load_qwen21(model_id)
-        return self._load_wan(model_id)
+            return self._load_qwen21(real_id)
+        return self._load_wan(real_id, t2v=t2v)
 
     def _load_qwen21(self, model_id: str):
         """Qwen-Image-2.1：7B 单流 DiT 统一底座（2026-10-23 起唯一的图片底座）。
@@ -723,18 +729,27 @@ class DiffusersProvider(BaseProvider):
 
     # ---------- Wan2.2 TI2V-5B：图生视频（参考图 + 动作提示词 → 帧序列） ----------
 
-    def _load_wan(self, model_id: str):
-        """Wan2.2 TI2V-5B：5B DiT + umT5-xxl + Wan VAE，diffusers WanImageToVideoPipeline。
+    def _load_wan(self, model_id: str, t2v: bool = False):
+        """Wan2.2 TI2V-5B：5B DiT + umT5-xxl + Wan VAE。
+
+        t2v=False（默认）→ WanImageToVideoPipeline（参考图进首帧 latent 通道）；
+        t2v=True → WanPipeline（纯文生视频，48 通道噪声直接送 VAE 解码）。
+
+        TI2V-5B 是统一模型：同一份权重既能文生视频也能图生视频，但**两条管线
+        类不能互换**——把 image 传给 WanPipeline 会报 unexpected keyword
+        argument 'image'，反过来 WanImageToVideoPipeline 又必须要图。所以按调用
+        形态各加载一份，并在缓存里用不同 key 区分。
+
 
         为什么用视频底座做精灵：逐帧编辑（Qwen-Edit 一帧一帧改姿势）每帧都是
         独立推理，帧间没有运动连续性，快速动作会抖；视频底座一次生成整段动作，
         肢体路径天然连贯，抽帧后就是现成的循环素材。
 
-        管线类必须用 I2V 版：仓库的 model_index.json 写的是 ``WanPipeline``（纯文生
-        视频，__call__ 不接受 image），但 TI2V-5B 的 transformer 是
-        ``in_channels=48``（16 噪声 + 32 图像 latent），只有 WanImageToVideoPipeline
-        会把参考图编码进第一帧的 latent 通道。照 model_index 加载会直接报
-        ``unexpected keyword argument 'image'``。
+        管线类按调用形态选：仓库的 model_index.json 写的是 ``WanPipeline``
+        （纯文生视频，__call__ 不接受 image），但 TI2V-5B 的 transformer 是
+        ``in_channels=48``（16 噪声 + 32 图像 latent），图生视频时只有
+        WanImageToVideoPipeline 会把参考图编码进第一帧的 latent 通道。
+        纯文生视频时 48 通道噪声直接送 VAE（其 z_dim 也是 48），两条路径都成立。
 
         显存策略（照 Qwen-Edit 的作业）：
         - transformer bf16 18.6GB → GPU 逐层 fp8（约 9.3GB），落盘缓存
@@ -749,14 +764,29 @@ class DiffusersProvider(BaseProvider):
         except Exception as e:  # pragma: no cover
             raise RuntimeError(_TORCH_HINT) from e
         try:
-            from diffusers import WanImageToVideoPipeline, WanTransformer3DModel
+            from diffusers import (WanImageToVideoPipeline, WanPipeline,
+                                   WanTransformer3DModel)
         except Exception as e:
             raise RuntimeError(
                 "Wan2.2 视频生成需要 diffusers ≥ 0.36（含 "
-                "WanImageToVideoPipeline / WanTransformer3DModel）。"
+                "WanImageToVideoPipeline / WanPipeline / WanTransformer3DModel）。"
                 "请执行 pip install -U diffusers。\n"
                 f"原始错误：{e}"
             ) from e
+        # 同一份权重只留一种管线：T2V 与 I2V 各约 17GB，同进程共存必 OOM。
+        # 缓存 key 用后缀区分，Family 表也要手动登记——否则 _evict_other_families
+        # 认不出 "#t2v" 这个 key 属于 wan 族。
+        key = f"{model_id}#t2v" if t2v else model_id
+        other = model_id if t2v else f"{model_id}#t2v"
+        if other in _CACHE:
+            _CACHE.pop(other, None)
+            _CAPS.pop(other, None)
+            gc.collect()
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
         # ftfy 是 encode_prompt → prompt_clean 的硬依赖，但 diffusers 不默认带它。
         # 缺了会在真正开始去噪时才炸（NameError 埋在 diffusers 内部，位置很难找），
         # 所以在这里拦一次并说清楚装什么。
@@ -781,14 +811,14 @@ class DiffusersProvider(BaseProvider):
                       flush=True)
                 transformer = None
 
-        # WanImageToVideoPipeline 与 WanPipeline 的组件字段一致，可以直接复用
-        # 仓库里的 config/权重；不存在的 transformer_2/transformer_3 传 None。
+        # 两条管线的组件字段一致，可以直接复用仓库里的 config/权重；
+        # 不存在的 transformer_2/transformer_3 传 None。
+        pipe_cls = WanPipeline if t2v else WanImageToVideoPipeline
         if transformer is not None:
-            pipe = WanImageToVideoPipeline.from_pretrained(
+            pipe = pipe_cls.from_pretrained(
                 model_id, torch_dtype=torch.bfloat16, transformer=transformer)
         else:
-            pipe = WanImageToVideoPipeline.from_pretrained(
-                model_id, torch_dtype=torch.bfloat16)
+            pipe = pipe_cls.from_pretrained(model_id, torch_dtype=torch.bfloat16)
             if os.environ.get("MEOWCUTE_QWEN_FP8", "1") != "0":
                 self._quantize_fp8(pipe.transformer, "wan.transformer")
         # umT5-xxl 10.6GB：fp8 后约 5.3GB，offload 会在编码完成后把它搬出显存
@@ -809,11 +839,14 @@ class DiffusersProvider(BaseProvider):
         pipe.set_progress_bar_config(disable=True)
         caps: Dict[str, Any] = {
             "family": "wan",
-            "notes": ["Wan2.2 TI2V-5B：参考图 + 中文提示词 → 视频帧序列；"
-                      + residency],
+            "notes": [
+                ("Wan2.2 TI2V-5B：" + ("纯文本提示词 → 视频帧序列" if t2v
+                                       else "参考图 + 中文提示词 → 视频帧序列"))
+                + "；" + residency],
         }
-        _CAPS[model_id] = caps
-        _CACHE[model_id] = pipe
+        _CAPS[key] = caps
+        _CACHE[key] = pipe
+        _FAMILY[key] = "wan"
         return pipe
 
     def _run_wan(self, model_id: str, prompt: str, negative: str,
@@ -823,8 +856,14 @@ class DiffusersProvider(BaseProvider):
                  task_id: Optional[str] = None, pixel_art: bool = False,
                  guidance_scale: Optional[float] = None,
                  max_seq_len: Optional[int] = None,
-                 progress: Optional[Dict[str, Any]] = None):
-        """图生视频：参考图 + 动作提示词 → 帧序列（PIL 列表）。
+                 progress: Optional[Dict[str, Any]] = None,
+                 t2v: bool = False):
+        """视频生成：参考图 + 动作提示词 → 帧序列（PIL 列表）。
+
+        t2v=False（默认）→ 图生视频：参考图进首帧 latent 通道；
+        t2v=True → 纯文生视频：48 通道噪声直接送 VAE，不传 image。
+        TI2V-5B 是统一权重，两条路径各自加载一份管线（#t2v 缓存键区分，
+        同进程共存必 OOM），见 _load_wan。
 
         - num_frames 必须是 4k+1（Wan 时序 VAE 的要求），内部向下取整；
         - 输入图按 16 对齐缩放到目标尺寸，长边超过 max_side 时先降（编辑成本
@@ -834,15 +873,18 @@ class DiffusersProvider(BaseProvider):
         """
         import torch
 
-        if ref is None:
-            raise ValueError("Wan 图生视频需要一张参考图（ref）")
+        if ref is None and not t2v:
+            raise ValueError("Wan 图生视频需要一张参考图（ref）；纯文本生成请走 t2v")
         # 加载底座是「长时间没反应」的第一段：fp8 权重 + 量化缓存，冷启动
         # 可能要 1-3 分钟，期间一条进度都没有。先报一条不确定态，让用户知道
         # 是在加载而不是卡死。
         progress_mod.report(task_id, 0, 0,
                             "加载视频底座…（首次需 fp8 量化，约 1-3 分钟；"
                             "之后走缓存只要几秒）")
-        pipe = self._load(model_id)
+        # T2V 与 I2V 各占约 17GB，_load_wan 里已保证只驻留一种；这里按形态
+        # 选缓存键（#t2v 后缀），不要直接传 model_id——那会加载成 I2V 管线，
+        # 纯文本路径再报 unexpected keyword 'image' 的反向错误。
+        pipe = self._load(f"{model_id}#t2v" if t2v else model_id)
         use_steps = 30 if not steps else max(20, min(int(steps), 50))
         # CFG 可调控：默认 5.0（TI2V-5B 官方推荐）。行走动作偏弱时上调能显著
         # 加强运动幅度——这正是「动作幅度不够就自动重试加压」的闭环杠杆。
@@ -851,29 +893,39 @@ class DiffusersProvider(BaseProvider):
             max(1.0, min(9.0, guidance_scale)))
         from PIL import Image as _Image
 
-        # 参考图预处理：**不能**用 ref.convert("RGB")。透明底立绘的 alpha=0 区
-        # RGB 是垃圾值（品红/黑），丢掉 alpha 后整片变成可见背景——实测八方向
-        # 行走视频背景发品紫、画面闪烁，根因就是这里。改成和编辑底座同一套：
-        # 等比缩放居中（letterbox，不拉伸体型）+ 透明区铺中灰。
-        # 中灰是实测模型最愿意当成「什么都没有」的底色；图本身有实底时按它
-        # 自己的边框色铺， letterbox 边带才不会有异色接缝。
-        rgba = sanitize_alpha(ref.convert("RGBA"))
-        w = int(width or rgba.width) // 16 * 16
-        h = int(height or rgba.height) // 16 * 16
-        if max(w, h) > max_side:
-            scale = max_side / max(w, h)
-            w, h = max(16, int(w * scale) // 16 * 16), max(16, int(h * scale) // 16 * 16)
-        src = _prep_ref_images(
-            [rgba], w, h,
-            bg=None if transparent_ratio(rgba) < 0.02 else (128, 128, 128))[0]
-        # 像素保真只在**放大**时用最近邻（保住硬边）。缩小绝不能最近邻：
-        # 512×768 → 384×512 这种抽点会产生大量锯齿，视频底座会把它当成
-        # 噪声放大，实测剪影面积从稳定的 20~27% 抖到 13~69%（整帧冲淡/重影）。
-        # 缩小用 LANCZOS，抗锯齿的损失会被下游精灵表的硬边裁切吃掉。
-        upscaling = (w * h) > (src.width * src.height)
-        resample = _Image.NEAREST if (pixel_art and upscaling) else _Image.LANCZOS
-        src = src.resize((w, h), resample)
-        # 峰值统计从这张视频开始算：不清零的话会带上之前方向的峰值，报出来的
+        if t2v:
+            # 纯文本：没有参考图可预处理，尺寸直接按 16 对齐取（长边超
+            # max_side 先降，与 I2V 同一套成本控制）。
+            w = int(width or 832) // 16 * 16
+            h = int(height or 480) // 16 * 16
+            if max(w, h) > max_side:
+                scale = max_side / max(w, h)
+                w, h = max(16, int(w * scale) // 16 * 16), max(16, int(h * scale) // 16 * 16)
+        else:
+            # 参考图预处理：**不能**用 ref.convert("RGB")。透明底立绘的 alpha=0 区
+            # RGB 是垃圾值（品红/黑），丢掉 alpha 后整片变成可见背景——实测八方向
+            # 行走视频背景发品紫、画面闪烁，根因就是这里。改成和编辑底座同一套：
+            # 等比缩放居中（letterbox，不拉伸体型）+ 透明区铺中灰。
+            # 中灰是实测模型最愿意当成「什么都没有」的底色；图本身有实底时按它
+            # 自己的边框色铺， letterbox 边带才不会有异色接缝。
+            rgba = sanitize_alpha(ref.convert("RGBA"))
+            w = int(width or rgba.width) // 16 * 16
+            h = int(height or rgba.height) // 16 * 16
+            if max(w, h) > max_side:
+                scale = max_side / max(w, h)
+                w, h = (max(16, int(w * scale) // 16 * 16),
+                        max(16, int(h * scale) // 16 * 16))
+            src = _prep_ref_images(
+                [rgba], w, h,
+                bg=None if transparent_ratio(rgba) < 0.02 else (128, 128, 128))[0]
+            # 像素保真只在**放大**时用最近邻（保住硬边）。缩小绝不能最近邻：
+            # 512×768 → 384×512 这种抽点会产生大量锯齿，视频底座会把它当成
+            # 噪声放大，实测剪影面积从稳定的 20~27% 抖到 13~69%（整帧冲淡/重影）。
+            # 缩小用 LANCZOS，抗锯齿的损失会被下游精灵表的硬边裁切吃掉。
+            upscaling = (w * h) > (src.width * src.height)
+            resample = _Image.NEAREST if (pixel_art and upscaling) else _Image.LANCZOS
+            src = src.resize((w, h), resample)
+        # 峰值统计从这段视频开始算：不清零的话会带上之前任务的峰值，报出来的
         # 数字对不上「一段视频到底要多少显存」
         try:
             if torch.cuda.is_available():
@@ -882,13 +934,12 @@ class DiffusersProvider(BaseProvider):
             pass
         # 4k+1：Wan 时序 VAE 把帧数压成 (n-1)/4+1 个潜帧，非 4k+1 会补齐或报错
         frames = max(5, (int(num_frames) - 1) // 4 * 4 + 1)
-        # 文本长度同样不能靠管线默认（umT5 默认 226 token）：行走节点的动作
-        # 描述一旦长一点就会被静默截断，表现成「只走了半句话」。
+        # 文本长度同样不能靠管线默认（umT5 默认 226 token）：动作描述一旦长一点
+        # 就会被静默截断，表现成「只走了半句话」。
         extra_kw = {}
         if max_seq_len and _accepts_max_seq(type(pipe)):
             extra_kw["max_sequence_length"] = int(max_seq_len)
-        out = pipe(
-            image=src,
+        call_kw = dict(
             prompt=prompt,
             negative_prompt=negative or " ",
             height=h,
@@ -897,7 +948,7 @@ class DiffusersProvider(BaseProvider):
             num_inference_steps=use_steps,
             guidance_scale=gs,
             generator=generator,
-            # Wan 的 I2V 管线默认 output_type="np"（返回 ndarray），不是 "pil"。
+            # Wan 的管线默认 output_type="np"（返回 ndarray），不是 "pil"。
             # 显式要 PIL：下游统一按 Image 处理，少一层 numpy 往返也少一处错位风险。
             output_type="pil",
             # 步进回调：30 步的视频生成是全场最长的等待，进度与取消都靠它
@@ -910,6 +961,9 @@ class DiffusersProvider(BaseProvider):
             ),
             **extra_kw,
         )
+        if not t2v:
+            call_kw["image"] = src
+        out = pipe(**call_kw)
         # 去噪完到能用的帧之间还有一段纯 VAE 解码（49 帧约 9s），也要报
         progress_mod.report(
             task_id, int((progress or {}).get("base") or 0),
@@ -934,7 +988,7 @@ class DiffusersProvider(BaseProvider):
         _release_vram()
         return imgs, {
             "steps": use_steps, "cfg": gs, "family": "wan",
-            "mode": "i2v", "frames": len(imgs), "fps": fps,
+            "mode": "t2v" if t2v else "i2v", "frames": len(imgs), "fps": fps,
             "seconds": round(len(imgs) / max(1, int(fps)), 2),
             "size": [w, h],
             **({"vram": vram} if vram else {}),
@@ -1230,7 +1284,7 @@ class DiffusersProvider(BaseProvider):
     async def generate_video(
         self,
         prompt: str,
-        ref,
+        ref=None,
         width: int = 0,
         height: int = 0,
         steps: Optional[int] = None,
@@ -1246,10 +1300,13 @@ class DiffusersProvider(BaseProvider):
         progress: Optional[Dict[str, Any]] = None,
         engine: Optional[str] = None,
     ) -> ProviderResult:
-        """图生视频：参考图 + 提示词 → 帧序列（ProviderResult.images = 帧）。
+        """视频生成：参考图（可选）+ 提示词 → 帧序列（ProviderResult.images = 帧）。
 
         与 generate() 分开而不是加参数：视频的输入输出语义都不同（一张图进、
         几十帧出、按时长而非张数描述），塞进同一个方法只会让调用方猜。
+
+        ref=None = 纯文本生视频（T2V）：只有 Wan2.2 TI2V-5B 支持（统一权重，
+        另一条管线类），hy15 会直接报错指路。
 
         engine：hy15（默认，HunyuanVideo-1.5）/ wan（Wan2.2 TI2V-5B）。两条路径的
         「帧数 / 步数 / CFG」语义不同，所以各自在自己的分支里收敛参数。
@@ -1257,6 +1314,11 @@ class DiffusersProvider(BaseProvider):
         _require_torch()
         _touch()
         eng = resolve_video_engine(engine, self.cfg)
+        if ref is None and eng != "wan":
+            raise RuntimeError(
+                "纯文本生视频（不带参考图）目前只有 Wan2.2 TI2V-5B 支持"
+                "（TI2V-5B 是文/图统一权重）。请传一张参考图，"
+                "或把视频引擎显式切成 wan。")
         if eng == "hy15":
             return await self._generate_video_hy15(
                 prompt, ref, num_frames=num_frames, steps=steps, seed=seed,
@@ -1294,6 +1356,7 @@ class DiffusersProvider(BaseProvider):
                     width, height, steps, seed, generator, ref,
                     int(num_frames), int(fps), int(max_side), task_id,
                     bool(pixel_art), guidance_scale, max_seq_len, progress,
+                    ref is None,
                 )
             finally:
                 _stop_beat.set()

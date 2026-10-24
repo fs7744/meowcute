@@ -13,6 +13,7 @@
 - /api/threeview/derive                          四视图：由正视图接力生成侧/背/右视图（任务制）
 - /api/threeview/compose                         四视图：正/侧/背/右拼成横向板（3 张按老三视图）
 - /api/walkvideo                                 八方向行走：方向立绘 + Wan 行走视频（任务制）
+- /api/txtvideo                                  文本生视频：提示词 + 可选参考图 → 视频（任务制）
 - /api/sequence                                  八方向行走：视频 → 抽帧去重抠图的序列帧（任务制）
 - /api/spritesheet                               八方向行走：序列帧 → 每方向精灵表 + 总览（任务制）
 
@@ -1670,6 +1671,112 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
     except Exception as e:
         progress_mod.finish(task_id, str(e)[:600])
         task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+# ---------------------------------------------------------------- 文本生视频
+class TxtVideoPayload(BaseModel):
+    """文本视频节点：提示词（+可选参考图）→ 视频。
+
+    和行走视频节点的本质区别：参考图**可选**。行走视频必须有一张角色图
+    推导八方向；文本视频没有图也能跑——走 Wan2.2 TI2V-5B 的纯文生视频路径
+    （同一份权重的另一条管线类，见 provider._load_wan 的 t2v 分支）。
+    """
+    projectId: str
+    sourceKind: str = "images"
+    sourceFile: Optional[str] = None
+    origAssetId: str = ""
+    # 整段画面/动作提示词：用户完整输入，程序不拼接（与行走节点同一约定）
+    prompt: str = ""
+    negative: str = ""
+    steps: Optional[int] = None
+    seed: Optional[int] = None
+    width: int = 832
+    height: int = 480
+    numFrames: int = 81                        # Wan 帧数（内部对齐 4k+1）
+    fps: int = 24
+    maxSide: int = 832
+    maxSeqLen: Optional[int] = None
+    pixelArt: bool = False
+    guidanceScale: Optional[float] = None
+    # 视频引擎：None=自动。**无参考图时强制 wan**——纯文生视频只有 Wan2.2
+    # TI2V-5B 支持（hy15 只做了图生视频，provider 会对 None ref 报错指路，
+    # 但这里直接选对引擎，用户不必先撞一次错误）。
+    engine: Optional[str] = None
+
+
+async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
+    t0 = time.time()
+    try:
+        if projects_mod.load_project(payload.projectId) is None:
+            raise RuntimeError("项目不存在")
+        prompt = (payload.prompt or "").strip()
+        if not prompt:
+            raise RuntimeError("请先写提示词：描述画面内容与动作")
+
+        # 参考图可选：连了上游就加载（脏 alpha 清理同行走视频），没连就是 None
+        ref = None
+        src_file = payload.origAssetId or payload.sourceFile or ""
+        if src_file:
+            src = ThreeViewSource(kind=payload.sourceKind, file=src_file)
+            ref = _load_source(payload.projectId, src)
+            if ref is None:
+                raise RuntimeError(
+                    f"参考图不存在：{src_file}（把「选择图片」节点连上来，或断开连接走纯文本）")
+            ref = alpha_clean.sanitize_alpha(ref.convert("RGBA"))
+
+        provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
+        engine = payload.engine or ("wan" if ref is None else None)
+
+        result = await DiffusersProvider(provider_cfg).generate_video(
+            prompt,
+            ref,
+            width=_clamp(payload.width, 128, 1024, 832),
+            height=_clamp(payload.height, 128, 1024, 480),
+            steps=(_clamp(payload.steps, 4, 60, 30) if payload.steps else None),
+            seed=payload.seed,
+            num_frames=_clamp(payload.numFrames, 5, 193, 81),
+            fps=_clamp(payload.fps, 8, 30, 24),
+            max_side=_clamp(payload.maxSide, 256, 1024, 832),
+            max_seq_len=(_clamp(payload.maxSeqLen, 256, 1536, 512)
+                         if payload.maxSeqLen else None),
+            task_id=task_id,
+            pixel_art=payload.pixelArt,
+            negative=(payload.negative or "").strip(),
+            guidance_scale=(None if payload.guidanceScale is None
+                            else _clamp(payload.guidanceScale, 1.0, 9.0, 5.0)),
+            engine=engine,
+        )
+        gif = storage.save_gif(payload.projectId, result.images,
+                               prefix="txtvideo", fps=payload.fps)
+        meta = dict(result.meta or {})
+        after = DiffusersProvider.vram_gb().get("reserved")
+        if after is not None:
+            meta["vramAfterGB"] = after
+        task_results[task_id] = {
+            "taskId": task_id,
+            "images": [{
+                "assetId": gif["id"], "url": gif["url"],
+                "width": gif["width"], "height": gif["height"],
+            }],
+            "video": {**meta, "engine": engine or "auto",
+                      "hasRef": ref is not None,
+                      "seconds": round(time.time() - t0, 1)},
+        }
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/txtvideo")
+async def txtvideo_create(payload: TxtVideoPayload) -> Dict[str, Any]:
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备中…")
+    asyncio.create_task(_run_txt_video(task_id, payload))
+    return {"taskId": task_id}
 
 
 # ---------------------------------------------------------------- 拆件 + 骨骼行走

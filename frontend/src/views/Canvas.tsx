@@ -12,6 +12,7 @@ import RefineNode from '../components/RefineNode'
 import ResultNode from '../components/ResultNode'
 import SequenceNode from '../components/SequenceNode'
 import PartsNode from '../components/PartsNode'
+import TxtVideoNode from '../components/TxtVideoNode'
 import RigWalkNode from '../components/RigWalkNode'
 import SpriteSheetNode from '../components/SpriteSheetNode'
 import ThreeViewNode from '../components/ThreeViewNode'
@@ -25,7 +26,9 @@ import type {
   ResultMeta, ResultNode as ResultNodeType, SequenceNode as SequenceNodeType,
   PartsNode as PartsNodeType, RigWalkNode as RigWalkNodeType,
   SpriteSheetNode as SpriteSheetNodeType, Style, TaskProgress, Template,
-  ThreeViewNode as ThreeViewNodeType, ViewGenNode as ViewGenNodeType,
+  ThreeViewNode as ThreeViewNodeType,
+  TxtVideoNode as TxtVideoNodeType, TxtVideoMeta,
+  ViewGenNode as ViewGenNodeType,
   WalkVideoNode as WalkVideoNodeType,
 } from '../types'
 
@@ -48,10 +51,12 @@ const WALKVIDEO_W = 380
 const SEQUENCE_W = 380
 const SPRITESHEET_W = 380
 const PLAY_W = 380
+const TXTVIDEO_W = 420
 const NODE_W: Record<string, number> = {
   generate: GEN_W, result: RES_W, input: INPUT_W, refine: REFINE_W, matte: MATTE_W,
   viewgen: VIEWGEN_W, threeview: THREEVIEW_W, walkvideo: WALKVIDEO_W,
   sequence: SEQUENCE_W, spritesheet: SPRITESHEET_W, play: PLAY_W,
+  txtvideo: TXTVIDEO_W,
 }
 
 /** 哪些类型的节点可以作为某个节点的上游（决定自定义工作流是否合法）。 */
@@ -66,11 +71,14 @@ const UPSTREAM_RULES: Record<string, string[]> = {
   threeview: ['input', 'generate', 'matte', 'refine', 'viewgen', 'result'],
   // 八方向链是一条直线：每步只收上一步的产物
   walkvideo: ['input', 'generate', 'matte', 'refine', 'result'],
+  // 文本视频的参考图可选：入边规则同行走视频，但不连也能跑
+  txtvideo: ['input', 'generate', 'matte', 'refine', 'result'],
   sequence: ['walkvideo'],
   spritesheet: ['sequence'],
   play: ['spritesheet'],
   result: ['generate', 'refine', 'matte', 'viewgen', 'threeview',
-           'walkvideo', 'sequence', 'spritesheet', 'play'],
+           'walkvideo', 'sequence', 'spritesheet', 'play', 'txtvideo',
+           'parts', 'rigwalk'],
 }
 
 const UPSTREAM_HINT: Record<string, string> = {
@@ -80,6 +88,7 @@ const UPSTREAM_HINT: Record<string, string> = {
   viewgen: '选择图片 / 生成图 / 扣除背景 / 像素精修 / 图片结果',
   threeview: '生成图 / 侧视图 / 右视图 / 背视图 / 扣除背景 / 图片结果',
   walkvideo: '生成图 / 选择图片 / 扣除背景 / 像素精修',
+  txtvideo: '选择图片 / 生成图 / 扣除背景 / 像素精修 / 图片结果（可不连，纯文本）',
   sequence: '行走视频',
   spritesheet: '序列帧',
   play: '精灵整图',
@@ -142,6 +151,13 @@ const NODE_CATALOG: {
     ],
   },
   {
+    id: 'txtvideo', label: '文本生视频', hint: '提示词 + 可选参考图 → 一段视频',
+    items: [
+      { type: 'txtvideo', label: '文本视频', dot: 'd-walk',
+        hint: 'Wan2.2 纯文生视频；连上游图则切图生视频（首帧锚定）' },
+    ],
+  },
+  {
     id: 'walk', label: '八方向行走', hint: '一张角色图 → 八方向行走精灵表',
     items: [
       { type: 'walkvideo', label: '行走视频', dot: 'd-walk',
@@ -178,6 +194,7 @@ const NODE_LABEL: Record<string, string> = {
   viewgen: '生成视角', threeview: '四视图拼板',
   walkvideo: '行走视频', sequence: '序列帧',
   spritesheet: '精灵整图', play: '可操控预览',
+  txtvideo: '文本生视频', parts: '拆件', rigwalk: '骨骼行走',
 }
 const nodeLabel = (t: string) => NODE_LABEL[t] || t
 
@@ -595,6 +612,7 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
     else if (type === 'threeview') addThreeViewNode(at)
     else if (type === 'walkvideo') addWalkVideoNode(at)
+    else if (type === 'txtvideo') addTxtVideoNode(at)
     else if (type === 'parts') addPartsNode(at)
     else if (type === 'rigwalk') addRigWalkNode(at)
     else if (type === 'sequence') addSequenceNode(at)
@@ -1612,6 +1630,23 @@ export default function Canvas({ projectId, onBack }: Props) {
     pushDownstreamResult(node.id, images, { parts: meta })
   }
 
+  const addTxtVideoNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at ? { x: Math.round(at.x), y: Math.round(at.y) } : canvasSpot(420, 420)
+    const node: TxtVideoNodeType = {
+      id: newId('tx'), type: 'txtvideo', x: spot.x, y: spot.y,
+      txtvideo: {
+        enabled: true, prompt: '', negative: '',
+        steps: null, seed: null, width: 832, height: 480,
+        numFrames: 81, fps: 24, maxSide: 832, maxSeqLen: null,
+        pixelArt: false, guidanceScale: null, engine: null,
+      },
+      result: null, meta: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
   const runParts = async (node: PartsNodeType) => {
     if (!node.parts?.enabled) return
     if (isRunning(node.id)) return
@@ -1622,6 +1657,73 @@ export default function Canvas({ projectId, onBack }: Props) {
       applyPartsResult(node, images, meta)
     } catch (e: any) {
       alert(`拆件失败：${e.message || e}`)
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
+  }
+
+  // ---------- 文本生视频 ----------
+  /** 执行一次文本生视频，返回完整结果（供手动按钮和一键工作流共用）。
+   *  参考图可选：有入边取上游第一张，没入边就是纯文本（后端走 Wan T2V）。 */
+  const executeTxtVideo = async (
+    node: TxtVideoNodeType, runtime?: Map<string, ResultImage[]>,
+  ): Promise<{ images: ResultImage[]; meta: TxtVideoMeta }> => {
+    if (!project) throw new Error('项目未加载')
+    const inEdge = project.edges.find((e) => e.to === node.id)
+    const up = inEdge ? outputOf(inEdge.from, runtime) : null
+    const src = up?.images?.[0] || null
+    const tv = node.txtvideo
+    if (!(tv?.prompt || '').trim()) throw new Error('请先写提示词')
+    const { taskId } = await api.txtvideo({
+      projectId: project.id,
+      origAssetId: src?.assetId || '',
+      sourceKind: 'images',
+      prompt: (tv?.prompt || '').trim(),
+      negative: tv?.negative || '',
+      steps: tv?.steps ?? null,
+      seed: tv?.seed ?? null,
+      width: tv?.width ?? 832,
+      height: tv?.height ?? 480,
+      numFrames: tv?.numFrames ?? 81,
+      fps: tv?.fps ?? 24,
+      maxSide: tv?.maxSide ?? 832,
+      maxSeqLen: tv?.maxSeqLen ?? null,
+      pixelArt: !!tv?.pixelArt,
+      guidanceScale: tv?.guidanceScale ?? null,
+      engine: tv?.engine ?? null,
+    })
+    activeTaskRef.current = taskId
+    setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+    const r: any = await awaitTask<any>(taskId, node.id)
+    if (activeTaskRef.current === taskId) activeTaskRef.current = null
+    const images: ResultImage[] = (r.images || []).map((o: any) => ({
+      assetId: o.assetId, url: o.url, width: o.width, height: o.height,
+      origAssetId: src?.assetId, origUrl: src?.url,
+    }))
+    return { images, meta: (r.video || {}) as TxtVideoMeta }
+  }
+
+  const applyTxtVideoResult = (
+    node: TxtVideoNodeType, images: ResultImage[], meta: TxtVideoMeta,
+  ) => {
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => n.id === node.id
+        ? ({ ...n, result: images[0] ?? null, images, meta } as CanvasNode) : n),
+    } : p)
+  }
+
+  const runTxtVideo = async (node: TxtVideoNodeType) => {
+    if (!node.txtvideo?.enabled) return
+    try {
+      const { images, meta } = await executeTxtVideo(node)
+      applyTxtVideoResult(node, images, meta)
+    } catch (e: any) {
+      alert(`文本生视频失败：${e.message || e}`)
       setTasks((t) => ({
         ...t,
         [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
@@ -2005,12 +2107,14 @@ export default function Canvas({ projectId, onBack }: Props) {
     type RunnerNode = GenNodeType | RefineNodeType | MatteNodeType
       | ViewGenNodeType | ThreeViewNodeType
       | WalkVideoNodeType | SequenceNodeType | SpriteSheetNodeType | PlayNodeType
+      | TxtVideoNodeType
     // 关掉的后处理节点也算一步：它只是透传，不参与执行，但要负责把图交给下游结果卡
     const isRunner = (n: CanvasNode): n is RunnerNode =>
       n.type === 'generate' || n.type === 'refine' || n.type === 'matte'
       || n.type === 'viewgen' || n.type === 'threeview'
       || n.type === 'walkvideo' || n.type === 'sequence'
       || n.type === 'spritesheet' || n.type === 'play'
+      || n.type === 'txtvideo'
     const byId = new Map(project.nodes.map((n) => [n.id, n]))
     const executable = project.nodes.filter(isRunner)
     if (!executable.length) {
@@ -2070,6 +2174,7 @@ export default function Canvas({ projectId, onBack }: Props) {
             : '跳过视角')
           : n.type === 'threeview' ? (n.threeview?.enabled ? '四视图拼板' : '跳过拼板')
           : n.type === 'walkvideo' ? (n.walkvideo?.enabled ? '行走视频' : '跳过行走视频')
+          : n.type === 'txtvideo' ? (n.txtvideo?.enabled ? '文本视频' : '跳过文本视频')
           : n.type === 'sequence' ? (n.sequence?.enabled ? '序列帧' : '跳过序列帧')
           : n.type === 'spritesheet' ? (n.spritesheet?.enabled ? '精灵整图' : '跳过精灵整图')
           : (n.play?.enabled ? '可操控预览' : '跳过预览')
@@ -2115,6 +2220,27 @@ export default function Canvas({ projectId, onBack }: Props) {
             runtime.set(n.id, [result])
           } catch (e: any) {
             throw new Error(`第 ${i + 1} 步（四视图拼板）：${e.message || e}`)
+          }
+          continue
+        }
+        // 文本生视频：参考图可选，关掉时透传上游（和行走链同一套）
+        if (n.type === 'txtvideo') {
+          if (!n.txtvideo?.enabled) {
+            const inEdge = project.edges.find((e) => e.to === n.id)
+            const up = inEdge ? runtime.get(inEdge.from) || [] : []
+            runtime.set(n.id, up)
+            if (up.length) {
+              pushDownstreamResult(n.id, up, {})
+              ensureResultCard(n, up, {})
+            }
+            continue
+          }
+          try {
+            const result = await executeTxtVideo(n, runtime)
+            applyTxtVideoResult(n, result.images, result.meta)
+            runtime.set(n.id, result.images)
+          } catch (e: any) {
+            throw new Error(`第 ${i + 1} 步（文本视频）：${e.message || e}`)
           }
           continue
         }
@@ -2442,6 +2568,10 @@ export default function Canvas({ projectId, onBack }: Props) {
   )
   const rigWalkNodes = useMemo(
     () => (project?.nodes || []).filter((n): n is RigWalkNodeType => n.type === 'rigwalk'),
+    [project?.nodes],
+  )
+  const txtVideoNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is TxtVideoNodeType => n.type === 'txtvideo'),
     [project?.nodes],
   )
   const spriteSheetNodes = useMemo(
@@ -2778,6 +2908,24 @@ export default function Canvas({ projectId, onBack }: Props) {
               onDelete={() => deleteNode(n.id)}
               onDragStart={startDragNode(n.id)}
               onRun={() => runRigWalk(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {txtVideoNodes.map((n, i) => (
+            <TxtVideoNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={isRunning(n.id)}
+              progress={tasks[n.id]?.progress?.label}
+              sourceLabel={upstreamLabel(n.id)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runTxtVideo(n)}
               onStartLink={startLink}
               onFinishLink={finishLink}
               onPreview={(url, title) => setPreview({ src: url, title })}
