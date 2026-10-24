@@ -432,6 +432,30 @@ def _run_checks(client) -> int:
               _tx_node.get("txtvideo", {}).get("format") == "mp4",
               str(_tx_node.get("txtvideo", {}).get("format")))
         check("模板默认帧数 81", _tx_tpl.get("defaults", {}).get("numFrames") == 81)
+        # 回归：从模板建项目必须把 txtvideo 节点和连线一起带过来。
+        # 历史 bug——ALLOWED_TYPES 漏了 txtvideo，建项目时节点被白名单静默丢弃，
+        # 用户看到的就是「只有选图 + 结果卡，啥都没有」。
+        _p = client.post("/api/projects", json={"name": "模板节点回归",
+                                                "templateId": "txt_video"}).json()["project"]
+        _types = [n.get("type") for n in _p.get("nodes", [])]
+        check("建项目保留 txtvideo 节点", "txtvideo" in _types, str(_types))
+        check("建项目保留连线", len(_p.get("edges") or []) >= 2, str(_p.get("edges")))
+        _tv = next((n for n in _p["nodes"] if n.get("type") == "txtvideo"), {})
+        check("节点带提示词/负面词字段",
+              "prompt" in (_tv.get("txtvideo") or {}) and "negative" in (_tv.get("txtvideo") or {}),
+              str(list((_tv.get("txtvideo") or {}).keys())[:6]))
+        # 模板编辑器保存路径也要保留这三类节点（第二处白名单同样的坑）
+        from backend.app.custom_templates import _clean_graph as _cg
+        _g = _cg({"nodes": [{"id": "a", "type": "txtvideo", "x": 0, "y": 0,
+                             "txtvideo": {"prompt": "x"}},
+                            {"id": "b", "type": "parts", "x": 1, "y": 0},
+                            {"id": "c", "type": "rigwalk", "x": 2, "y": 0}],
+                  "edges": [{"from": "a", "to": "b"}]})
+        check("模板编辑器保留 txtvideo/parts/rigwalk",
+              [n["type"] for n in _g["nodes"]] == ["txtvideo", "parts", "rigwalk"],
+              str([n["type"] for n in _g["nodes"]]))
+        check("模板编辑器保留节点参数",
+              _g["nodes"][0]["txtvideo"].get("prompt") == "x")
     check("DEFAULT_TXTVIDEO 字段齐全",
           {"prompt", "numFrames", "engine", "pixelArt"} <= set(DEFAULT_TXTVIDEO),
           str(sorted(DEFAULT_TXTVIDEO)))

@@ -18,7 +18,8 @@ from .jsonlimits import dumps_bounded, parse_bounded
 
 _PATH = DATA_DIR / "custom_templates.json"
 _ALLOWED = ("generate", "result", "input", "refine", "matte", "viewgen",
-            "threeview", "walkvideo", "sequence", "spritesheet", "play")
+            "threeview", "walkvideo", "sequence", "spritesheet", "play",
+            "txtvideo", "parts", "rigwalk")
 _ICON_COLORS = ["#FFB020", "#40E0D0", "#FF6B9D", "#8B7BFF", "#5B9DFF"]
 
 
@@ -104,6 +105,21 @@ def _clean_node(n: Any) -> Optional[Dict[str, Any]]:
     elif n["type"] == "play":
         item.update({
             "play": n.get("play") if isinstance(n.get("play"), dict) else {},
+            "result": None,
+        })
+    elif n["type"] == "txtvideo":
+        item.update({
+            "txtvideo": n.get("txtvideo") if isinstance(n.get("txtvideo"), dict) else {},
+            "result": None,
+        })
+    elif n["type"] == "parts":
+        item.update({
+            "parts": n.get("parts") if isinstance(n.get("parts"), dict) else {},
+            "result": None,
+        })
+    elif n["type"] == "rigwalk":
+        item.update({
+            "rigwalk": n.get("rigwalk") if isinstance(n.get("rigwalk"), dict) else {},
             "result": None,
         })
     else:

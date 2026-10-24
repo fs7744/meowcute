@@ -44,7 +44,7 @@ def _lock(pid: str) -> threading.Lock:
 
 
 ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen",
-                  "parts", "rigwalk",
+                 "parts", "rigwalk", "txtvideo",
                  "threeview", "walkvideo", "sequence", "spritesheet", "play")
 
 # 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
