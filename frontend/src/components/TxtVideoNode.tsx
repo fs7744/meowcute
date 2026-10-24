@@ -74,6 +74,18 @@ export default function TxtVideoNode({
   const effEngine = v.engine === 'wan' || v.engine === 'hy15' ? v.engine : 'hy15'
   const q = QUALITY_PRESETS[effEngine][v.quality]
 
+  // 帧数硬上限由模型定：hy15 是 480p 蒸馏模型，序列长度只到 33 帧；Wan 到 193。
+  // 超了后端会静默夹取，所以界面上必须提前说清楚「最长多少秒」。
+  const FRAME_CAP = { hy15: 33, wan: 193 } as const
+  const frameCap = FRAME_CAP[effEngine]
+  // 时长与帧数是同一个量的两种表达：时长 = 帧数 ÷ 帧率。
+  // 存的是帧数（真值），时长输入只是换个更好懂的口径去写它。
+  const duration = v.numFrames / Math.max(1, v.fps)
+  const setDuration = (sec: number) => {
+    const n = Math.round(Math.max(0.25, Math.min(60, sec)) * v.fps)
+    patch({ numFrames: Math.max(5, Math.min(193, n)) })
+  }
+
   /** 选档位：按引擎填步数+CFG（用户已手改过也照填——选档就是显式要这套）。 */
   const applyQuality = (quality: TxtVideoNodeType['txtvideo']['quality']) => {
     const e = v.engine === 'wan' || v.engine === 'hy15' ? v.engine : 'hy15'
@@ -103,7 +115,8 @@ export default function TxtVideoNode({
     ? Math.max(1, Math.round(v.numFrames / 21 + (v.steps ?? 12) / 12 - 1))
     : Math.round(v.numFrames / 21 + (v.steps ?? 30) / 30)
   const postNote = [
-    v.interpolate ? `插帧 ${v.numFrames * 2 - 1} 帧` : '',
+    // 插帧不改时长：帧数翻倍、fps 也翻倍（后端 _output_fps 同一规则）
+    v.interpolate ? `插帧 ${v.numFrames * 2 - 1} 帧 @ ${Math.min(60, v.fps * 2)}fps` : '',
     v.upscale ? '放大 2×' : '',
   ].filter(Boolean).join(' + ')
 
@@ -197,23 +210,43 @@ export default function TxtVideoNode({
 
         <div className="param-grid">
           <label className="gen-field">
-            <span className="gen-field-label" title="时序 VAE 要求 4k+1，内部会自动向下取整；hy15 上限 33，Wan 到 193">帧数</span>
-            <input className="input" type="number" min={5} max={193} step={4}
-              value={v.numFrames} onChange={(e) => patch({ numFrames: Number(e.target.value) })} />
+            <span className="gen-field-label"
+              title={`时长就是帧数 ÷ 帧率。当前引擎 ${effEngine === 'hy15' ? 'Hunyuan（上限 33 帧）' : 'Wan（上限 193 帧）'}，` +
+                `按 ${v.fps}fps 最长 ${(frameCap / v.fps).toFixed(2)} 秒；要更长请切 Wan 或降帧率`}>
+              时长（秒）
+            </span>
+            <input className="input" type="number" min={0.25} max={60} step={0.25}
+              value={Number(duration.toFixed(2))}
+              onChange={(e) => setDuration(Number(e.target.value))} />
           </label>
           <label className="gen-field">
-            <span className="gen-field-label">帧率</span>
+            <span className="gen-field-label" title="帧率只影响顺滑度，不改变动作快慢——改帧率会按当前时长换算出新帧数">帧率</span>
             <input className="input" type="number" min={8} max={30}
-              value={v.fps} onChange={(e) => patch({ fps: Number(e.target.value) })} />
+              value={v.fps}
+              onChange={(e) => {
+                // 锁时长、换帧数：用户心里的量是「几秒」，不该因为调帧率变长变短
+                const nextFps = Math.max(1, Number(e.target.value))
+                const n = Math.round(duration * nextFps)
+                patch({ fps: nextFps, numFrames: Math.max(5, Math.min(193, n)) })
+              }} />
           </label>
+        </div>
+
+        <div className="hint" style={{ marginTop: -2 }}>
+          = {v.numFrames} 帧 @ {v.fps}fps ≈ {duration.toFixed(2)}s
+          {v.numFrames > frameCap ? (
+            <span style={{ color: 'var(--pink)' }}>
+              {' '}⚠ {effEngine === 'hy15' ? 'Hunyuan' : 'Wan'} 上限 {frameCap} 帧
+              （{(frameCap / v.fps).toFixed(2)}s），超出会被静默截断
+            </span>
+          ) : null}
         </div>
 
         <div className="param-grid">
           <label className="gen-field">
-            <span className="gen-field-label" title={`画质档位「${QUALITY_CN[v.quality]}」映射值：${effEngine} ${q.steps} 步 / CFG ${q.cfg}；清空则按档位默认`}>步数（空=按档位）</span>
-            <input className="input" type="number" min={4} max={60}
-              value={v.steps ?? ''} placeholder={String(q.steps)}
-              onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
+            <span className="gen-field-label" title="时序 VAE 要求 4k+1，内部会自动向下取整；改这里等于改时长">帧数</span>
+            <input className="input" type="number" min={5} max={193} step={4}
+              value={v.numFrames} onChange={(e) => patch({ numFrames: Number(e.target.value) })} />
           </label>
           <label className="gen-field">
             <span className="gen-field-label">种子（空=随机）</span>
@@ -225,21 +258,28 @@ export default function TxtVideoNode({
 
         <div className="param-grid">
           <label className="gen-field">
+            <span className="gen-field-label" title={`画质档位「${QUALITY_CN[v.quality]}」映射值：${effEngine} ${q.steps} 步 / CFG ${q.cfg}；清空则按档位默认`}>步数（空=按档位）</span>
+            <input className="input" type="number" min={4} max={60}
+              value={v.steps ?? ''} placeholder={String(q.steps)}
+              onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
+          </label>
+          <label className="gen-field">
             <span className="gen-field-label" title="CFG：hy15 蒸馏模型官方推荐 1.0（无 CFG）；Wan 默认 5.0，动作偏弱时上调，过头出重影">引导强度</span>
             <input className="input" type="number" min={1} max={9} step={0.5}
               value={v.guidanceScale ?? ''} placeholder={String(q.cfg)}
               onChange={(e) => patch({ guidanceScale: e.target.value ? Number(e.target.value) : null })} />
           </label>
-          <label className="gen-field">
-            <span className="gen-field-label" title="两个引擎都支持纯文本；Hunyuan 一致性和细节更好（帧数上限 33），Wan 帧数可到 193、像素风保留更严格">引擎</span>
-            <select className="input" value={v.engine ?? 'auto'}
-              onChange={(e) => applyEngine(e.target.value === 'auto' ? null : e.target.value)}>
-              {Object.entries(ENGINE_CN).map(([id, cn]) => (
-                <option key={id} value={id}>{cn}</option>
-              ))}
-            </select>
-          </label>
         </div>
+
+        <label className="gen-field">
+          <span className="gen-field-label" title="两个引擎都支持纯文本；Hunyuan 一致性和细节更好（帧数上限 33），Wan 帧数可到 193、像素风保留更严格">引擎</span>
+          <select className="input" value={v.engine ?? 'auto'}
+            onChange={(e) => applyEngine(e.target.value === 'auto' ? null : e.target.value)}>
+            {Object.entries(ENGINE_CN).map(([id, cn]) => (
+              <option key={id} value={id}>{cn}</option>
+            ))}
+          </select>
+        </label>
 
         <label className="gen-field">
           <span className="gen-field-label" title="mp4（默认）：H.264 + yuv420p，浏览器 video 原生播，体积小无帧间压缩损失——最终成片用它。gif：256 色、img 直接播，同规格大数倍且有色带——适合当精灵管线的中间产物">输出格式</span>

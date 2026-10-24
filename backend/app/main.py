@@ -1430,6 +1430,18 @@ class WalkDirImage(BaseModel):
     file: str = ""
 
 
+def _output_fps(fps: int, interpolate: bool) -> int:
+    """成片帧率：插帧是「同样时长换更顺的动作」，帧数翻倍时 fps 必须跟着翻。
+
+    历史 bug：插帧后帧数 13→25 而 fps 留在 12，同一段动作被拉成两倍时长
+    （变成慢动作）。封顶 60（浏览器与 H.264 的常见上限）。
+    """
+    f = int(fps or 0)
+    if not interpolate:
+        return f
+    return min(60, f * 2)
+
+
 def _clamp(v: Any, lo: int, hi: int, default: int) -> int:
     """接口入参兜底：界面上的输入框有上下限，直接调 API 的没有。
 
@@ -1772,12 +1784,14 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
         fmt = (payload.format or "mp4").lower()
         if fmt not in ("mp4", "gif"):
             raise RuntimeError(f"不支持的输出格式：{fmt}（可选 mp4 / gif）")
+        # 插帧不改时长：帧数翻倍，fps 同步翻倍（否则动作变半速慢放）
+        fps_out = _output_fps(_clamp(payload.fps, 8, 30, 12), bool(payload.interpolate))
         if fmt == "mp4":
             # H.264 MP4：imageio-ffmpeg 静态 ffmpeg（系统 PATH 没有 ffmpeg，
             # 这正是 GIF 长期当默认的历史原因）。编码也丢线程池——子进程
             # 编码 25 帧约 1-2s，但事件循环不该等任何 IO。
             tmp, enc = await asyncio.to_thread(
-                mp4encode_mod.encode_mp4, frames, fps=payload.fps)
+                mp4encode_mod.encode_mp4, frames, fps=fps_out)
             try:
                 with open(tmp, "rb") as f:
                     saved = storage.save_video_stream(
@@ -1790,7 +1804,7 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
                      "width": enc["size"][0], "height": enc["size"][1]}
         else:
             gif = storage.save_gif(payload.projectId, frames,
-                                   prefix="txtvideo", fps=payload.fps)
+                                   prefix="txtvideo", fps=fps_out)
             asset = {
                 "assetId": gif["id"], "url": gif["url"],
                 "width": gif["width"], "height": gif["height"],
@@ -1803,6 +1817,8 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
             meta["post"] = fx
         # 结果卡徽章显示最终帧数：插帧后是 25 帧，不该显示生成时的 13
         meta["frames"] = len(frames)
+        # 成片 fps 也要报真值：时长 = frames / fps，报错就显示成两倍长
+        meta["fps"] = fps_out
         meta["format"] = fmt
         task_results[task_id] = {
             "taskId": task_id,

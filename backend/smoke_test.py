@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
-from backend.app.main import app  # noqa: E402
+from backend.app.main import app, _output_fps  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -448,6 +448,10 @@ def _run_checks(client) -> int:
     check("默认输出格式 mp4", _clean_txtvideo({})["format"] == "mp4")
     check("gif 进白名单", _clean_txtvideo({"format": "gif"})["format"] == "gif")
     check("非法格式回 mp4", _clean_txtvideo({"format": "avi"})["format"] == "mp4")
+    # 插帧只该「换更顺」，不该「变慢」：帧数翻倍时 fps 必须同步翻倍
+    check("不插帧 fps 不动", _output_fps(12, False) == 12, str(_output_fps(12, False)))
+    check("插帧 fps 翻倍", _output_fps(12, True) == 24, str(_output_fps(12, True)))
+    check("插帧 fps 封顶 60", _output_fps(30, True) == 60, str(_output_fps(30, True)))
     # 画质档位 / 分辨率预设 / 后处理开关（2026-10-24 晚新增）
     check("默认档位 standard", _clean_txtvideo({})["quality"] == "standard")
     check("非法档位回 standard", _clean_txtvideo({"quality": "ultra"})["quality"] == "standard")

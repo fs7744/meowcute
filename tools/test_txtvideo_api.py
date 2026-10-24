@@ -105,6 +105,17 @@ def main() -> int:
         if post.get("out") != 25:
             fails.append(f"插帧输出应为 25 帧: {post.get('out')}")
 
+        # 插帧不改时长：帧数翻倍 → fps 必须同步翻倍（12→24），时长守恒
+        if v.get("fps") != 24:
+            fails.append(f"插帧后 fps 应为 24（帧数翻倍 fps 同步）: {v.get('fps')}")
+        gen_frames = (v.get("post") or {}).get("in") or 0
+        gen_sec = gen_frames / 12.0
+        out_sec = (v.get("frames") or 1) / max(1, v.get("fps") or 12)
+        if abs(gen_sec - out_sec) > 0.15:
+            fails.append(f"插帧后时长变了：{gen_sec:.2f}s -> {out_sec:.2f}s")
+        else:
+            print(f"[时长] 生成 {gen_sec:.2f}s → 成片 {out_sec:.2f}s（守恒）")
+
         # 项目里能按资产 id 读回视频（前端 <video src> / <img> 走的就是这个
         # 路由，文件名要带后缀——路由按后缀定 MIME）
         aid = imgs[0].get("assetId") if imgs else ""
