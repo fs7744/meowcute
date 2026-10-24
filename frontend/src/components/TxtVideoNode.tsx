@@ -14,6 +14,10 @@ type Props = {
   onRun: () => void
   /** 上一次运行的错误（节点上要留着，不能只闪一个 alert 就没了） */
   error?: string | null
+  /** 进度百分比（null = 还不知道总数，比如模型加载阶段） */
+  pct?: number | null
+  /** 已等秒数（心跳给的时间戳，模型加载阶段也有值） */
+  elapsed?: number | null
   onStartLink: (id: string, client?: { clientX: number; clientY: number }) => void
   onFinishLink: (id: string) => void
   onPreview: (url: string, title: string) => void
@@ -37,7 +41,7 @@ const ENGINE_CN: Record<string, string> = {
  */
 export default function TxtVideoNode({
   node, index, running, progress, sourceLabel, onChange, onDelete, onDragStart,
-  onRun, error, onStartLink, onFinishLink, onPreview,
+  onRun, error, pct, elapsed, onStartLink, onFinishLink, onPreview,
 }: Props) {
   const DEFAULTS: TxtVideoNodeType['txtvideo'] = {
     enabled: true, prompt: '', negative: '',
@@ -123,7 +127,7 @@ export default function TxtVideoNode({
   ].filter(Boolean).join(' + ')
 
   return (
-    <div className={`node txtvideo ${v.enabled ? '' : 'off'}`}
+    <div className={`node txtvideo ${v.enabled ? '' : 'off'} ${running ? 'busy' : ''}`}
       style={{ left: node.x, top: node.y, width: 420 }} data-node-id={node.id}>
       <div className="node-head" onMouseDown={onDragStart}>
         <span className="node-kind">TXV</span>
@@ -337,8 +341,17 @@ export default function TxtVideoNode({
             : `运行生成（约 ${estMin} 分钟${hasRef ? '，图生视频' : '，纯文本'}${postNote ? ` + ${postNote}` : ''}）`}
         </button>
 
-        {running && progress ? (
-          <div className="hint walk-progress" title="当前步骤">{progress}</div>
+        {running ? (
+          <div className="txtv-progress">
+            <div className={`txtv-progress-bar ${pct == null ? 'indet' : ''}`}>
+              <i style={{ width: pct == null ? '35%' : `${Math.max(2, pct)}%` }} />
+            </div>
+            <div className="hint" title={progress || '准备中'}>
+              {progress || '准备中…'}
+              {elapsed ? ` · 已等 ${Math.round(elapsed)}s` : ''}
+              {pct != null ? ` · ${pct}%` : ''}
+            </div>
+          </div>
         ) : null}
 
         {!running && error ? (

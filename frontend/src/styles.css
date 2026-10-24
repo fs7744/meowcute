@@ -977,3 +977,23 @@ button { cursor: pointer; }
 .canvas-topbar .name-input:disabled { color: var(--muted); cursor: default; }
 /* 模板卡上现在有 4-5 个入口（新建 / 画布编辑 / 查看参数 / 改文案 / 另存副本） */
 .tpl-actions { flex-wrap: wrap; }
+
+/* 文本生视频的运行态：节点边框高亮 + 进度条。
+   光靠按钮文字变「生成中」不够——视频要跑 1-3 分钟，用户会以为没反应。 */
+.node.busy {
+  box-shadow: 0 0 0 1px var(--green), 0 0 14px rgba(0, 255, 136, 0.22);
+}
+.txtv-progress { margin-top: 6px; }
+.txtv-progress-bar {
+  height: 4px; background: rgba(255, 255, 255, 0.12); overflow: hidden;
+}
+.txtv-progress-bar i {
+  display: block; height: 100%; background: var(--green);
+  transition: width 0.3s linear;
+}
+/* 还不知道总数（模型加载阶段）：跑一条不确定态的循环条，表明「在动」 */
+.txtv-progress-bar.indet i { animation: txtv-indet 1.2s ease-in-out infinite; }
+@keyframes txtv-indet {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(320%); }
+}

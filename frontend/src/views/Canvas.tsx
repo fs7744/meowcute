@@ -1737,6 +1737,9 @@ export default function Canvas({ projectId, onBack }: Props) {
 
   const runTxtVideo = async (node: TxtVideoNodeType) => {
     if (!node.txtvideo?.enabled) return
+    // 先置忙：第一条 SSE 可能要等几秒（模型加载阶段），
+    // 这期间按钮/边框必须已经是「运行中」，否则用户以为点了没反应。
+    markBusy(node.id, true)
     try {
       const { images, meta } = await executeTxtVideo(node)
       applyTxtVideoResult(node, images, meta)
@@ -2939,6 +2942,11 @@ export default function Canvas({ projectId, onBack }: Props) {
               index={i}
               running={isRunning(n.id)}
               progress={tasks[n.id]?.progress?.label}
+              pct={(() => {
+                const tp = tasks[n.id]?.progress as any
+                return tp && tp.total ? Math.round((tp.done / tp.total) * 100) : null
+              })()}
+              elapsed={(tasks[n.id]?.progress as any)?.elapsed ?? null}
               error={tasks[n.id]?.error ?? null}
               sourceLabel={upstreamLabel(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
