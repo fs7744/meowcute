@@ -1719,6 +1719,12 @@ export default function Canvas({ projectId, onBack }: Props) {
       nodes: p.nodes.map((n) => n.id === node.id
         ? ({ ...n, result: images[0] ?? null, images, meta } as CanvasNode) : n),
     } : p)
+    // 结果视频要推到下游结果卡（和 walkvideo 同一套）：只 set 节点自己的
+    // result 是不够的——用户在一键工作流里就看不到产出。
+    pushDownstreamResult(node.id, images, { video: meta })
+    if (!projectRef.current?.edges.some((e) => e.from === node.id)) {
+      ensureResultCard(node, images, { video: meta })
+    }
   }
 
   const runTxtVideo = async (node: TxtVideoNodeType) => {

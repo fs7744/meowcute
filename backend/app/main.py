@@ -1772,6 +1772,8 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
             meta["vramAfterGB"] = after
         if fx:
             meta["post"] = fx
+        # 结果卡徽章显示最终帧数：插帧后 GIF 里是 25 帧，不该显示生成时的 13
+        meta["frames"] = len(frames)
         task_results[task_id] = {
             "taskId": task_id,
             "images": [{

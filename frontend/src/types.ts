@@ -779,6 +779,8 @@ export type ResultMeta = {
   sequence?: SequenceMeta
   /** 拆件节点的产出 */
   parts?: PartsMeta
+  /** 文本生视频节点的产出（GIF：帧数/引擎/模式/后处理） */
+  video?: TxtVideoMeta
   /** 骨骼行走节点的产出 */
   rigwalk?: RigWalkMeta
   /** 精灵整图节点的产出（八方向链） */

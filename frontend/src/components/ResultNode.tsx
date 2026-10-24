@@ -52,16 +52,30 @@ export default function ResultNode({
           {node.images.map((img, i) => {
             const orig = !!showOrig[img.assetId]
             const r = img.refine
+            // 视频结果（GIF）：浏览器 <img> 原生会播，但要有徽章说清这是视频
+            // 而不是一张静态图——帧数/时长/模式都来自 txtvideo 的 meta。
+            const isVideo = /\.gif(\?|$)/i.test(img.url || '')
+            const vd = node.meta?.video
             return (
               <div className="result-item" key={img.assetId}>
                 <div className="result-img-wrap" onClick={() => onPreview(img, m)}>
                   <img src={orig ? img.origUrl : img.url} alt={`结果 ${i + 1}`} />
                   {orig ? <span className="orig-badge">原图</span> : null}
+                  {isVideo ? <span className="video-badge">▶ 视频</span> : null}
                   <span className="zoom-badge">点击放大</span>
                 </div>
                 <div className="result-meta">
                   <span className="meta-pill good">{img.width}×{img.height}</span>
-                  {r ? (
+                  {isVideo ? (
+                    <>
+                      <span className="meta-pill good">{vd?.mode === 't2v' ? '纯文本' : vd?.mode === 'i2v' ? '图生视频' : '视频'}</span>
+                      {vd?.frames ? <span className="meta-pill">{vd.frames} 帧</span> : null}
+                      {vd?.fps ? <span className="meta-pill">{Math.round((vd.frames || 0) / vd.fps * 10) / 10}s</span> : null}
+                      {vd?.engine ? <span className="meta-pill">{vd.engine === 'hy15' ? 'Hunyuan' : 'Wan2.2'}</span> : null}
+                      {vd?.post?.interpolated ? <span className="meta-pill">已插帧</span> : null}
+                      {vd?.post?.upscaled ? <span className="meta-pill">已放大</span> : null}
+                    </>
+                  ) : r ? (
                     <>
                       <span className="meta-pill">网格 {r.grid[0]}×{r.grid[1]}{r.detected ? '（自动）' : ''}</span>
                       <span className={`meta-pill ${r.offPalette === 0 ? 'good' : 'bad'}`}>{r.colors} 色</span>
