@@ -18,16 +18,17 @@ type Props = {
 }
 
 const ENGINE_CN: Record<string, string> = {
-  auto: '自动', wan: 'Wan2.2（文/图统一）', hy15: 'HunyuanVideo-1.5（仅图生）',
+  auto: '自动（默认 Hunyuan）', wan: 'Wan2.2（文/图统一）', hy15: 'HunyuanVideo-1.5',
 }
 
 /**
  * 文本生视频节点：提示词 + **可选**参考图 → 一段视频（GIF）。
  *
  * 和行走视频节点的分工：行走视频必须有一张角色图（要从它推导八方向立绘），
- * 本节点没有图也能跑——走 Wan2.2 TI2V-5B 的纯文生视频路径（同一份权重的
- * 另一条管线类，显存互斥，见 provider._load_wan 的 t2v 分支）。
- * 连了上游图就自动切图生视频（首帧锚定），适合「先出立绘再让它动起来」。
+ * 本节点没有图也能跑——纯文生视频两个引擎都支持（2026-10-24 起 hy15 也有
+ * T2V 管线 HunyuanVideo15Pipeline，不需要 SigLIP；Wan2.2 TI2V-5B 一直是
+ * 文/图统一权重）。连了上游图就自动切图生视频（首帧锚定），适合
+ * 「先出立绘再让它动起来」。
  *
  * 提示词整段用户输入、程序不拼接（与行走节点同一约定）：程序拼的句子会在
  * 长文本被截断时丢掉关键条款，而截的永远是尾部。
@@ -38,16 +39,73 @@ export default function TxtVideoNode({
 }: Props) {
   const DEFAULTS: TxtVideoNodeType['txtvideo'] = {
     enabled: true, prompt: '', negative: '',
-    steps: null, seed: null, width: 832, height: 480,
-    numFrames: 81, fps: 24, maxSide: 832, maxSeqLen: null,
-    pixelArt: false, guidanceScale: null, engine: null,
+    quality: 'standard', resolution: '480p',
+    steps: null, seed: null, width: 848, height: 480,
+    numFrames: 21, fps: 12, maxSide: 848, maxSeqLen: null,
+    pixelArt: false, guidanceScale: null,
+    interpolate: false, upscale: false, engine: null,
   }
   const v = { ...DEFAULTS, ...node.txtvideo }
   const patch = (p: Partial<typeof v>) => onChange({ txtvideo: { ...v, ...p } })
 
+  // 画质档位 → 步数/CFG 映射（按引擎）。hy15 是 step-distilled：官方 8-12 步、
+  // CFG 1.0（无 CFG 单次前向）；Wan 非蒸馏：30 步 / CFG 5.0 是实测甜点。
+  // 这些数字是踩坑换来的默认值，不是让用户从零手拧——选档即填入，仍可手改。
+  const QUALITY_PRESETS = {
+    hy15: {
+      draft: { steps: 8, cfg: 1 },
+      standard: { steps: 12, cfg: 1 },
+      fine: { steps: 20, cfg: 1 },
+    },
+    wan: {
+      draft: { steps: 20, cfg: 3 },
+      standard: { steps: 30, cfg: 5 },
+      fine: { steps: 40, cfg: 6 },
+    },
+  } as const
+  const RES_PRESETS = {
+    '480p': { w: 848, h: 480, note: 'hy15 原生训练分辨率；Wan 也快' },
+    '720p': { w: 1216, h: 688, note: 'Wan 原生级；hy15 是 480p 蒸馏模型，超训练分辨率细节不升反降，建议切 Wan' },
+  } as const
+  const QUALITY_CN = { draft: '草稿', standard: '标准', fine: '精细' } as const
+
+  /** 当前实际会用的引擎（自动 → hy15，权重不全才回落 wan；映射按 hy15 表给，
+   *  真回落 wan 时 _run_wan 会把过低步数夹到 20，不会更差）。 */
+  const effEngine = v.engine === 'wan' || v.engine === 'hy15' ? v.engine : 'hy15'
+  const q = QUALITY_PRESETS[effEngine][v.quality]
+
+  /** 选档位：按引擎填步数+CFG（用户已手改过也照填——选档就是显式要这套）。 */
+  const applyQuality = (quality: TxtVideoNodeType['txtvideo']['quality']) => {
+    const e = v.engine === 'wan' || v.engine === 'hy15' ? v.engine : 'hy15'
+    const p = QUALITY_PRESETS[e][quality]
+    patch({ quality, steps: p.steps, guidanceScale: p.cfg })
+  }
+  /** 切引擎：映射表随引擎变，按当前档位重填，免得留着另一引擎的数字。 */
+  const applyEngine = (engine: string | null) => {
+    const e = engine === 'wan' || engine === 'hy15' ? engine : 'hy15'
+    const p = QUALITY_PRESETS[e][v.quality]
+    patch({ engine, steps: p.steps, guidanceScale: p.cfg })
+  }
+  /** 选分辨率预设：填宽高 + maxSide（长边超 max_side 会被下游静默缩小，
+   *  所以预设必须一起给 maxSide，720p 要给到 1216）。 */
+  const applyResolution = (res: TxtVideoNodeType['txtvideo']['resolution']) => {
+    if (res === 'custom') { patch({ resolution: res }); return }
+    const p = RES_PRESETS[res]
+    patch({ resolution: res, width: p.w, height: p.h, maxSide: Math.max(p.w, p.h) })
+  }
+  /** 手改宽高 → 自动切"自定义"（不再跟着预设跑）。 */
+  const patchSize = (p: { width?: number; height?: number }) =>
+    patch({ ...p, resolution: 'custom' })
+
   const meta = node.meta
   const hasRef = meta?.hasRef ?? (sourceLabel != null)
-  const etaMin = Math.round((v.numFrames >= 61 ? 4 : 3) + (v.width * v.height > 400000 ? 1 : 0))
+  const estMin = effEngine === 'hy15'
+    ? Math.max(1, Math.round(v.numFrames / 21 + (v.steps ?? 12) / 12 - 1))
+    : Math.round(v.numFrames / 21 + (v.steps ?? 30) / 30)
+  const postNote = [
+    v.interpolate ? `插帧 ${v.numFrames * 2 - 1} 帧` : '',
+    v.upscale ? '放大 2×' : '',
+  ].filter(Boolean).join(' + ')
 
   return (
     <div className={`node txtvideo ${v.enabled ? '' : 'off'}`}
@@ -99,20 +157,47 @@ export default function TxtVideoNode({
 
         <div className="param-grid">
           <label className="gen-field">
+            <span className="gen-field-label" title="画质档位：按引擎映射步数+引导强度。hy15 蒸馏 8/12/20 步无 CFG；Wan 20/30/40 步 + CFG 3/5/6。选档即填入，下面两项仍可手改">画质档位</span>
+            <select className="input" value={v.quality}
+              onChange={(e) => applyQuality(e.target.value as TxtVideoNodeType['txtvideo']['quality'])}>
+              {Object.entries(QUALITY_CN).map(([id, cn]) => (
+                <option key={id} value={id}>{cn}</option>
+              ))}
+            </select>
+          </label>
+          <label className="gen-field">
+            <span className="gen-field-label" title="480p=hy15 原生 848×480；720p=1216×688（Wan 原生级，hy15 超训练分辨率会警告）；自定义=宽高自由">分辨率</span>
+            <select className="input" value={v.resolution}
+              onChange={(e) => applyResolution(e.target.value as TxtVideoNodeType['txtvideo']['resolution'])}>
+              <option value="480p">480p</option>
+              <option value="720p">720p</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+        </div>
+        <div className="hint" style={{ marginTop: -4 }}>
+          {v.resolution === 'custom'
+            ? `自定义 ${v.width}×${v.height}`
+            : RES_PRESETS[v.resolution].note}
+          {v.resolution === '720p' && effEngine === 'hy15' ? '（⚠ 当前引擎是 hy15）' : ''}
+        </div>
+
+        <div className="param-grid">
+          <label className="gen-field">
             <span className="gen-field-label">宽度</span>
-            <input className="input" type="number" min={128} max={1024} step={16}
-              value={v.width} onChange={(e) => patch({ width: Number(e.target.value) })} />
+            <input className="input" type="number" min={128} max={1280} step={16}
+              value={v.width} onChange={(e) => patchSize({ width: Number(e.target.value) })} />
           </label>
           <label className="gen-field">
             <span className="gen-field-label">高度</span>
-            <input className="input" type="number" min={128} max={1024} step={16}
-              value={v.height} onChange={(e) => patch({ height: Number(e.target.value) })} />
+            <input className="input" type="number" min={128} max={1280} step={16}
+              value={v.height} onChange={(e) => patchSize({ height: Number(e.target.value) })} />
           </label>
         </div>
 
         <div className="param-grid">
           <label className="gen-field">
-            <span className="gen-field-label" title="Wan 时序 VAE 要求 4k+1，内部会自动向下取整">帧数</span>
+            <span className="gen-field-label" title="时序 VAE 要求 4k+1，内部会自动向下取整；hy15 上限 33，Wan 到 193">帧数</span>
             <input className="input" type="number" min={5} max={193} step={4}
               value={v.numFrames} onChange={(e) => patch({ numFrames: Number(e.target.value) })} />
           </label>
@@ -125,9 +210,9 @@ export default function TxtVideoNode({
 
         <div className="param-grid">
           <label className="gen-field">
-            <span className="gen-field-label">步数（空=默认 30）</span>
+            <span className="gen-field-label" title={`画质档位「${QUALITY_CN[v.quality]}」映射值：${effEngine} ${q.steps} 步 / CFG ${q.cfg}；清空则按档位默认`}>步数（空=按档位）</span>
             <input className="input" type="number" min={4} max={60}
-              value={v.steps ?? ''} placeholder="30"
+              value={v.steps ?? ''} placeholder={String(q.steps)}
               onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
           </label>
           <label className="gen-field">
@@ -140,15 +225,15 @@ export default function TxtVideoNode({
 
         <div className="param-grid">
           <label className="gen-field">
-            <span className="gen-field-label" title="CFG：默认 5.0。动作偏弱时上调加强运动，过头会出重影">引导强度</span>
+            <span className="gen-field-label" title="CFG：hy15 蒸馏模型官方推荐 1.0（无 CFG）；Wan 默认 5.0，动作偏弱时上调，过头出重影">引导强度</span>
             <input className="input" type="number" min={1} max={9} step={0.5}
-              value={v.guidanceScale ?? ''} placeholder="5.0"
+              value={v.guidanceScale ?? ''} placeholder={String(q.cfg)}
               onChange={(e) => patch({ guidanceScale: e.target.value ? Number(e.target.value) : null })} />
           </label>
           <label className="gen-field">
-            <span className="gen-field-label" title="无参考图时只有 Wan2.2 支持纯文本；HunyuanVideo-1.5 只做了图生视频">引擎</span>
+            <span className="gen-field-label" title="两个引擎都支持纯文本；Hunyuan 一致性和细节更好（帧数上限 33），Wan 帧数可到 193、像素风保留更严格">引擎</span>
             <select className="input" value={v.engine ?? 'auto'}
-              onChange={(e) => patch({ engine: e.target.value === 'auto' ? null : e.target.value })}>
+              onChange={(e) => applyEngine(e.target.value === 'auto' ? null : e.target.value)}>
               {Object.entries(ENGINE_CN).map(([id, cn]) => (
                 <option key={id} value={id}>{cn}</option>
               ))}
@@ -167,6 +252,28 @@ export default function TxtVideoNode({
           </button>
         </div>
 
+        <div className="switch-row" style={{ marginTop: 6 }}>
+          <span className="t" style={{ fontSize: 12 }}
+            title="出片后处理：OpenCV 光流双向变形，帧数翻倍（12→24fps 观感直接变顺）。小中幅运动效果好；大幅运动/硬边可能有伪影。非 AI 插帧（RIFE 类权重当前网络拉不到）">
+            插帧 2×（光流）
+          </span>
+          <button className={`switch ${v.interpolate ? 'on' : ''}`}
+            onClick={() => patch({ interpolate: !v.interpolate })} aria-label="切换插帧">
+            <i />
+          </button>
+        </div>
+
+        <div className="switch-row" style={{ marginTop: 6 }}>
+          <span className="t" style={{ fontSize: 12 }}
+            title="出片后处理：2× 放大。像素图走最近邻整数放大（硬边不糊，相当于像素图的正确超分）；其余 Lanczos+USM 锐化。非 AI 超分">
+            放大 2×
+          </span>
+          <button className={`switch ${v.upscale ? 'on' : ''}`}
+            onClick={() => patch({ upscale: !v.upscale })} aria-label="切换放大">
+            <i />
+          </button>
+        </div>
+
         <label className="gen-field">
           <span className="gen-field-label">负面词（空=用全局默认）</span>
           <input className="input" value={v.negative} placeholder="模糊, 低质量, 水印…"
@@ -176,7 +283,7 @@ export default function TxtVideoNode({
         <button className="btn btn-sm" onClick={onRun} disabled={running || !v.prompt.trim()}
           style={{ marginTop: 8, width: '100%' }}>
           {running ? <><span className="spin" /> 生成中…</>
-            : `运行生成（约 ${etaMin} 分钟${hasRef ? '，图生视频' : '，纯文本'}）`}
+            : `运行生成（约 ${estMin} 分钟${hasRef ? '，图生视频' : '，纯文本'}${postNote ? ` + ${postNote}` : ''}）`}
         </button>
 
         {running && progress ? (
@@ -188,7 +295,10 @@ export default function TxtVideoNode({
             <span className="meta-pill good">{meta.mode === 't2v' ? '纯文本' : '图生视频'}</span>
             <span className="meta-pill">{meta.frames ?? '?'} 帧</span>
             {meta.steps ? <span className="meta-pill">{meta.steps} 步</span> : null}
+            {meta.size ? <span className="meta-pill">{meta.size[0]}×{meta.size[1]}</span> : null}
             {meta.vram?.peakGB ? <span className="meta-pill">峰值 {meta.vram.peakGB}GB</span> : null}
+            {meta.post?.interpolated ? <span className="meta-pill">已插帧</span> : null}
+            {meta.post?.upscaled ? <span className="meta-pill">已放大</span> : null}
             {meta.seconds ? <span className="meta-pill">{Math.round(meta.seconds)}s</span> : null}
           </div>
         ) : null}

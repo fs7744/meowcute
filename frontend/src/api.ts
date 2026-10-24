@@ -278,7 +278,7 @@ export const api = {
     fetch('/api/threeview/compose', jsonInit(payload)).then(j<{ ok: boolean; image: ResultImage }>),
 
   /** 文本生视频：提示词 + 可选参考图 → 一段视频 GIF（任务制）。
-   *  不传 origAssetId/sourceFile 就是纯文本（Wan2.2 TI2V-5B T2V 路径）。 */
+   *  不传 origAssetId/sourceFile 就是纯文本（hy15 T2V / Wan 文/图统一）。 */
   txtvideo: (payload: {
     projectId: string
     origAssetId?: string
@@ -293,6 +293,8 @@ export const api = {
     maxSeqLen?: number | null
     pixelArt?: boolean
     guidanceScale?: number | null
+    interpolate?: boolean
+    upscale?: boolean
     engine?: string | null
   }) =>
     fetch('/api/txtvideo', jsonInit(payload)).then(j<{ taskId: string }>),

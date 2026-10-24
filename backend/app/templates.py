@@ -370,17 +370,20 @@ TEMPLATES: List[Dict[str, Any]] = [
         "accent": "#5B57EB",
         "icon": "walk",
         "description": (
-            "用本地 Wan2.2 TI2V-5B 底座把文字描述直接变成一段视频。"
-            "参考图可选：不连就是纯文生视频（同一份权重的另一条管线类），"
+            "用本地视频底座把文字描述直接变成一段视频。"
+            "参考图可选：不连就是纯文生视频（HunyuanVideo-1.5 的 T2V 管线，"
+            "默认优先；也可切 Wan2.2 TI2V-5B——文/图统一权重），"
             "连了上游图就切图生视频——第一帧锚定你给的那张图，后面让它按提示词动起来。"
             "适合角色待机动画、场景氛围镜头、像素游戏过场的快速验证。"
         ),
         "highlights": [
-            "纯文本也能跑：Wan2.2 TI2V-5B 是文/图统一权重，两条管线按需切换",
+            "纯文本也能跑：hy15 T2V 管线（默认）+ Wan2.2 文/图统一权重",
+            "hy15 默认优先：一致性和细节更好（不闪烁、不变形），帧数上限 33",
+            "Wan 可选：帧数可到 193、像素风严格保留，适合长循环",
             "参考图可选：连上就走图生视频（首帧锚定），不连就是纯文本",
-            "帧数 4k+1 自动对齐：Wan 时序 VAE 的硬约束，不用用户操心",
+            "帧数 4k+1 自动对齐：时序 VAE 的硬约束，不用用户操心",
             "像素保真开关：像素素材用最近邻缩放，不被视频底座糊掉",
-            "引导强度可调：动作偏弱时上调加强运动幅度（1-9）",
+            "引导强度可调：动作偏弱时上调加强运动幅度",
         ],
         "inputs": [
             {"key": "prompt", "label": "提示词", "required": True,
@@ -390,12 +393,12 @@ TEMPLATES: List[Dict[str, Any]] = [
             {"key": "format", "label": "视频格式", "required": False,
              "hint": "宽高、帧数、帧率、种子、引导强度；帧数内部对齐 4k+1"},
             {"key": "engine", "label": "视频引擎", "required": False,
-             "hint": "默认自动；纯文本时固定 Wan2.2（HunyuanVideo-1.5 只支持图生视频）"},
+             "hint": "自动（默认 HunyuanVideo-1.5，权重不全回退 Wan）/ 二选一"},
         ],
         "steps": [
             {"n": 1, "title": "写提示词", "detail": "整段用户输入，程序不拼接；负面词可单独覆盖"},
             {"n": 2, "title": "选管线", "detail": "有参考图 → 图生视频（首帧 latent 锚定）；无 → 纯文生视频"},
-            {"n": 3, "title": "本地推理", "detail": "Wan2.2 TI2V-5B：30 步 / CFG 5.0，fp8 + cpu offload"},
+            {"n": 3, "title": "本地推理", "detail": "hy15：12 步无 CFG（约 1 分钟/21 帧）；Wan：30 步 / CFG 5.0"},
             {"n": 4, "title": "落盘成卡", "detail": "帧序列存成动画 GIF，结果卡可直接预览播放"},
         ],
         "outputs": [
@@ -412,10 +415,13 @@ TEMPLATES: List[Dict[str, Any]] = [
                 {"id": "tx1", "type": "txtvideo", "x": 520, "y": 120,
                  "txtvideo": {"enabled": True, "prompt": "", "negative": "",
                               "steps": None, "seed": None,
-                              "width": 832, "height": 480,
-                              "numFrames": 81, "fps": 24, "maxSide": 832,
+                              "width": 848, "height": 480,
+                              "numFrames": 21, "fps": 12, "maxSide": 848,
                               "maxSeqLen": None, "pixelArt": False,
-                              "guidanceScale": None, "engine": None},
+                              "guidanceScale": None,
+                              "quality": "standard", "resolution": "480p",
+                              "interpolate": False, "upscale": False,
+                              "engine": None},
                  "result": None},
                 {"id": "rs1", "type": "result", "x": 1020, "y": 140,
                  "images": [], "prompt": "", "negative": "", "meta": {}},

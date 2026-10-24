@@ -613,11 +613,21 @@ export type RigWalkNode = {
 /** 文本生视频参数（对应后端 TxtVideoPayload）。
  *  与行走视频的本质区别：参考图可选——没有图也能跑（Wan2.2 TI2V-5B
  *  纯文生视频路径），连了上游图就走图生视频。 */
+/** 文本生视频的画质档位与分辨率预设（UI 便利层，前端解析成具体数值下发）。 */
+export type TxtVideoQuality = 'draft' | 'standard' | 'fine'
+export type TxtVideoResolution = '480p' | '720p' | 'custom'
+
 export type TxtVideoOptions = {
   enabled: boolean
   /** 整段画面/动作提示词：用户完整输入，程序不拼接 */
   prompt: string
   negative: string
+  /** 画质档位：按引擎映射步数+CFG（hy15 蒸馏 8/12/20 步无 CFG；Wan 20/30/40
+   *  步 + CFG 3/5/6）。映射后 steps/guidanceScale 仍可手改，以手改值为准。 */
+  quality: TxtVideoQuality
+  /** 分辨率预设：480p（hy15 原生 848×480）/ 720p（1216×688，Wan 原生级，
+   *  hy15 超训练分辨率会警告）/ custom（宽高自由）。 */
+  resolution: TxtVideoResolution
   steps: number | null
   seed: number | null
   width: number
@@ -629,7 +639,10 @@ export type TxtVideoOptions = {
   /** 像素保真：像素素材用最近邻缩放，别被视频底座糊掉 */
   pixelArt: boolean
   guidanceScale: number | null
-  /** 视频引擎：null=自动（无参考图时后端强制 wan——纯文生视频只有 Wan 支持） */
+  /** 后处理：插帧 2×（OpenCV 光流，非 AI）/ 放大 2×（像素最近邻 / 其余 Lanczos+锐化） */
+  interpolate: boolean
+  upscale: boolean
+  /** 视频引擎：null=自动（默认 hy15，权重不全回退 wan） */
   engine: string | null
 }
 
@@ -645,19 +658,21 @@ export type TxtVideoNode = {
   createdAt?: number
 }
 
-/** 文本视频的 meta：provider 产出的显存/帧数/模式 + 任务耗时。 */
+/** 文本视频的 meta：provider 产出的显存/帧数/模式 + 后处理记录 + 任务耗时。 */
 export type TxtVideoMeta = {
   steps?: number
   cfg?: number
   family?: string
   /** t2v=纯文本 / i2v=带了参考图 */
   mode?: string
+  engine?: string
   frames?: number
   fps?: number
   size?: [number, number]
   vram?: { peakGB?: number; reservedGB?: number; totalGB?: number }
   vramAfterGB?: number
-  engine?: string
+  /** 后处理记录：in/out 帧数 + interpolated/upscaled 标记 */
+  post?: { in?: number; out?: number; interpolated?: boolean; upscaled?: boolean }
   hasRef?: boolean
   seconds?: number
 }

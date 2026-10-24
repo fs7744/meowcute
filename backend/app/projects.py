@@ -166,14 +166,21 @@ DEFAULT_TXTVIDEO = {
     "negative": "",
     "steps": None,
     "seed": None,
-    "width": 832,
+    "width": 848,
     "height": 480,
-    "numFrames": 81,
-    "fps": 24,
-    "maxSide": 832,
+    "numFrames": 21,
+    "fps": 12,
+    "maxSide": 848,
     "maxSeqLen": None,
     "pixelArt": False,
     "guidanceScale": None,
+    # 画质档位与分辨率预设是 UI 便利层：前端把它们解析成具体的
+    # steps/guidance/width/height 再下发（映射知识留在看得见的地方），
+    # 存盘只为回显。
+    "quality": "standard",
+    "resolution": "480p",
+    "interpolate": False,
+    "upscale": False,
     # None=自动：无参考图时后端强制 wan（纯文本只有 Wan 支持）
     "engine": None,
 }
@@ -837,20 +844,27 @@ def _clean_txtvideo(t: Any) -> Dict[str, Any]:
             return None
 
     engine = t.get("engine")
+    quality = t.get("quality")
+    resolution = t.get("resolution")
     return {
         "enabled": bool(t.get("enabled", True)),
         "prompt": str(t.get("prompt") or "")[:4000],
         "negative": str(t.get("negative") or "")[:1000],
         "steps": _opt_i(t.get("steps"), 4, 60),
         "seed": _opt_i(t.get("seed"), 0, 2 ** 31),
-        "width": _i(t.get("width"), 832, 128, 1024),
-        "height": _i(t.get("height"), 480, 128, 1024),
-        "numFrames": _i(t.get("numFrames"), 81, 5, 193),
-        "fps": _i(t.get("fps"), 24, 8, 30),
-        "maxSide": _i(t.get("maxSide"), 832, 256, 1024),
+        "width": _i(t.get("width"), 848, 128, 1280),
+        "height": _i(t.get("height"), 480, 128, 1280),
+        "numFrames": _i(t.get("numFrames"), 21, 5, 193),
+        "fps": _i(t.get("fps"), 12, 8, 30),
+        "maxSide": _i(t.get("maxSide"), 848, 256, 1280),
         "maxSeqLen": _opt_i(t.get("maxSeqLen"), 256, 1536),
         "pixelArt": bool(t.get("pixelArt", False)),
         "guidanceScale": _opt_f(t.get("guidanceScale"), 1.0, 9.0),
+        "interpolate": bool(t.get("interpolate", False)),
+        "upscale": bool(t.get("upscale", False)),
+        "quality": quality if quality in ("draft", "standard", "fine") else "standard",
+        "resolution": (resolution if resolution in ("480p", "720p", "custom")
+                       else "480p"),
         "engine": engine if engine in ("auto", "wan", "hy15") else None,
     }
 

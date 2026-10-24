@@ -439,6 +439,32 @@ def _run_checks(client) -> int:
     check("空步数保持 None", ct["steps"] is None, str(ct["steps"]))
     check("空种子保持 None", ct["seed"] is None, str(ct["seed"]))
     check("wan 引擎进白名单", _clean_txtvideo({"engine": "wan"})["engine"] == "wan")
+    # 画质档位 / 分辨率预设 / 后处理开关（2026-10-24 晚新增）
+    check("默认档位 standard", _clean_txtvideo({})["quality"] == "standard")
+    check("非法档位回 standard", _clean_txtvideo({"quality": "ultra"})["quality"] == "standard")
+    check("默认分辨率 480p", _clean_txtvideo({})["resolution"] == "480p")
+    check("非法分辨率回 480p", _clean_txtvideo({"resolution": "8k"})["resolution"] == "480p")
+    check("后处理开关进白名单",
+          _clean_txtvideo({"interpolate": True, "upscale": True})["interpolate"] is True)
+    check("720p 宽高进白名单", _clean_txtvideo({"width": 1216})["width"] == 1216)
+    check("maxSide 放到 1280", _clean_txtvideo({"maxSide": 1280})["maxSide"] == 1280)
+    # videofx：光流插帧 + 放大（合成帧，不依赖 GPU）
+    from backend.app.pipelines import videofx as vfx
+    from PIL import ImageDraw as _Draw
+    _fr = []
+    for _i in range(5):
+        _im = Image.new("RGB", (320, 180), (20, 24, 32))
+        _d = _Draw.Draw(_im)
+        _d.rectangle([20 + _i * 30, 60, 80 + _i * 30, 120], fill=(240, 90, 60))
+        _fr.append(_im)
+    _out, _fx = vfx.postprocess(_fr, interpolate=True, upscale=True, pixel_art=True)
+    check("插帧帧数翻倍", _fx.get("out") == 9, str(_fx))
+    check("放大尺寸 2×", _fx.get("size") == [640, 360], str(_fx.get("size")))
+    check("插帧帧落在中点",
+          abs(_out[1].size[0] - 640) < 2 and len(_out) == 9)
+    _plain, _fx2 = vfx.postprocess(_fr)
+    check("后处理全关时零改动",
+          _fx2.get("out") == 5 and not _fx2.get("interpolated") and not _fx2.get("upscaled"))
     # 端点注册 + 载荷校验：不存在的项目 → 任务落 error（不 500）
     r = client.post("/api/txtvideo", json={
         "projectId": "no-such-project", "prompt": "一只猫在跑",

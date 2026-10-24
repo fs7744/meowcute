@@ -1314,11 +1314,12 @@ class DiffusersProvider(BaseProvider):
         _require_torch()
         _touch()
         eng = resolve_video_engine(engine, self.cfg)
-        if ref is None and eng != "wan":
+        # 两个引擎现在都支持纯文本（hy15 2026-10-24 补 T2V 管线；Wan 一直是
+        # 文/图统一权重）。留这个断言给将来的新引擎用。
+        if ref is None and eng not in VIDEO_ENGINES:
             raise RuntimeError(
-                "纯文本生视频（不带参考图）目前只有 Wan2.2 TI2V-5B 支持"
-                "（TI2V-5B 是文/图统一权重）。请传一张参考图，"
-                "或把视频引擎显式切成 wan。")
+                f"引擎 {eng} 不支持纯文本生视频（不带参考图）。"
+                "当前 Wan2.2 TI2V-5B 与 HunyuanVideo-1.5 都支持。")
         if eng == "hy15":
             return await self._generate_video_hy15(
                 prompt, ref, num_frames=num_frames, steps=steps, seed=seed,
@@ -1363,6 +1364,7 @@ class DiffusersProvider(BaseProvider):
         status = _torch_status()
         out_meta = {"provider": "diffusers", "model": model_id,
                     "device": status.get("device"), **meta,
+                    "engine": "wan",
                     "caps": _CAPS.get(model_id)}
         if note:
             out_meta["vramWarning"] = note
@@ -1389,7 +1391,10 @@ class DiffusersProvider(BaseProvider):
         seed: Optional[int], task_id: Optional[str], negative: Optional[str],
         guidance_scale: Optional[float], progress: Optional[Dict[str, Any]],
     ) -> ProviderResult:
-        """HunyuanVideo-1.5 480p I2V（step-distilled，8-12 步）。
+        """HunyuanVideo-1.5 480p step-distilled：图生视频 / 纯文生视频。
+
+        ref=None → 纯文本（T2V 管线，不需要 SigLIP，比 I2V 还轻）；
+        有 ref → 图生视频（I2V，参考图编码进首帧 latent + SigLIP image_embed）。
 
         流程：文本编码（Qwen2.5-VL-7B，首次约 2 分钟，之后走磁盘缓存）→
         DiT+VAE 常驻推理（21 帧约 0.7-1 分钟）→ 帧序列。
@@ -1397,10 +1402,8 @@ class DiffusersProvider(BaseProvider):
         参数收敛：帧数对齐 4k+1 并夹到 [13,33]（61 帧会因 25.6k tokens 退化成
         47s/步）；步数夹到 [6,20]（官方 8-12）；guidance 默认 1.0（无 CFG）。
         """
-        if ref is None:
-            raise ValueError("HunyuanVideo 图生视频需要一张参考图（ref）")
         neg = negative if negative is not None else self.cfg.get("negativePrompt", "")
-        label = str((progress or {}).get("label") or "行走视频")
+        label = str((progress or {}).get("label") or ("文生视频" if ref is None else "行走视频"))
         _evict_other_families("hy15")
         progress_mod.check_cancel(task_id)
         async with _LOCK:
@@ -1411,13 +1414,21 @@ class DiffusersProvider(BaseProvider):
                 task_id, label, hint="编码提示词 / 加载底座 / 去噪中（单方向约 1 分钟）")
             try:
                 blob = await asyncio.to_thread(hy15_mod.encode_texts, prompt, str(neg or ""), task_id)
-                img = self._hy15_prep(ref)
-                images, meta = await asyncio.to_thread(
-                    hy15_mod.run_i2v, img, blob,
-                    frames=int(num_frames or 21),
-                    steps=int(steps) if steps else 12,
-                    guidance=guidance_scale, seed=seed,
-                    task_id=task_id, progress=progress)
+                if ref is None:
+                    images, meta = await asyncio.to_thread(
+                        hy15_mod.run_t2v, blob,
+                        frames=int(num_frames or 21),
+                        steps=int(steps) if steps else 12,
+                        guidance=guidance_scale, seed=seed,
+                        task_id=task_id, progress=progress)
+                else:
+                    img = self._hy15_prep(ref)
+                    images, meta = await asyncio.to_thread(
+                        hy15_mod.run_i2v, img, blob,
+                        frames=int(num_frames or 21),
+                        steps=int(steps) if steps else 12,
+                        guidance=guidance_scale, seed=seed,
+                        task_id=task_id, progress=progress)
             finally:
                 stop.set()
         st = _torch_status()

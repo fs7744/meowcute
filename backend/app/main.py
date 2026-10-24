@@ -57,6 +57,7 @@ from .pipelines import parts as parts_mod
 from .pipelines import rigwalk as rigwalk_mod
 from .pipelines import spritesheet as spritesheet_mod
 from .pipelines import threeview as threeview_mod
+from .pipelines import videofx as videofx_mod
 from .pipelines import walkvideo as walkvideo_mod
 from .providers.diffusers_local import DiffusersProvider
 from .styles import (
@@ -1678,8 +1679,8 @@ class TxtVideoPayload(BaseModel):
     """文本视频节点：提示词（+可选参考图）→ 视频。
 
     和行走视频节点的本质区别：参考图**可选**。行走视频必须有一张角色图
-    推导八方向；文本视频没有图也能跑——走 Wan2.2 TI2V-5B 的纯文生视频路径
-    （同一份权重的另一条管线类，见 provider._load_wan 的 t2v 分支）。
+    推导八方向；文本视频没有图也能跑——两个引擎都支持纯文本（hy15 的
+    T2V 管线 HunyuanVideo15Pipeline；Wan2.2 TI2V-5B 文/图统一权重）。
     """
     projectId: str
     sourceKind: str = "images"
@@ -1698,9 +1699,14 @@ class TxtVideoPayload(BaseModel):
     maxSeqLen: Optional[int] = None
     pixelArt: bool = False
     guidanceScale: Optional[float] = None
-    # 视频引擎：None=自动。**无参考图时强制 wan**——纯文生视频只有 Wan2.2
-    # TI2V-5B 支持（hy15 只做了图生视频，provider 会对 None ref 报错指路，
-    # 但这里直接选对引擎，用户不必先撞一次错误）。
+    # 出片后处理（纯 CPU 确定性，见 pipelines/videofx.py）：
+    # 插帧 = 光流双向变形 2×（小中幅运动效果好，硬边/大幅运动有伪影，
+    # 非 AI 插帧——RIFE 类权重当前网络拉不到）；放大 = 2×（像素图最近邻
+    # 整数放大，其余 Lanczos+USM，非 AI 超分）。
+    interpolate: bool = False
+    upscale: bool = False
+    # 视频引擎：None=自动。两个引擎都支持纯文本（hy15 有 T2V 管线，Wan 文/图
+    # 统一权重）；自动模式默认 hy15，权重不全时回退 wan。
     engine: Optional[str] = None
 
 
@@ -1725,18 +1731,21 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
             ref = alpha_clean.sanitize_alpha(ref.convert("RGBA"))
 
         provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
-        engine = payload.engine or ("wan" if ref is None else None)
+        # 引擎：用户显式选择优先；否则自动——两个引擎现在都支持纯文本
+        # （hy15 2026-10-24 起有 T2V 管线；Wan 一直文/图统一），自动模式
+        # 默认 hy15（一致性和细节更好），权重不全时 resolve 回退 wan。
+        engine = payload.engine
 
         result = await DiffusersProvider(provider_cfg).generate_video(
             prompt,
             ref,
-            width=_clamp(payload.width, 128, 1024, 832),
-            height=_clamp(payload.height, 128, 1024, 480),
+            width=_clamp(payload.width, 128, 1280, 848),
+            height=_clamp(payload.height, 128, 1280, 480),
             steps=(_clamp(payload.steps, 4, 60, 30) if payload.steps else None),
             seed=payload.seed,
             num_frames=_clamp(payload.numFrames, 5, 193, 81),
             fps=_clamp(payload.fps, 8, 30, 24),
-            max_side=_clamp(payload.maxSide, 256, 1024, 832),
+            max_side=_clamp(payload.maxSide, 256, 1280, 832),
             max_seq_len=(_clamp(payload.maxSeqLen, 256, 1536, 512)
                          if payload.maxSeqLen else None),
             task_id=task_id,
@@ -1746,12 +1755,23 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
                             else _clamp(payload.guidanceScale, 1.0, 9.0, 5.0)),
             engine=engine,
         )
-        gif = storage.save_gif(payload.projectId, result.images,
+        # 出片后处理：插帧/放大都是纯 CPU 确定性操作（光流 + 缩放），
+        # 丢线程池别堵事件循环；两关都关时零开销。
+        frames = list(result.images)
+        fx: Dict[str, Any] = {}
+        if payload.interpolate or payload.upscale:
+            frames, fx = await asyncio.to_thread(
+                videofx_mod.postprocess, frames,
+                interpolate=bool(payload.interpolate), upscale=bool(payload.upscale),
+                pixel_art=bool(payload.pixelArt))
+        gif = storage.save_gif(payload.projectId, frames,
                                prefix="txtvideo", fps=payload.fps)
         meta = dict(result.meta or {})
         after = DiffusersProvider.vram_gb().get("reserved")
         if after is not None:
             meta["vramAfterGB"] = after
+        if fx:
+            meta["post"] = fx
         task_results[task_id] = {
             "taskId": task_id,
             "images": [{
