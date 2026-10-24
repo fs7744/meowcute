@@ -1182,10 +1182,21 @@ class ComposePayload(BaseModel):
 
 
 def _load_source(project_id: str, src: ThreeViewSource) -> Optional[Image.Image]:
-    if src.kind == "refs" and src.file:
-        return storage.load_image(project_id, "refs", src.file)
-    if src.file:
-        return storage.load_image(project_id, "images", f"{src.file}.png")
+    """加载上游资产图（参考图或生成图）。
+
+    **容错是必需的**：前端各节点历史上把 refs 里的 id 当 images 传（sourceKind
+    固定 'images'），按 kind 直查就会「文件明明在、却报参考图不存在」。所以两个
+    目录都试、文件名带不带 .png 都试，命中即返回。
+    """
+    name = str(src.file or "").strip()
+    if not name:
+        return None
+    order = ("refs", "images") if src.kind == "refs" else ("images", "refs")
+    for kind in order:
+        for cand in (name, f"{name}.png"):
+            im = storage.load_image(project_id, kind, cand)
+            if im is not None:
+                return im
     return None
 
 
@@ -1744,7 +1755,8 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
             ref = _load_source(payload.projectId, src)
             if ref is None:
                 raise RuntimeError(
-                    f"参考图不存在：{src_file}（把「选择图片」节点连上来，或断开连接走纯文本）")
+                    f"参考图加载失败：{src_file}。文件可能在项目里被删了——"
+                    "重新在「选择图片」节点上传一张，或断开这条连线走纯文本。")
             ref = alpha_clean.sanitize_alpha(ref.convert("RGBA"))
 
         provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
@@ -1770,6 +1782,9 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
             negative=(payload.negative or "").strip(),
             guidance_scale=(None if payload.guidanceScale is None
                             else _clamp(payload.guidanceScale, 1.0, 9.0, 5.0)),
+            # 进度条文案按节点语义给：provider 的默认值会把带参考图的文本视频
+            # 叫成「行走视频」（它按有无 ref 猜），这里显式指定。
+            progress={"label": "文生视频"},
             engine=engine,
         )
         # 出片后处理：插帧/放大都是纯 CPU 确定性操作（光流 + 缩放），
@@ -2162,5 +2177,25 @@ async def spritesheet_create(payload: SheetPayload) -> Dict[str, Any]:
 # 前端静态资源（生产构建存在时才挂；开发期走 Vite）
 # --------------------------------------------------------------------------- #
 _DIST = ROOT / "frontend" / "dist"
+
+
+@app.middleware("http")
+async def _static_cache_headers(request, call_next):
+    """静态资源缓存策略：index.html 禁缓存，带内容 hash 的 assets 长缓存。
+
+    踩过的坑：index.html 没有 Cache-Control 时浏览器会启发式缓存，重新构建后
+    仍然加载旧壳 → 旧 JS 不认识新节点类型 → 表现为「功能改了但界面上就是没有」
+    （txtvideo 节点就是这么"消失"的）。带 hash 的 assets 反而应该长缓存。
+    用中间件而不是 StaticFiles 子类：子类里改 headers 实测拿不到（响应已定型）。
+    """
+    resp = await call_next(request)
+    path = request.url.path
+    if path in ("/", "/index.html") or path.endswith(".html"):
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    elif path.startswith("/assets/"):
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
 if _DIST.is_dir():
     app.mount("/", StaticFiles(directory=str(_DIST), html=True), name="web")

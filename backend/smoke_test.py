@@ -444,6 +444,21 @@ def _run_checks(client) -> int:
         check("节点带提示词/负面词字段",
               "prompt" in (_tv.get("txtvideo") or {}) and "negative" in (_tv.get("txtvideo") or {}),
               str(list((_tv.get("txtvideo") or {}).keys())[:6]))
+        # 回归：refs 里的图被当成 images 传时也要能加载。
+        # 历史 bug——txtvideo 固定 sourceKind='images'，后端只查 images/ 目录，
+        # 于是「文件明明在 refs/ 里」却报「参考图不存在」，任务秒失败、界面上像没执行。
+        from PIL import Image as _Img
+        from backend.app.main import _load_source
+        from backend.app.storage import assets_dir as _assets_dir
+        from backend.app.main import ThreeViewSource as _TVS
+        _refs = _assets_dir(_p["id"], "refs")
+        _Img.new("RGB", (8, 8), (255, 0, 0)).save(_refs / "ref-smoke.png")
+        check("refs 图按 images 传也能加载",
+              _load_source(_p["id"], _TVS(kind="images", file="ref-smoke")) is not None)
+        check("带扩展名也能加载",
+              _load_source(_p["id"], _TVS(kind="images", file="ref-smoke.png")) is not None)
+        check("不存在的资产返回 None",
+              _load_source(_p["id"], _TVS(kind="images", file="ref-missing")) is None)
         # 模板编辑器保存路径也要保留这三类节点（第二处白名单同样的坑）
         from backend.app.custom_templates import _clean_graph as _cg
         _g = _cg({"nodes": [{"id": "a", "type": "txtvideo", "x": 0, "y": 0,

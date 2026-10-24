@@ -12,6 +12,8 @@ type Props = {
   onDelete: () => void
   onDragStart: (e: React.MouseEvent) => void
   onRun: () => void
+  /** 上一次运行的错误（节点上要留着，不能只闪一个 alert 就没了） */
+  error?: string | null
   onStartLink: (id: string, client?: { clientX: number; clientY: number }) => void
   onFinishLink: (id: string) => void
   onPreview: (url: string, title: string) => void
@@ -35,7 +37,7 @@ const ENGINE_CN: Record<string, string> = {
  */
 export default function TxtVideoNode({
   node, index, running, progress, sourceLabel, onChange, onDelete, onDragStart,
-  onRun, onStartLink, onFinishLink, onPreview,
+  onRun, error, onStartLink, onFinishLink, onPreview,
 }: Props) {
   const DEFAULTS: TxtVideoNodeType['txtvideo'] = {
     enabled: true, prompt: '', negative: '',
@@ -337,6 +339,12 @@ export default function TxtVideoNode({
 
         {running && progress ? (
           <div className="hint walk-progress" title="当前步骤">{progress}</div>
+        ) : null}
+
+        {!running && error ? (
+          <div className="hint" style={{ color: 'var(--pink)', marginTop: 4 }} title={error}>
+            失败：{error}
+          </div>
         ) : null}
 
         {meta ? (

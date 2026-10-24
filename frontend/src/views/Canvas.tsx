@@ -1680,10 +1680,17 @@ export default function Canvas({ projectId, onBack }: Props) {
     const src = up?.images?.[0] || null
     const tv = node.txtvideo
     if (!(tv?.prompt || '').trim()) throw new Error('请先写提示词')
+    // 上游可能是「选择图片」节点上传的参考图（refs/），也可能是生成图（images/）。
+    // 一律按 images 发，后端就会去 images/ 找一个根本不存在的文件 → 「参考图不存在」。
+    // 这里按 URL 里的实际目录判类型，文件名从 URL 末段取。
+    const srcUrl = src?.url || ''
+    const srcIsRef = srcUrl.includes('/refs/')
+    const srcName = srcUrl.split('/').pop() || ''
     const { taskId } = await api.txtvideo({
       projectId: project.id,
-      origAssetId: src?.assetId || '',
-      sourceKind: 'images',
+      origAssetId: srcIsRef ? '' : (src?.assetId || ''),
+      sourceKind: srcIsRef ? 'refs' : 'images',
+      sourceFile: srcIsRef ? srcName : undefined,
       prompt: (tv?.prompt || '').trim(),
       negative: tv?.negative || '',
       steps: tv?.steps ?? null,
@@ -2932,6 +2939,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               index={i}
               running={isRunning(n.id)}
               progress={tasks[n.id]?.progress?.label}
+              error={tasks[n.id]?.error ?? null}
               sourceLabel={upstreamLabel(n.id)}
               onChange={(patch) => patchNode(n.id, patch)}
               onDelete={() => deleteNode(n.id)}

@@ -12,7 +12,7 @@ type Props = {
   onStartLink: (id: string, client?: { clientX: number; clientY: number }) => void
 }
 
-/** 选择图片节点：上传图片，作为下游「生成图 / 像素精修」的输入。 */
+/** 选择图片节点：上传图片，作为下游节点的输入（生成图 / 精修 / 文本生视频的参考图）。 */
 export default function InputNode({
   node, index, projectId, onChange, onDelete, onDragStart, onStartLink,
 }: Props) {
@@ -55,7 +55,7 @@ export default function InputNode({
       </div>
 
       <div className="node-body">
-        <div className="hint">上传的图片会作为下游「生成图」的参考图，或直接交给「像素精修」。</div>
+        <div className="hint">上传的图片会作为下游节点的参考图（生成图 / 精修 / 文本生视频的「可选参考图」）。</div>
         <div className="ref-strip">
           {node.refs.map((r) => (
             <div className="ref-thumb" key={r.id} title={r.name}>
@@ -80,7 +80,7 @@ export default function InputNode({
             onChange={(e) => onChange({ label: e.target.value })} />
         </label>
         <div className="hint" style={{ marginTop: 6 }}>
-          右侧 OUTPUT 端口 → 点「生成图」或「像素精修」的左侧端口即可连线。
+          右侧 OUTPUT 端口 → 点目标节点的左侧端口即可连线（生成图 / 精修 / 文本生视频…）。
         </div>
       </div>
     </div>

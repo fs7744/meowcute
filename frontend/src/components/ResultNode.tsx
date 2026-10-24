@@ -46,7 +46,7 @@ export default function ResultNode({
         <div className="result-grid">
           {node.images.length === 0 ? (
             <div className="hint" style={{ padding: 12 }}>
-              把「生成图」或「像素精修」的输出连到左侧端口，结果会自动出现在这里。
+              把图片或视频节点的输出连到左侧端口（生成图 / 精修 / 文本生视频 / 行走视频 / 精灵整图…），结果会自动出现在这里。
             </div>
           ) : null}
           {node.images.map((img, i) => {
