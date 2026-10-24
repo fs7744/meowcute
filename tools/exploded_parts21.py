@@ -44,10 +44,18 @@ PROMPT = (
     "【第四行·左右两侧】左腿在画面左、右腿在画面右（每侧一条完整腿，含鞋）\n"
     "要求：六件必须全部出现、左右肢体都要有、缺一不可；严格保持参考图里角色的长相、"
     "配色、服装细节与画风；手中或身上的武器/道具跟着它所在的部件一起画"
-    "（拿在手里的武器归到那只手臂或躯干），不要单独成件；正面平视，不要背面、侧面、"
-    "姿势歪斜、肢体粘连，不要解剖图风格。"
+    "（拿在手里的武器归到那只手臂或躯干），不要单独成件；{VIEW}，"
+    "姿势不歪斜、肢体不粘连，不要解剖图风格。"
 )
 NEG = "低清，模糊，肢体粘连，头部连接躯干，脖子相连，头和身体连成一体，缺件，多余部件，网格线，标注文字，阴影"
+
+
+VIEW_CLAUSE = {
+    "front": "保持正面平视视角，不要变成背面或侧面",
+    "side": ("这是**侧视图**：六个部件全部按侧面角度画（只有一条手臂在近侧、一条在远侧，"
+             "腿是侧面的腿形，躯干是侧面厚度），绝不能画成正面平视、不能出现两条对称的手"),
+    "back": "保持参考图的背面视角（看不到脸），不要转成正面或侧面",
+}
 
 
 def build_pipeline():
@@ -82,6 +90,7 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=40)
     ap.add_argument("--cfg", type=float, default=4.0)
     ap.add_argument("--size", type=int, default=768, help="生成边长")
+    ap.add_argument("--view", default="front", choices=list(VIEW_CLAUSE), help="参考图视角")
     args = ap.parse_args()
 
     ref_path = Path(args.ref)
@@ -98,7 +107,7 @@ def main() -> int:
     pipe = build_pipeline()
     t0 = time.time()
     img = pipe(
-        image=ref, prompt=PROMPT, negative_prompt=NEG,
+        image=ref, prompt=PROMPT.format(VIEW=VIEW_CLAUSE[args.view]), negative_prompt=NEG,
         width=args.size, height=args.size, output_resolution=args.size,
         num_inference_steps=args.steps, true_cfg_scale=args.cfg,
         generator=__import__("torch").Generator("cpu").manual_seed(args.seed),

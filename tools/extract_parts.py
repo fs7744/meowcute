@@ -112,14 +112,33 @@ def compose_hybrid(st_parts: Path, head_src: Path | None, out: Path) -> dict:
         head = Image.open(st_parts / "head.png").convert("RGBA")
     head.save(out / "head.png")
 
+    # 武器相对躯干的偏移：武器是单独层的，渲染时按这个偏移贴回去，
+    # 否则正面看就是「双臂抱胸」（原姿势在持枪，枪被拆走了）
+    weapon_off = None
+    if (st_parts / "weapon.png").exists():
+        import json as _json
+
+        _m = _json.loads((st_parts / "parts.json").read_text(encoding="utf-8"))["roles"]
+        try:
+            from psd_tools import PSDImage  # noqa: F401  # 仅为确认依赖存在
+        except Exception:
+            pass
+        # st_parts 里的 bbox 是裁边后的，偏移得从 _work 的 PSD 拿
+        weapon_off = None
+
+    st_meta = json.loads((st_parts / "parts.json").read_text(encoding="utf-8")).get("roles") or {}
     meta = {}
     for r in ["head", *roles]:
         im = Image.open(out / f"{r}.png").convert("RGBA")
         alpha = im.split()[-1]
         meta[r] = {"file": f"{r}.png",
                    "bbox": list(alpha.getbbox() or (0, 0, im.width, im.height)),
+                   # 原点要带下去：渲染时武器按「相对躯干原点」贴回手上
+                   "origin": list((st_meta.get(r) or {}).get("origin") or [0, 0]),
                    "area": int(sum(1 for p in alpha.getdata() if p > 40)),
                    "mirrored": False}
+    if (out / "weapon.png").exists() and (st_meta.get("weapon") or {}).get("origin"):
+        meta["weapon"] = dict(st_meta["weapon"])
     (out / "parts.json").write_text(
         json.dumps({"roles": meta, "source": "hybrid" if head_src else "see-through"},
                    ensure_ascii=False, indent=2), encoding="utf-8")
@@ -137,8 +156,9 @@ def main() -> int:
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
-    ref = Path(args.ref)
-    out = Path(args.out)
+    # 必须绝对化：see-through 子进程会 chdir 到它自己的目录，相对路径会失效
+    ref = Path(args.ref).resolve()
+    out = Path(args.out).resolve()
     work = out / "_work"
     if (out / "parts.json").exists() and not args.force:
         print(f"[skip] 已有结果 {out/'parts.json'}（--force 重跑）")

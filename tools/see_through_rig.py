@@ -138,23 +138,39 @@ def build_from_psd(psd_path: Path, out: Path, quiet: bool = False) -> dict:
     leg_l = crop_alpha(halves[0][0])
     leg_r = crop_alpha(halves[1][0])
 
-    parts = {
-        "head": crop_alpha(composite(size, head)),
-        "torso": crop_alpha(composite(size, torso)),
-        "arm_l": arm_l, "arm_r": arm_r,
-        "leg_l": leg_l, "leg_r": leg_r,
+    _full = {
+        "head": composite(size, head),
+        "torso": composite(size, torso),
+        "arm_l": composite(size, [(arms_sorted[0][1], arms_sorted[0][2])]),
+        "arm_r": composite(size, [(arms_sorted[1][1], arms_sorted[1][2])]),
+        "leg_l": halves[0][0], "leg_r": halves[1][0],
     }
+    parts = {k: crop_alpha(v) for k, v in _full.items()}
+    _origins = {k: (list(v.split()[-1].getbbox()[:2]) if v.split()[-1].getbbox() else [0, 0])
+                for k, v in _full.items()}
     meta = {}
+    # 原点 = 该部件在 1280 画布里的裁剪位置。武器的贴合位置要靠这个算
+    # （导出的 PNG 都是各自裁边的，没有原点就摆不回身上）
+    origins = {}
+    for role, items in (("head", head), ("torso", torso)):
+        pass
     for role, im in parts.items():
         fp = out / f"{role}.png"
         im.save(fp)
-        meta[role] = {"file": fp.name, "bbox": list(im.split()[-1].getbbox() or (0, 0, im.width, im.height)),
+        meta[role] = {"file": fp.name,
+                      "bbox": list(im.split()[-1].getbbox() or (0, 0, im.width, im.height)),
+                      "origin": _origins.get(role, [0, 0]),
                       "area": int(np.array(im.split()[-1]).sum() // 255), "mirrored": False}
-    # 武器单独留一份（不进骨骼，但用户要能看到它没丢）
+    # 武器单独留一份（不进骨骼，但用户要能看到它没丢）。
+    # 记录它在画布里的原点，供渲染时贴回手上。
     if weapon:
-        w = crop_alpha(composite(size, weapon))
+        wfull = composite(size, weapon)
+        wb = wfull.split()[-1].getbbox()
+        w = crop_alpha(wfull)
         w.save(out / "weapon.png")
-        _log(f"[i] 武器/道具层 -> weapon.png {w.size}")
+        meta["weapon"] = {"file": "weapon.png", "origin": list(wb[:2]) if wb else [0, 0],
+                          "area": int(np.array(w.split()[-1]).sum() // 255)}
+        _log(f"[i] 武器/道具层 -> weapon.png {w.size} origin={meta['weapon']['origin']}")
 
     (out / "parts.json").write_text(
         json.dumps({"roles": meta, "src": str(psd_path), "source": "see-through"},

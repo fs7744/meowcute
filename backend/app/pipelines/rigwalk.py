@@ -27,6 +27,21 @@ ROLE_CN = {"head": "头", "torso": "躯干", "arm_l": "左臂",
 PIVOT = {"head": "bottom", "torso": "top", "arm_l": "top",
          "arm_r": "top", "leg_l": "top", "leg_r": "top"}
 
+# 方向 profile：不同视角的**绘制层级**和**视差**。
+#   正面：腿在躯干后、臂在躯干前（常见的正面 cutout 排法）
+#   背面：臂在躯干后（看到的是后背，手臂被躯干挡住）
+#   侧面：远侧肢体（_r）先画、再躯干、再近侧（_l）；两侧肢体横向几乎重合，
+#         只留一点视差，否则会看出"两条手臂并排"（正面视角的破功点）
+LAYER_ORDER = {
+    "front": ("leg_l", "leg_r", "torso", "arm_l", "arm_r", "head"),
+    "back": ("arm_l", "arm_r", "leg_l", "leg_r", "torso", "head"),
+    "side": ("leg_r", "arm_r", "torso", "leg_l", "arm_l", "head"),
+}
+# 侧视时肩/髋的横向分离系数（1 = 正面全展开；0.22 ≈ 侧面几乎重合）
+SIDE_SQUEEZE = 0.22
+# 侧视时远侧肢体相对躯干的额外横向视差（占躯干宽度比例）
+SIDE_PARALLAX = 0.055
+
 
 def load_parts(parts_dir: Path, scale: float = 0.82) -> Tuple[Dict[str, Image.Image], Dict[str, Any]]:
     """读 parts.json + 各部件 PNG。缺件直接报错（不静默降级）。"""
@@ -47,6 +62,27 @@ def load_parts(parts_dir: Path, scale: float = 0.82) -> Tuple[Dict[str, Image.Im
     if missing:
         raise RuntimeError(f"缺少角色部件：{'、'.join(missing)}")
     return parts, meta
+
+
+def load_weapon(parts_dir: Path, meta: Dict[str, Any], scale: float):
+    """武器是独立层（see-through 的 objects），按 PSD 原点贴回手上。
+
+    不贴回去的话，正面就是「双臂抱胸」——因为原立绘的姿势是持枪。
+    返回 (缩放后的图, 相对躯干原点的偏移) 或 None。
+    """
+    w = (meta or {}).get("weapon")
+    if not w or not w.get("file"):
+        return None
+    fp = Path(parts_dir) / w["file"]
+    if not fp.is_file():
+        return None
+    img = Image.open(fp).convert("RGBA")
+    if scale != 1.0:
+        img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                         Image.LANCZOS)
+    to = (meta.get("torso") or {}).get("origin") or [0, 0]
+    wo = w.get("origin") or [0, 0]
+    return img, ((wo[0] - to[0]) * scale, (wo[1] - to[1]) * scale)
 
 
 def paste_joint(canvas: Image.Image, img: Image.Image, joint, angle: float, pivot: str) -> None:
@@ -84,14 +120,16 @@ def derive_anchors(parts: Dict[str, Image.Image], canvas: Tuple[int, int]) -> Di
     neck_y = canvas[1] * 0.30
     return {
         "cx": cx, "neck": (cx, neck_y),
-        "shoulder": (neck_y + th * 0.10, tw * 0.44),
+        # 肩宽 0.50（原 0.44）：0.44 时手臂落在背心内侧、视觉上"抱胸"
+        "shoulder": (neck_y + th * 0.10, tw * 0.50),
         "hip": (neck_y + th * 0.56, tw * 0.16),
         "head_lift": th * 0.02,
         "tw": tw, "th": th,
     }
 
 
-def build_frame(parts, f: int, n: int, a: Dict[str, Any], hold: bool = False) -> Image.Image:
+def build_frame(parts, f: int, n: int, a: Dict[str, Any], hold: bool = False,
+                direction: str = "front") -> Image.Image:
     ph = 2 * math.pi * f / n
     canvas = Image.new("RGBA", a["canvas"], (0, 0, 0, 0))
     bob = a["bob"] * math.sin(2 * ph)
@@ -102,21 +140,43 @@ def build_frame(parts, f: int, n: int, a: Dict[str, Any], hold: bool = False) ->
     cx = a["cx"]
     sh_y, sh_dx = a["shoulder"]
     hip_y, hip_dx = a["hip"]
+    side = direction == "side"
+    if side:
+        sh_dx *= SIDE_SQUEEZE
+        hip_dx *= SIDE_SQUEEZE
+    para = a["tw"] * SIDE_PARALLAX if side else 0.0
 
     lift = a.get("lift", 0.0)
     lift_l = lift * max(0.0, math.sin(ph))
     lift_r = lift * max(0.0, -math.sin(ph))
     sq = a.get("squash", 0.0) * abs(math.sin(ph))
-    paste_joint(canvas, _squash(parts["leg_l"], sq), (cx - hip_dx, hip_y + bob - lift_l),
-                leg_a, PIVOT["leg_l"])
-    paste_joint(canvas, _squash(parts["leg_r"], sq), (cx + hip_dx, hip_y + bob - lift_r),
-                -leg_a, PIVOT["leg_r"])
-    paste_joint(canvas, parts["torso"], (cx, a["neck"][1] + bob), 0, PIVOT["torso"])
-    paste_joint(canvas, parts["arm_l"], (cx - sh_dx, sh_y + bob), arm_a, PIVOT["arm_l"])
-    paste_joint(canvas, parts["arm_r"], (cx + sh_dx, sh_y + bob),
-                arm_a if hold else -arm_a, PIVOT["arm_r"])
-    paste_joint(canvas, parts["head"], (cx, a["neck"][1] + bob + a["head_lift"]),
-                0, PIVOT["head"])
+
+    # 每个部件的贴图位置与角度；按 LAYER_ORDER 决定先后（远近）
+    placed = {
+        # 侧面：近侧腿（_l）走全幅、远侧腿（_r）反向 0.9 幅，两腿横向重合只留视差
+        # → 才是"侧向跨步"的观感；远侧手臂几乎不可见，角度压到 0 免得露出手
+        "leg_l": (_squash(parts["leg_l"], sq), (cx - hip_dx + para, hip_y + bob - lift_l),
+                  leg_a),
+        "leg_r": (_squash(parts["leg_r"], sq), (cx + hip_dx - para, hip_y + bob - lift_r),
+                  -leg_a * 0.9 if side else -leg_a),
+        "torso": (parts["torso"], (cx, a["neck"][1] + bob), 0.0),
+        "arm_l": (parts["arm_l"], (cx - sh_dx + para, sh_y + bob),
+                  arm_a * 0.7 if side else arm_a),
+        "arm_r": (parts["arm_r"], (cx + sh_dx - para, sh_y + bob),
+                  0.0 if side else (arm_a if hold else -arm_a)),
+        "head": (parts["head"], (cx, a["neck"][1] + bob + a["head_lift"]), 0.0),
+    }
+    for role in LAYER_ORDER.get(direction, LAYER_ORDER["front"]):
+        img, joint, ang = placed[role]
+        paste_joint(canvas, img, joint, ang, PIVOT[role])
+
+    # 武器最后画（在手上）：位置 = 躯干左上角 + PSD 里的相对偏移
+    wp = a.get("weapon")
+    if wp:
+        wimg, (dx, dy) = wp
+        tx = cx - a["tw"] / 2 + dx
+        ty = a["neck"][1] + bob + dy
+        canvas.alpha_composite(wimg, (int(round(tx)), int(round(ty))))
     return canvas
 
 
@@ -148,18 +208,21 @@ def measure(frames: List[Image.Image]) -> Dict[str, Any]:
 def render(parts_dir: Path, *, frames: int = 8, swing: float = 13.0,
            arm: float = 12.0, bob: float = 5.0, lift: float = 7.0,
            squash: float = 0.06, scale: float = 0.82, hold: bool = False,
+           direction: str = "front",
            canvas: Optional[Tuple[int, int]] = None) -> Tuple[List[Image.Image], Dict[str, Any]]:
     """渲染一段行走循环，返回（帧列表, 指标）。"""
     import time
 
     t0 = time.time()
     parts, _meta = load_parts(parts_dir, scale)
+    weapon = load_weapon(parts_dir, _meta, scale)
     tw, th = parts["torso"].size
     cvs = canvas or (int(tw * 2.6), int(th * 2.6))
     anchors = derive_anchors(parts, cvs)
-    anchors.update(canvas=cvs, leg=swing, arm=arm, bob=bob, lift=lift, squash=squash)
+    anchors.update(canvas=cvs, leg=swing, arm=arm, bob=bob, lift=lift, squash=squash,
+                   weapon=weapon)
 
-    fr = [build_frame(parts, i, frames, anchors, hold) for i in range(frames)]
+    fr = [build_frame(parts, i, frames, anchors, hold, direction) for i in range(frames)]
     bbox = None
     for f in fr:
         b = f.split()[-1].getbbox()
@@ -173,6 +236,6 @@ def render(parts_dir: Path, *, frames: int = 8, swing: float = 13.0,
         fr = [f.crop(crop) for f in fr]
 
     m = measure(fr)
-    m.update(frames=frames, hold=bool(hold), swing=swing, arm=arm,
+    m.update(frames=frames, hold=bool(hold), swing=swing, arm=arm, direction=direction,
              renderSecs=round(time.time() - t0, 3))
     return fr, m
