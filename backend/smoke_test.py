@@ -396,6 +396,27 @@ def _run_checks(client) -> int:
     cw = _clean_walkvideo({"negative": "我的负面词"})
     check("行走负面词进存盘白名单", cw["negative"] == "我的负面词", cw["negative"])
 
+    # 视频引擎（2026-10-24）：HunyuanVideo-1.5 默认优先，Wan 可选
+    check("默认值接口带引擎选择", "engine" in wd and "engines" in wd, str(wd.get("engine")))
+    check("引擎列表含 hy15 与 wan",
+          {e["id"] for e in wd.get("engines", [])} == {"hy15", "wan"})
+    check("引擎帧数上限 hy15=33 / wan=193",
+          wd["frameHints"]["hy15"]["max"] == 33 and wd["frameHints"]["wan"]["max"] == 193,
+          str(wd.get("frameHints")))
+    check("引擎进存盘白名单", _clean_walkvideo({"engine": "wan"})["engine"] == "wan")
+    check("非法引擎回默认 hy15", _clean_walkvideo({"engine": "sora"})["engine"] == "hy15")
+    check("hy15 帧数夹到 33",
+          _clean_walkvideo({"engine": "hy15", "numFrames": 121})["numFrames"] == 33)
+    check("wan 帧数放到 121",
+          _clean_walkvideo({"engine": "wan", "numFrames": 121})["numFrames"] == 121)
+    _walk_tpl = next((t for t in ts if t.get("id") == "dir_walk"), None)
+    if _walk_tpl:
+        _wk_node = next((n for n in _walk_tpl.get("graph", {}).get("nodes", [])
+                         if n.get("type") == "walkvideo"), None)
+        check("八方向模板默认引擎是 hy15",
+              (_wk_node or {}).get("walkvideo", {}).get("engine") == "hy15",
+              str((_wk_node or {}).get("walkvideo", {}).get("engine")))
+
     print("== 生成卡负面词：三层来源 + 可整段覆盖 ==")
     r = client.post("/api/generate/preview", json={
         "prompt": "一只猫", "styleId": "pixel_16bit", "width": 512, "height": 512,
@@ -911,8 +932,12 @@ def _run_checks(client) -> int:
     # 这些断言是「不再退回多底座」的护栏：谁要再把旧底座加回来，会先在这里红。
     from backend.app.config import DEFAULT_SETTINGS, KNOWN_MODELS
     from backend.app.providers.diffusers_local import DiffusersProvider, detect_family
-    check("已知底座只剩 qwen21 / wan",
-          set(KNOWN_MODELS.values()) == {"qwen21", "wan"}, str(KNOWN_MODELS))
+    # 2026-10-24：视频底座新增 hy15（HunyuanVideo-1.5 默认优先，Wan 可切）
+    check("已知底座只剩 qwen21 / wan / hy15",
+          set(KNOWN_MODELS.values()) == {"qwen21", "wan", "hy15"}, str(KNOWN_MODELS))
+    check("hunyuanvideo-1.5 识别为 hy15 族",
+          detect_family("models/hunyuanvideo-1.5") == "hy15",
+          detect_family("models/hunyuanvideo-1.5"))
     check("默认图片底座是 Qwen-Image-2.1",
           DEFAULT_SETTINGS["providers"]["diffusers"]["model"] == "models/qwen-image-2.1",
           DEFAULT_SETTINGS["providers"]["diffusers"]["model"])

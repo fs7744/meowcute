@@ -68,8 +68,9 @@ export default function WalkVideoNode({
   const DEFAULTS: WalkVideoNodeType['walkvideo'] = {
     enabled: true, dirMode: 'eight', action: '行走', styleId: null,
     prompt: '',
+    engine: 'hy15',
     steps: null, seed: null, width: 384, height: 512,
-    numFrames: 49, fps: 16, maxSide: 512, maxSeqLen: null,
+    numFrames: 21, fps: 12, maxSide: 512, maxSeqLen: null,
     guidanceScale: null, motionThreshold: 5.5, retries: 1,
     sources: {},
   }
@@ -112,11 +113,17 @@ export default function WalkVideoNode({
   // 本机实测拟合（4090 / fp8 / 384×512）：单方向视频 ≈ 31 + 0.0183 × 帧数 × 步数 秒。
   // 81 帧/30 步实测 75.7s、49 帧/24 步 52.7s，两点拟合误差 < 1s。
   // 再加上每方向一次立绘推导（28 步约 18s）与序列帧/拼表（约 25s）。
-  const vidSteps = v.steps ?? 30
-  // 成本按像素量缩放：分辨率翻倍，单方向时间近似翻倍（本机 512×704 实测约 100s）
+  // 引擎：hy15 默认；帧数上限 33（超过会因序列长度超线性退化），步数 6~20
+  const isHy15 = (v.engine ?? 'hy15') === 'hy15'
+  const frameMax = isHy15 ? 33 : 193
+  const vidSteps = v.steps ?? (isHy15 ? 12 : 30)
+  // 成本估算：hy15 实测 21f→42.8s、33f→63.3s（斜率 1.71s/帧）；
+  // Wan 按像素量缩放（本机 512×704 实测约 100s）
   const pixelFactor = (v.width * v.height) / (384 * 512)
-  const perVideoSec = Math.round(
-    (31 + 0.0183 * (v.numFrames || 49) * vidSteps) * Math.max(0.3, pixelFactor))
+  const perVideoSec = isHy15
+    ? Math.round(8 + 1.71 * (v.numFrames || 21))
+    : Math.round(
+      (31 + 0.0183 * (v.numFrames || 81) * vidSteps) * Math.max(0.3, pixelFactor))
   const etaSec = Math.round(realDirs.length * (perVideoSec + 18) + 25)
   const etaText = `${Math.floor(etaSec / 60)} 分 ${etaSec % 60} 秒`
   const [videos, setVideos] = useState<VideoAsset[] | null>(null)
@@ -271,12 +278,14 @@ export default function WalkVideoNode({
 
         <div className="hint" style={{ marginTop: -2, lineHeight: 1.6 }}>
           预计 ≈ <b>{etaText}</b>（{realDirs.length} 个真实方向 × 视频 {perVideoSec}s +
-          立绘 18s + 后处理约 25s；{v.numFrames} 帧 / {vidSteps} 步，本机实测拟合）
+          立绘 18s + 后处理约 25s；{isHy15 ? 'HunyuanVideo' : 'Wan'} {v.numFrames} 帧 /
+          {vidSteps} 步，本机实测拟合）
           {v.dirMode === 'eight' ? '。选「四方向」可少跑 2 次视频（约省 40%）' : ''}
           {v.numFrames > 49 || (v.steps ?? 30) > 30 ? (
             <button className="btn btn-sm" style={{ marginLeft: 6, height: 22 }}
               onClick={() => patch({
-                numFrames: 49, fps: 16, steps: null, retries: 1, motionThreshold: 5.5,
+                numFrames: isHy15 ? 21 : 49, fps: isHy15 ? 12 : 16,
+                steps: null, retries: 1, motionThreshold: 5.5,
               })}>
               用推荐参数
             </button>
@@ -514,6 +523,35 @@ export default function WalkVideoNode({
           </div>
         </div>
 
+        {/* 视频引擎：HunyuanVideo-1.5 默认（一致性/细节明显更好），Wan2.2 可选
+            （像素风保真更严格，但长片会闪烁/变形） */}
+        <div className="param-grid">
+          <label className="gen-field">
+            <span className="gen-field-label"
+              title="hy15 = HunyuanVideo-1.5 480p I2V 步数蒸馏：不闪烁、不肢体变形，约 1 分钟/方向，帧数上限 33。wan = Wan2.2 TI2V-5B：像素风更保真，但长片会闪烁、肢体变形">
+              视频引擎
+            </span>
+            <select className="input" value={v.engine ?? 'hy15'}
+              onChange={(e) => {
+                const eng = e.target.value as 'hy15' | 'wan'
+                patch({
+                  engine: eng,
+                  numFrames: eng === 'hy15' ? 21 : 81,
+                  fps: eng === 'hy15' ? 12 : 24,
+                  steps: null,
+                })
+              }}>
+              <option value="hy15">HunyuanVideo-1.5（推荐）</option>
+              <option value="wan">Wan2.2 TI2V-5B</option>
+            </select>
+          </label>
+          <div className="hint" style={{ margin: 0, alignSelf: 'end', fontSize: 11 }}>
+            {isHy15
+              ? '一致性好、不闪烁不变形；动作幅度靠提示词驱动'
+              : '像素风更保真；长片易闪烁、肢体变形'}
+          </div>
+        </div>
+
         {/* 画质：分辨率是本机实测对成品质量影响最大的一项，以前只在数据模型里、
             界面上根本改不到——用户问「怎么提高质量」时得给他抓手 */}
         <div className="param-grid">
@@ -553,10 +591,17 @@ export default function WalkVideoNode({
 
         <div className="param-grid">
           <label className="gen-field">
-            <span className="gen-field-label">Wan 帧数</span>
-            <input className="input" type="number" min={5} max={193} step={4}
+            <span className="gen-field-label"
+              title={isHy15
+                ? 'HunyuanVideo 帧数（4k+1）。上限 33：61 帧会让序列长度涨到 25.6k tokens，单步从 2.4s 退化到 47s'
+                : 'Wan 帧数（后端对齐 4k+1）'}>
+              {isHy15 ? '帧数（上限 33）' : 'Wan 帧数'}
+            </span>
+            <input className="input" type="number" min={isHy15 ? 13 : 5} max={frameMax} step={4}
               value={v.numFrames}
-              onChange={(e) => patch({ numFrames: Number(e.target.value) })} />
+              onChange={(e) => patch({
+                numFrames: Math.max(isHy15 ? 13 : 5, Math.min(frameMax, Number(e.target.value))),
+              })} />
           </label>
           <label className="gen-field">
             <span className="gen-field-label">视频帧率</span>
@@ -567,9 +612,12 @@ export default function WalkVideoNode({
 
         <div className="param-grid">
           <label className="gen-field">
-            <span className="gen-field-label">步数（空=默认 30）</span>
-            <input className="input" type="number" min={20} max={50}
-              value={v.steps ?? ''} placeholder="30"
+            <span className="gen-field-label">
+              {isHy15 ? '步数（空=12，8~16 最佳）' : '步数（空=默认 30）'}
+            </span>
+            <input className="input" type="number"
+              min={isHy15 ? 6 : 20} max={isHy15 ? 20 : 50}
+              value={v.steps ?? ''} placeholder={isHy15 ? '12' : '30'}
               onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
           </label>
           <label className="gen-field">

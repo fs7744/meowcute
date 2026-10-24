@@ -391,8 +391,14 @@ async def generate_walk(
     progress: Optional[Dict[str, Any]] = None,
     retries: int = 2,
     negative: str = "",
+    engine: Optional[str] = None,
 ) -> Tuple[List[Image.Image], Dict[str, Any]]:
-    """Wan2.2 TI2V-5B：方向立绘 + 动作提示词 → 行走视频帧序列。
+    """方向立绘 + 动作提示词 → 行走视频帧序列。
+
+    引擎（2026-10-24 起默认 HunyuanVideo-1.5，可切 Wan2.2）：
+      - hy15：一致性好、不闪烁不变形，但帧数上限低（13~33）、CFG 无意义
+        （step-distilled 官方 guidance=1.0），动作幅度靠提示词驱动；
+      - wan：像素风保留更严格，慢，且长片会有闪烁/变形。
 
     轻量控制闭环（不上更大模型也能治「没正常走」）：先按正常 CFG 生成，用
     motion_stats 量化「动没动」，分数低于阈值就升级 guidance_scale（并加重
@@ -402,10 +408,16 @@ async def generate_walk(
     见模块文档：选视频底座是为了动作连贯、不闪；这个闭环是在不引入新模型的
     前提下，把「动作幅度」这条指标拉到合格线之上。
     """
-    from ..providers.diffusers_local import DiffusersProvider, resolve_video_model
+    from ..providers.diffusers_local import (
+        DiffusersProvider, resolve_video_engine, resolve_video_model,
+    )
 
     cfg = dict(provider_cfg or {})
-    cfg["model"] = resolve_video_model(cfg.get("videoModel"))
+    eng = resolve_video_engine(engine, cfg)
+    if eng == "wan":
+        cfg["model"] = resolve_video_model(cfg.get("videoModel"))
+    else:
+        cfg["model"] = cfg.get("model") or "hunyuanvideo-1.5"
     provider = DiffusersProvider(cfg)
     # 整段提示词由用户输入（2026-10-23 起）：给了就用用户的，程序不再拼模板。
     # 用户没给（老项目/接口直调）才退回按 action 拼的模板。
@@ -418,7 +430,14 @@ async def generate_walk(
     negative = ((negative or "").strip() or DEFAULT_WALK_NEGATIVE)
 
     t = time.time()
-    base_gs = 5.0 if guidance_scale is None else float(guidance_scale)
+    if eng == "hy15":
+        # step-distilled 官方值：guidance 1.0（无 CFG）。帧数必须 4k+1 且不超过 33
+        # ——61 帧会从 2.4s/步退化到 47s/步；步数 12 是甜点，8 更快、16 略稳。
+        base_gs = 1.0
+        num_frames = max(13, min(33, (int(num_frames) - 1) // 4 * 4 + 1))
+        steps = int(steps) if steps else 12
+    else:
+        base_gs = 5.0 if guidance_scale is None else float(guidance_scale)
     max_attempts = 1 + max(0, int(retries))
     frames: List[Image.Image] = []
     rmeta: Dict[str, Any] = {}
@@ -432,14 +451,20 @@ async def generate_walk(
         prompt = base_prompt if attempt == 0 else base_prompt + EMPHASIS_TAIL
         # 重试逐次加压：CFG 每次 +1.5（封顶 9.0），步数不够时每次 +5（封顶 50）。
         # CFG 上调对「运动幅度」是最直接的杠杆——这正是 _run_wan 把 CFG 改可调控的原因。
-        cur_gs = min(9.0, base_gs + attempt * 1.5)
-        cur_steps = None
-        if steps is not None:
-            cur_steps = min(50, int(steps) + attempt * 5)
+        if eng == "hy15":
+            # hy15 的 CFG 是关掉的（1.0），加压只能靠步数：动作没出来时多给几步
+            # 让它把步态"渲染完"，再配合尾部强调句。
+            cur_gs = 1.0
+            cur_steps = min(20, int(steps or 12) + attempt * 4)
+        else:
+            cur_gs = min(9.0, base_gs + attempt * 1.5)
+            cur_steps = None
+            if steps is not None:
+                cur_steps = min(50, int(steps) + attempt * 5)
         if attempt > 0:
             progress_mod.report(task_id, 0, 0,
                                 f"动作幅度不足（{last_motion} < {motion_threshold}），"
-                                f"重试加强（CFG {cur_gs:.1f}）…")
+                                f"重试加强（{'步数' if eng == 'hy15' else 'CFG'})…")
         result = await provider.generate_video(
             prompt, view,
             width=width, height=height,
@@ -451,6 +476,7 @@ async def generate_walk(
             # 173 字（≈288 token）——不显式给预算，默认提示词就已经被截了。
             max_seq_len=fit_seq_len(prompt, max_seq_len, limit=512),
             progress=progress,
+            engine=eng,
         )
         frames = list(result.images)
         stats = motion_stats(frames)
@@ -504,6 +530,7 @@ async def run_walk(
     motion_threshold: float = 6.0,
     retries: int = 2,
     negative: str = "",
+    engine: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """跑完一个方向集合，返回每方向的帧序列。
 
@@ -623,12 +650,19 @@ async def run_walk(
         progress_mod.report(task_id, done, total_steps,
                             f"{DIR_LABELS[d]}立绘完成（{done}/{total_steps}）")
 
-    # 第二轮：行走视频（Wan 常驻）
+    # 第二轮：行走视频（引擎常驻；默认 HunyuanVideo-1.5）
+    try:
+        from ..providers.diffusers_local import resolve_video_engine
+
+        eng_label = {"hy15": "HunyuanVideo", "wan": "Wan"}.get(
+            resolve_video_engine(engine, provider_cfg), "视频")
+    except Exception:
+        eng_label = "视频"
     for d in gen_dirs:
         if d not in views:
             continue                     # 立绘就失败的方向不用再跑视频
         progress_mod.report(task_id, done, total_steps,
-                            f"{DIR_LABELS[d]}行走视频（Wan）…")
+                            f"{DIR_LABELS[d]}行走视频（{eng_label}）…")
         try:
             frames, meta = await generate_walk(
                 views[d], action=action, prompt=prompt,
@@ -641,6 +675,7 @@ async def run_walk(
                 motion_threshold=motion_threshold, retries=retries,
                 max_seq_len=max_seq_len,
                 negative=negative,
+                engine=engine,
                 progress={"label": f"{DIR_LABELS[d]}行走视频",
                           "base": done, "grand": total_steps, "hold": True})
         except progress_mod.CancelledError:

@@ -285,6 +285,8 @@ export const api = {
     sourceKind?: 'images' | 'refs'; sourceFile?: string
     dirMode?: 'eight' | 'four' | 'single'
     action?: string
+    /** 视频引擎：hy15（HunyuanVideo-1.5，默认）/ wan（Wan2.2） */
+    engine?: 'hy15' | 'wan'
     styleId?: string | null
     steps?: number | null
     seed?: number | null

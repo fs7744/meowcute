@@ -126,8 +126,8 @@ DEFAULT_WALKVIDEO = {
     # 负面词：空 = 用 walkvideo.DEFAULT_WALK_NEGATIVE。以前这段写死在管线里，
     # 卡片上看不到也改不了，和正面提示词的处理不一致。
     "negative": "",
-    "numFrames": 49,                        # Wan 帧数（内部对齐 4k+1）
-    "fps": 16,
+    "numFrames": 21,                        # 默认引擎 hy15 的帧数（4k+1，上限 33）
+    "fps": 12,
     "maxSide": 512,
     "maxSeqLen": None,
     # 行走动作控制（轻量闭环）：guidanceScale=None 用默认 5.0；
@@ -137,6 +137,9 @@ DEFAULT_WALKVIDEO = {
     # 重试一次就是再跑 56s，默认最多重试 1 次（最坏 2 次，而不是 3 次）。
     "motionThreshold": 5.5,
     "retries": 1,
+    # 视频引擎：hy15（HunyuanVideo-1.5，默认）/ wan（Wan2.2）。切 wan 时帧数上限
+    # 回到 193、步数/CFG 语义也按 Wan 走（见 walkvideo.generate_walk）。
+    "engine": "hy15",
 }
 
 # walkvideo.sources 的合法方向键（顺时针一圈）
@@ -649,9 +652,14 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
     # 上限 400：比 UI 建议的 300 字宽松（UI 只警告不拦截），但防止有人粘一篇
     # 作文进来把 project.json 撑爆
     prompt = prompt[:400]
+    eng = str(w.get("engine") or "hy15").strip().lower()[:12]
+    if eng not in ("hy15", "wan"):
+        eng = "hy15"
     return {
         "enabled": bool(w.get("enabled", True)),
         "dirMode": mode,
+        # 视频引擎：白名单之外一律回默认（hy15）。不进白名单 = 改了存不下、刷新就丢
+        "engine": eng,
         "prompt": prompt,
         # 自定义负面词（空 = 用管线默认常量）。同 prompt：不进白名单就存不下来
         "negative": str(w.get("negative") or "")[:400],
@@ -662,7 +670,8 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
         "seed": (_i(w.get("seed"), 0, 0, 2**31 - 1)) if w.get("seed") not in (None, "") else None,
         "width": _i(w.get("width"), 384, 128, 1024),
         "height": _i(w.get("height"), 512, 128, 1024),
-        "numFrames": _i(w.get("numFrames"), 81, 5, 193),
+        "numFrames": _i(w.get("numFrames"), 21 if eng == "hy15" else 81, 5,
+                        33 if eng == "hy15" else 193),
         "fps": _i(w.get("fps"), 24, 8, 30),
         "maxSide": _i(w.get("maxSide"), 512, 256, 1024),
         "maxSeqLen": (_i(w.get("maxSeqLen"), 0, 256, 1536) or None) if w.get("maxSeqLen") else None,

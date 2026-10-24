@@ -636,8 +636,9 @@ export default function Canvas({ projectId, onBack }: Props) {
       walkvideo: {
         enabled: true, dirMode: 'eight', action: '行走', styleId: null,
         prompt: walkEx?.content || '',
+        engine: 'hy15',
         steps: null, seed: null, width: 384, height: 512,
-        numFrames: 81, fps: 24, maxSide: 512, maxSeqLen: null,
+        numFrames: 21, fps: 12, maxSide: 512, maxSeqLen: null,
         guidanceScale: null, motionThreshold: 6.0, retries: 2,
       },
       result: null, images: [], meta: null, createdAt: Date.now() / 1000,
@@ -1388,12 +1389,14 @@ export default function Canvas({ projectId, onBack }: Props) {
       // 自定义负面词（空 = 后端默认常量）
       negative: (w?.negative || '').trim(),
       styleId: w?.styleId ?? null,
+      // 视频引擎：默认 hy15（HunyuanVideo-1.5），用户可在节点上切 wan
+      engine: w?.engine ?? 'hy15',
       steps: w?.steps ?? null,
       seed: w?.seed ?? null,
       width: w?.width ?? 384,
       height: w?.height ?? 512,
-      numFrames: w?.numFrames ?? 81,
-      fps: w?.fps ?? 24,
+      numFrames: w?.numFrames ?? 21,
+      fps: w?.fps ?? 12,
       maxSide: w?.maxSide ?? 512,
       maxSeqLen: w?.maxSeqLen ?? null,
       // 现成视频来源：这些方向跳过推导 + Wan，直接用文件里的帧

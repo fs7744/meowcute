@@ -28,6 +28,9 @@ MODELS_DIR = ROOT / "models"
 KNOWN_MODELS: Dict[str, str] = {
     "qwen-image-2.1": "qwen21",
     "wan2.2-ti2v-5b": "wan",
+    # 视频底座（2026-10-24 起默认优先）：原版权重经 tools/hy15_convert.py 转成
+    # diffusers 格式后放在同名目录下，设置页能扫到
+    "hunyuanvideo-1.5": "hy15",
 }
 
 DEFAULT_EDIT_MODEL = "models/qwen-image-2.1"

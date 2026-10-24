@@ -28,6 +28,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .base import BaseProvider, ProviderResult
+from . import hy15 as hy15_mod
 from ..alpha_clean import sanitize_alpha, transparent_ratio
 from ..config import resolve_path
 from .. import progress as progress_mod
@@ -128,27 +129,35 @@ def detect_family(model_id: str) -> str:
         cls = str(idx.get("_class_name") or "")
         if "QwenImage21" in cls:
             family = "qwen21"
+        elif "HunyuanVideo15" in cls:
+            family = "hy15"
         elif "Wan" in cls:
             family = "wan"
     if family == "unknown":
         name = os.path.basename(model_id.rstrip("/\\")).lower()
         if "qwen-image-2" in name or "qwen_image_2" in name or "qwenimage21" in name:
             family = "qwen21"
+        elif "hunyuanvideo-1" in name or "hunyuanvideo1" in name:
+            family = "hy15"
         elif "wan" in name:
             family = "wan"
     _FAMILY[model_id] = family
     return family
 
 
-# 单卡 24GB 的现实：Qwen-Image-2.1 fp8 峰值约 14.8GB、Wan2.2 TI2V-5B 约 10GB，
-# 两个模型族在同进程共存可能 OOM 或被 WDDM 挤到共享内存，必须互斥驻留。
-_BIG_FAMILIES = {"qwen21", "wan"}
+# 单卡 24GB 的现实：Qwen-Image-2.1 fp8 峰值约 14.8GB、Wan2.2 TI2V-5B 约 10GB、
+# HunyuanVideo-1.5 DiT 常驻 15.5GB（offload 下峰值约 19GB），三个模型族在同进程
+# 共存会 OOM 或被 WDDM 挤到共享内存，必须互斥驻留。
+_BIG_FAMILIES = {"qwen21", "wan", "hy15"}
 
 
 def _evict_other_families(incoming: str) -> None:
     """加载大族模型前，把缓存里另一大族的驻留模型卸掉，给显存让位。"""
     if incoming not in _BIG_FAMILIES:
         return
+    # hy15 的管线不在 _CACHE 里（独立模块常驻），单独回收
+    if incoming != "hy15":
+        hy15_mod.release()
     victims = [m for m in list(_CACHE)
                if (_FAMILY.get(m) or detect_family(m)) in _BIG_FAMILIES
                and (_FAMILY.get(m) or detect_family(m)) != incoming]
@@ -170,6 +179,30 @@ def _evict_other_families(incoming: str) -> None:
 
 
 MAX_REFS = 4
+
+VIDEO_ENGINES = ("hy15", "wan")
+
+
+def resolve_video_engine(explicit: Optional[str] = None,
+                         cfg: Optional[Dict[str, Any]] = None) -> str:
+    """选视频引擎：显式参数 → 配置 videoEngine → 默认 hy15（权重就绪时），否则 wan。
+
+    2026-10-24 起 HunyuanVideo-1.5 是默认优先引擎：一致性和细节明显优于
+    Wan2.2（不闪烁、不肢体变形），代价是动作幅度更依赖提示词、帧数上限更低。
+    用户可在行走节点上切回 Wan（像素风严格保留时更合适）。
+    """
+    want = str(explicit or (cfg or {}).get("videoEngine") or "").strip().lower()
+    if want in ("hy15", "hunyuan", "hunyuanvideo", "hunyuanvideo-1.5"):
+        if hy15_mod.available():
+            return "hy15"
+        if explicit:
+            raise RuntimeError(
+                "HunyuanVideo-1.5 权重不完整：需要 models/hunyuanvideo-1.5 下的 "
+                "transformer-diffusers/、vae-diffusers/、text_encoder/、vision_encoder/。"
+                "先用 tools/hy15_convert.py 转换原版权重。")
+    if want in VIDEO_ENGINES:
+        return want
+    return "hy15" if hy15_mod.available() else "wan"
 
 
 def _normalize_refs(ref=None, refs=None) -> List[Any]:
@@ -1211,14 +1244,25 @@ class DiffusersProvider(BaseProvider):
         guidance_scale: Optional[float] = None,
         max_seq_len: Optional[int] = None,
         progress: Optional[Dict[str, Any]] = None,
+        engine: Optional[str] = None,
     ) -> ProviderResult:
         """图生视频：参考图 + 提示词 → 帧序列（ProviderResult.images = 帧）。
 
         与 generate() 分开而不是加参数：视频的输入输出语义都不同（一张图进、
         几十帧出、按时长而非张数描述），塞进同一个方法只会让调用方猜。
+
+        engine：hy15（默认，HunyuanVideo-1.5）/ wan（Wan2.2 TI2V-5B）。两条路径的
+        「帧数 / 步数 / CFG」语义不同，所以各自在自己的分支里收敛参数。
         """
         _require_torch()
         _touch()
+        eng = resolve_video_engine(engine, self.cfg)
+        if eng == "hy15":
+            return await self._generate_video_hy15(
+                prompt, ref, num_frames=num_frames, steps=steps, seed=seed,
+                task_id=task_id, negative=negative, guidance_scale=guidance_scale,
+                progress=progress)
+
         # 视频底座自己解析：以前读 self._resolve_model()（那是**图片**底座），
         # 全靠 walkvideo 事先把 cfg["model"] 改写成 wan 路径才不出错——别的
         # 调用方一调就必报「当前模型不是视频底座」。这里直接按 videoModel 解。
@@ -1261,6 +1305,64 @@ class DiffusersProvider(BaseProvider):
             out_meta["vramWarning"] = note
         return ProviderResult(images=images, meta=out_meta)
 
+    @staticmethod
+    def _hy15_prep(ref) -> Any:
+        """hy15 的参考图预处理：透明底要铺浅灰，不能直接 convert("RGB")。
+
+        I2V 管线内部 do_convert_rgb=True，会把 alpha=0 区域的垃圾 RGB（品红/黑）
+        当成真实背景——实测直接喂透明立绘会得到整片脏底。这里先合成到浅灰
+        (235,235,235)——与冒烟测试同色，模型对这色的跟随最稳。
+        """
+        from PIL import Image as _Image
+
+        rgba = sanitize_alpha(ref.convert("RGBA"))
+        if transparent_ratio(rgba) >= 0.02:
+            bg = _Image.new("RGBA", rgba.size, (235, 235, 235, 255))
+            return _Image.alpha_composite(bg, rgba).convert("RGB")
+        return rgba.convert("RGB")
+
+    async def _generate_video_hy15(
+        self, prompt: str, ref, *, num_frames: int, steps: Optional[int],
+        seed: Optional[int], task_id: Optional[str], negative: Optional[str],
+        guidance_scale: Optional[float], progress: Optional[Dict[str, Any]],
+    ) -> ProviderResult:
+        """HunyuanVideo-1.5 480p I2V（step-distilled，8-12 步）。
+
+        流程：文本编码（Qwen2.5-VL-7B，首次约 2 分钟，之后走磁盘缓存）→
+        DiT+VAE 常驻推理（21 帧约 0.7-1 分钟）→ 帧序列。
+
+        参数收敛：帧数对齐 4k+1 并夹到 [13,33]（61 帧会因 25.6k tokens 退化成
+        47s/步）；步数夹到 [6,20]（官方 8-12）；guidance 默认 1.0（无 CFG）。
+        """
+        if ref is None:
+            raise ValueError("HunyuanVideo 图生视频需要一张参考图（ref）")
+        neg = negative if negative is not None else self.cfg.get("negativePrompt", "")
+        label = str((progress or {}).get("label") or "行走视频")
+        _evict_other_families("hy15")
+        progress_mod.check_cancel(task_id)
+        async with _LOCK:
+            progress_mod.check_cancel(task_id)
+            # 文本编码 + 权重加载两段都没有步进回调，靠心跳把「已等 Ns」写出来
+            blob: Dict[str, Any] = {}
+            stop = start_heartbeat(
+                task_id, label, hint="编码提示词 / 加载底座 / 去噪中（单方向约 1 分钟）")
+            try:
+                blob = await asyncio.to_thread(hy15_mod.encode_texts, prompt, str(neg or ""), task_id)
+                img = self._hy15_prep(ref)
+                images, meta = await asyncio.to_thread(
+                    hy15_mod.run_i2v, img, blob,
+                    frames=int(num_frames or 21),
+                    steps=int(steps) if steps else 12,
+                    guidance=guidance_scale, seed=seed,
+                    task_id=task_id, progress=progress)
+            finally:
+                stop.set()
+        st = _torch_status()
+        return ProviderResult(
+            images=images,
+            meta={"provider": "diffusers", "device": st.get("device"),
+                  "promptCached": bool(blob.get("cached")), **meta})
+
     async def test(self) -> Dict[str, Any]:
         st = _torch_status()
         if not st["installed"]:
@@ -1293,6 +1395,7 @@ class DiffusersProvider(BaseProvider):
     @staticmethod
     def unload() -> None:
         """卸载全部驻留底座并归还显存。"""
+        hy15_mod.release()          # hy15 管线独立常驻，不在 _CACHE 里
         if not _CACHE:
             # 没东西也清一次：PyTorch 的缓存分配器会把跑过的峰值一直攥着，
             # nvidia-smi 看到的「已用」多半是这块缓存，不是真的在用。

@@ -318,6 +318,10 @@ export type WalkVideoOptions = {
   dirImages?: Partial<Record<WalkDir, string>>
   /** 像素保真：像素素材用最近邻缩放，别被视频底座的重采样糊掉 */
   pixelArt?: boolean
+  /** 视频引擎：hy15（HunyuanVideo-1.5，默认优先）/ wan（Wan2.2 TI2V-5B）。
+   *  hy15 一致性更好（不闪烁不变形）、约 1 分钟/方向，但帧数上限 33；
+   *  wan 像素风更保真但长片会闪烁。 */
+  engine?: WalkEngine
   styleId: string | null
   steps: number | null
   seed: number | null
@@ -335,6 +339,9 @@ export type WalkVideoOptions = {
   /** 动作不达标时自动加压重跑的次数（0 = 不重试） */
   retries: number
 }
+
+/** 行走视频引擎标识。 */
+export type WalkEngine = 'hy15' | 'wan'
 
 /** 项目内可选用的视频资产（GET /api/projects/{id}/videos）。 */
 export type VideoAsset = {

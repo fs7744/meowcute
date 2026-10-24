@@ -1475,6 +1475,9 @@ class WalkVideoPayload(BaseModel):
     guidanceScale: Optional[float] = None
     motionThreshold: float = 6.0
     retries: int = 2
+    # 视频引擎：hy15（HunyuanVideo-1.5，默认优先）/ wan（Wan2.2 TI2V-5B）。
+    # None 时按可用性自动选：hy15 权重就绪就用 hy15。
+    engine: Optional[str] = None
 
 
 @app.get("/api/walkvideo/defaults")
@@ -1489,7 +1492,30 @@ async def walkvideo_defaults() -> Dict[str, Any]:
         "negative": walkvideo_mod.DEFAULT_WALK_NEGATIVE,
         "emphasisTail": walkvideo_mod.EMPHASIS_TAIL.strip(),
         "prompt": projects_mod.DEFAULT_WALK_PROMPT,
+        # 视频引擎：hy15 是默认优先（一致性/细节更好），wan 保留（像素风更保真）
+        "engine": "hy15" if _hy15_available() else "wan",
+        "engines": [
+            {"id": "hy15", "label": "HunyuanVideo-1.5",
+             "available": _hy15_available(),
+             "note": "默认。不闪烁不变形，21~33 帧，约 1 分钟/方向"},
+            {"id": "wan", "label": "Wan2.2 TI2V-5B",
+             "available": True,
+             "note": "像素风更保真，长片可能闪烁/变形"},
+        ],
+        # 各引擎的帧数上限（4k+1）：hy15 超过 33 帧会因序列长度超线性退化
+        "frameHints": {"hy15": {"default": 21, "max": 33, "align": 4},
+                       "wan": {"default": 81, "max": 193, "align": 4}},
     }
+
+
+def _hy15_available() -> bool:
+    """HunyuanVideo-1.5 权重是否就绪（决定默认引擎与下拉项可用性）。"""
+    try:
+        from .providers import hy15 as _h
+
+        return _h.available()
+    except Exception:
+        return False
 
 
 async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
@@ -1588,7 +1614,8 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
                             else _clamp(payload.guidanceScale, 1.0, 9.0, 5.0)),
             motion_threshold=_clamp(payload.motionThreshold, 1.0, 30.0, 6.0),
             retries=_clamp(payload.retries, 0, 5, 2),
-            negative=(payload.negative or "").strip())
+            negative=(payload.negative or "").strip(),
+            engine=payload.engine)
 
         # 显存账：峰值取各方向最大值（每段视频都单独清零过峰值统计），
         # 收尾值是卸载后的——这两个数能直接回答「这条链到底吃多少显存」
@@ -1630,7 +1657,8 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
         task_results[task_id] = {
             "taskId": task_id,
             "images": images,
-            "walk": {**meta, "directions": out_dirs,
+            "walk": {**meta, "engine": (meta.get("engine") or payload.engine or "auto"),
+                     "directions": out_dirs,
                      "seconds": round(time.time() - t0, 1)},
         }
         progress_mod.report(task_id, 1, 1, "完成")
