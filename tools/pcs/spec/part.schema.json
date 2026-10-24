@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://meowcute.local/pcs/v1/part.schema.json",
+  "title": "PCS v1 · 部件集清单（pcs.part.json）",
+  "description": "一个角色/物件的一套可组合部件。渲染器只依赖这份清单，不猜图怎么对齐——对齐信息全在这里。",
+  "type": "object",
+  "required": ["pcs", "id", "frame", "parts"],
+  "properties": {
+    "pcs": {
+      "const": "1.0",
+      "description": "契约版本。渲染器必须拒绝未知大版本。"
+    },
+    "id": { "type": "string", "description": "角色/部件集 id，如 ghibli-girl" },
+    "frame": {
+      "type": "object",
+      "required": ["w", "h"],
+      "properties": {
+        "w": { "type": "integer", "minimum": 16, "maximum": 1024 },
+        "h": { "type": "integer", "minimum": 16, "maximum": 1024 }
+      },
+      "description": "单帧画布尺寸（正方形帧是约定）。64 = LPC 兼容；128/192 = 现代像素；256 = HD-2D 起步。"
+    },
+    "rig": { "type": "string", "description": "骨架 id，默认 biped.default" },
+    "bodyFit": {
+      "type": "number",
+      "default": 0.9,
+      "minimum": 0.3,
+      "maximum": 1.0,
+      "description": "角色总高占帧高的比例。全局等比缩放的唯一依据——所有部件共用同一个 s，绝不逐件缩放（逐件缩放会把体型拉歪）。"
+    },
+    "palette": {
+      "type": "object",
+      "description": "命名色（十六进制）。部件可用 name 引用，渲染时替换；换色不需要重存图。",
+      "additionalProperties": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+    },
+    "parts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "category", "image"],
+        "properties": {
+          "id": { "type": "string" },
+          "category": {
+            "enum": ["head", "torso", "arm_l", "arm_r", "leg_l", "leg_r",
+                     "cape", "weapon", "hair", "face", "ear", "neck", "accessory"],
+            "description": "分类决定默认锚点、默认 zPos、挂哪根骨骼。AI 出图不用标锚点，靠分类兜底。"
+          },
+          "image": { "type": "string", "description": "相对清单所在目录的 PNG 路径" },
+          "zPos": {
+            "type": "integer",
+            "description": "叠放序，越小越靠后。不给则用分类默认（leg 5 / torso 40 / arm 45 / head 50 / hair 55 / weapon 70）。"
+          },
+          "facing": {
+            "enum": ["down", "left", "right", "up"],
+            "default": "down",
+            "description": "这张图是按哪个朝向画的。缺某方向的部件可以镜像回退，但不能跨朝向回退（正视图形镜像后仍是正视）。"
+          },
+          "anchor": {
+            "type": "object",
+            "description": "关节锚点，相对图片内容 bbox 的归一化坐标（0..1）。不给则按分类默认：头/躯干/臂/腿都是「近端中点」。",
+            "properties": {
+              "joint": {
+                "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2,
+                "description": "[x, y] 关节位置。y=0 顶部，y=1 底部。"
+              },
+              "far": {
+                "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2,
+                "description": "[x, y] 远端位置（指尖/脚底），仅用于校验，不参与渲染。"
+              }
+            }
+          },
+          "tint": { "type": "string", "description": "整层着色（#RRGGBB），用于阴影/受击闪白等派生层" },
+          "mirror": {
+            "type": "boolean",
+            "default": false,
+            "description": "渲染时水平翻转（左臂部件可复用作右臂）"
+          }
+        }
+      }
+    }
+  }
+}

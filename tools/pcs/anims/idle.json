@@ -1,0 +1,145 @@
+{
+  "id": "idle",
+  "fps": 6,
+  "duration": 0.666667,
+  "loop": true,
+  "source": "hand-authored（呼吸：躯干微缩放 + 重心微沉）",
+  "channels": [
+    {
+      "node": "root",
+      "path": "translation",
+      "sampler": {
+        "interpolation": "LINEAR",
+        "input": [
+          0.0,
+          0.166667,
+          0.333333,
+          0.5,
+          0.666667
+        ],
+        "output": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            -0.001
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.001
+          ],
+          [
+            0.0,
+            0.0
+          ]
+        ]
+      }
+    },
+    {
+      "node": "spine",
+      "path": "scale",
+      "sampler": {
+        "interpolation": "LINEAR",
+        "input": [
+          0.0,
+          0.166667,
+          0.333333,
+          0.5,
+          0.666667
+        ],
+        "output": [
+          [
+            1.0,
+            1.0
+          ],
+          [
+            1.003,
+            1.006
+          ],
+          [
+            1.0,
+            1.0
+          ],
+          [
+            0.999,
+            0.996
+          ],
+          [
+            1.0,
+            1.0
+          ]
+        ]
+      }
+    },
+    {
+      "node": "head",
+      "path": "rotation",
+      "sampler": {
+        "interpolation": "LINEAR",
+        "input": [
+          0.0,
+          0.166667,
+          0.333333,
+          0.5,
+          0.666667
+        ],
+        "output": [
+          0,
+          -1.0,
+          0,
+          1.0,
+          0
+        ]
+      }
+    },
+    {
+      "node": "arm_l",
+      "path": "rotation",
+      "sampler": {
+        "interpolation": "LINEAR",
+        "input": [
+          0.0,
+          0.166667,
+          0.333333,
+          0.5,
+          0.666667
+        ],
+        "output": [
+          0,
+          1.0,
+          0,
+          -1.0,
+          0
+        ]
+      }
+    },
+    {
+      "node": "arm_r",
+      "path": "rotation",
+      "sampler": {
+        "interpolation": "LINEAR",
+        "input": [
+          0.0,
+          0.166667,
+          0.333333,
+          0.5,
+          0.666667
+        ],
+        "output": [
+          0,
+          -1.0,
+          0,
+          1.0,
+          0
+        ]
+      }
+    }
+  ],
+  "note": "translation 通道为「相对静止姿态的偏移量」（bodyHeight 单位），与角色比例无关"
+}

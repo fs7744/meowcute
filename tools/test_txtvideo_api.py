@@ -8,8 +8,8 @@
 3. meta.video.mode/engine/format/frames 齐备（结果卡徽章的数据源）；
 4. interpolate=True 时帧数翻倍（后处理链路在端点里真的跑了）。
 
-用法：.venv/Scripts/python.exe tools/test_txtvideo_api.py [--gif]
-（--gif 验 GIF 输出分支；默认验 MP4 新默认）
+用法：.venv/Scripts/python.exe tools/test_txtvideo_api.py [--gif] [--wan]
+（--gif 验 GIF 输出分支；--wan 切 Wan 引擎；默认验 MP4 新默认 + hy15）
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ PROMPT = ("像素风小猫少女在草地上奔跑，阳光明媚，镜头缓慢
           "双腿持续交替迈步、身体随步伐上下颠动")
 
 FMT = "gif" if "--gif" in sys.argv else "mp4"
+ENGINE = "wan" if "--wan" in sys.argv else "hy15"
 
 
 def main() -> int:
@@ -42,12 +43,12 @@ def main() -> int:
         r = client.post("/api/projects", json={"name": "文本视频API测试",
                                                "templateId": "txt_video"})
         pid = r.json()["project"]["id"]
-        print(f"[项目] {pid}（模板 txt_video，输出 {FMT}）")
+        print(f"[项目] {pid}（模板 txt_video，输出 {FMT}，引擎 {ENGINE}）")
 
         r = client.post("/api/txtvideo", json={
             "projectId": pid,
             "prompt": PROMPT,
-            "engine": "hy15",
+            "engine": ENGINE,
             "steps": 12, "numFrames": 13, "fps": 12,
             "width": 848, "height": 480, "maxSide": 848,
             "quality": "standard", "resolution": "480p",
@@ -55,7 +56,7 @@ def main() -> int:
             "format": FMT,
         })
         tid = r.json()["taskId"]
-        print(f"[任务] {tid} 已提交（hy15 纯文本 + 插帧，输出 {FMT}）…")
+        print(f"[任务] {tid} 已提交（{ENGINE} 纯文本 + 插帧，输出 {FMT}）…")
 
         t0 = time.time()
         result = None
@@ -91,8 +92,8 @@ def main() -> int:
               f"post={v.get('post')} peak={v.get('vram', {}).get('peakGB')}GB")
         if v.get("mode") != "t2v":
             fails.append(f"mode 应为 t2v: {v.get('mode')}")
-        if v.get("engine") != "hy15":
-            fails.append(f"engine 应为 hy15: {v.get('engine')}")
+        if v.get("engine") != ENGINE:
+            fails.append(f"engine 应为 {ENGINE}: {v.get('engine')}")
         if v.get("format") != FMT:
             fails.append(f"format 应为 {FMT}: {v.get('format')}")
         # 插帧后 frames 应报最终帧数（25），不是生成时的 13

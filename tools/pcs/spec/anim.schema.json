@@ -1,0 +1,113 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://meowcute.local/pcs/v1/anim.schema.json",
+  "title": "PCS v1 · 动作契约（pcs.anim.json）",
+  "description": "动作用 glTF 2.0 的 animation 结构表达：animations[].channels[] 指向某个节点的某个属性（rotation / translation / scale），channels[].sampler 给出关键帧时间与数值。没有公式、没有程序化噪声——只有关键帧，和 Blender / Spine / glTF 导出物同一套语义。",
+  "type": "object",
+  "required": [
+    "id",
+    "fps",
+    "channels"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "动作 id，如 walk / idle / run；帧表行名也用它"
+    },
+    "fps": {
+      "type": "integer",
+      "minimum": 4,
+      "maximum": 60,
+      "description": "采样帧率；帧数 = round(duration * fps)"
+    },
+    "duration": {
+      "type": "number",
+      "description": "秒。省略时按最后一个关键帧时间"
+    },
+    "loop": {
+      "type": "boolean",
+      "default": true,
+      "description": "循环：采样时 t 对 duration 取模"
+    },
+    "source": {
+      "type": "string",
+      "description": "来源标注（hand-authored / 导入自某开源工程），便于追溯，不影响渲染"
+    },
+    "perDirection": {
+      "type": "object",
+      "description": "按朝向覆盖通道。2D 剪纸必须分朝向：侧视靠平面内摆腿，正视只能靠抬腿/挤压——同一套角度套到正视会变成腿左右张开。",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/channel"
+            }
+          }
+        }
+      }
+    },
+    "channels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/channel"
+      },
+      "description": "默认通道组（fallback：某朝向没覆盖的节点用这里的）"
+    },
+    "note": "translation 通道是偏移量，rotation/scale 是绝对值。"
+  },
+  "definitions": {
+    "channel": {
+      "type": "object",
+      "required": [
+        "node",
+        "path",
+        "sampler"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "description": "目标节点名（必须在 rig 里存在）"
+        },
+        "path": {
+          "enum": [
+            "rotation",
+            "translation",
+            "scale"
+          ],
+          "description": "glTF 同名属性。rotation 为度（导出 glTF 时自动转四元数）"
+        },
+        "sampler": {
+          "type": "object",
+          "required": [
+            "input",
+            "output"
+          ],
+          "properties": {
+            "interpolation": {
+              "enum": [
+                "LINEAR",
+                "STEP",
+                "CUBICSPLINE"
+              ],
+              "default": "LINEAR"
+            },
+            "input": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "description": "关键帧时间（秒，递增）"
+            },
+            "output": {
+              "type": "array",
+              "description": "关键帧数值：rotation 为 [度] 标量；translation 为 [[x, y], ...] 的**相对静止姿态的偏移量**（bodyHeight 单位，不是绝对值——绝对位移会把某副骨架的比例写死）；scale 为 [[x, y], ...]。数量必须与 input 对齐（CUBICSPLINE 为 3 倍）。"
+            }
+          }
+        }
+      }
+    }
+  }
+}

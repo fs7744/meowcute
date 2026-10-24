@@ -1,0 +1,48 @@
+{
+  "pcs": "1.0",
+  "id": "ghibli-girl",
+  "frame": {
+    "w": 192,
+    "h": 192
+  },
+  "rig": "biped.default",
+  "bodyFit": 0.92,
+  "parts": [
+    {
+      "id": "leg_l",
+      "category": "leg_l",
+      "image": "leg_l.png",
+      "zPos": 5
+    },
+    {
+      "id": "leg_r",
+      "category": "leg_r",
+      "image": "leg_r.png",
+      "zPos": 5
+    },
+    {
+      "id": "torso",
+      "category": "torso",
+      "image": "torso.png",
+      "zPos": 40
+    },
+    {
+      "id": "arm_l",
+      "category": "arm_l",
+      "image": "arm_l.png",
+      "zPos": 45
+    },
+    {
+      "id": "arm_r",
+      "category": "arm_r",
+      "image": "arm_r.png",
+      "zPos": 45
+    },
+    {
+      "id": "head",
+      "category": "head",
+      "image": "head.png",
+      "zPos": 50
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://meowcute.local/pcs/v1/rig.schema.json",
+  "title": "PCS v1 · 骨架契约（pcs.rig.json）",
+  "description": "骨架采用 glTF 2.0 的节点语义：每个节点只有「相对父节点的局部位移/旋转/缩放」，世界变换由父子链相乘得到。这样同一份骨架既能被本渲染器用，也能无歧义导出成 glTF 给 Blender / three.js / 任意引擎。",
+  "type": "object",
+  "required": ["id", "nodes"],
+  "properties": {
+    "id": { "type": "string" },
+    "note": { "type": "string" },
+    "unit": {
+      "const": "bodyHeight",
+      "description": "长度单位：1.0 = 角色头顶到脚底。所有 translation / length 都以它为基准，与帧像素尺寸解耦。"
+    },
+    "up": {
+      "const": "screen",
+      "description": "2D 屏幕坐标（y 向下）。导出 glTF 时自动翻转为 glTF 的 Y-up，保证标准兼容。"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "description": "节点表。顺序无要求（渲染器按 parent 建树），父子关系必须无环。",
+      "items": {
+        "type": "object",
+        "required": ["name", "parent", "translation"],
+        "properties": {
+          "name": { "type": "string", "description": "节点名，动画通道用它寻址" },
+          "parent": { "type": ["string", "null"], "description": "父节点名；null = 根节点" },
+          "translation": {
+            "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2,
+            "description": "[x, y] 相对父节点的局部位移（父节点静止坐标系），单位 bodyHeight"
+          },
+          "rotation": {
+            "type": "number", "default": 0,
+            "description": "静止角（度，屏幕坐标下正 = 顺时针）。一般留 0，让静止姿态由 translation 决定。"
+          },
+          "length": {
+            "type": "number", "default": 0,
+            "description": "骨长（bodyHeight 单位）。可用于姿态求解与可视化；部件贴附不用它缩放。"
+          },
+          "depth": {
+            "type": "number", "default": 0,
+            "description": "景深层（HD-2D 视差预留；2D 合成忽略）"
+          }
+        }
+      }
+    },
+    "categoryBone": {
+      "type": "object",
+      "description": "部件分类 → 骨骼名 / 默认锚点 / 默认 zPos。缺省用渲染器内置表（pcs.py CATEGORY_RULES），这里可覆盖。",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "bone": { "type": "string" },
+          "anchor": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+          "zPos": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

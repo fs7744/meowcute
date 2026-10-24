@@ -1,0 +1,80 @@
+{
+  "id": "biped.default",
+  "note": "双足通用骨架。节点用 glTF 语义（相对父节点的局部位移），导出 glTF 时翻转 Y 轴。",
+  "unit": "bodyHeight",
+  "up": "screen",
+  "nodes": [
+    {
+      "name": "root",
+      "parent": null,
+      "translation": [
+        0.0,
+        0.56
+      ],
+      "length": 0.0
+    },
+    {
+      "name": "spine",
+      "parent": "root",
+      "translation": [
+        0.0,
+        0.0
+      ],
+      "length": 0.26
+    },
+    {
+      "name": "neck",
+      "parent": "spine",
+      "translation": [
+        0.0,
+        -0.26
+      ],
+      "length": 0.0
+    },
+    {
+      "name": "head",
+      "parent": "neck",
+      "translation": [
+        0.0,
+        0.0
+      ],
+      "length": 0.24
+    },
+    {
+      "name": "arm_l",
+      "parent": "spine",
+      "translation": [
+        -0.115,
+        -0.02
+      ],
+      "length": 0.26
+    },
+    {
+      "name": "arm_r",
+      "parent": "spine",
+      "translation": [
+        0.115,
+        -0.02
+      ],
+      "length": 0.26
+    },
+    {
+      "name": "leg_l",
+      "parent": "root",
+      "translation": [
+        -0.06,
+        0.0
+      ],
+      "length": 0.44
+    },
+    {
+      "name": "leg_r",
+      "parent": "root",
+      "translation": [
+        0.06,
+        0.0
+      ],
+      "length": 0.44
+    }
+  ]
+}
