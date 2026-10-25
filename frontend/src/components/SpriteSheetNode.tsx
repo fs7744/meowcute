@@ -1,4 +1,5 @@
 import type { SpriteSheetNode as SpriteSheetNodeType } from '../types'
+import AdvancedSection from './AdvancedSection'
 
 type Props = {
   node: SpriteSheetNodeType
@@ -85,24 +86,27 @@ export default function SpriteSheetNode({
           </label>
         </div>
 
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label">锚点</span>
-            <select className="input" value={v.anchor}
-              onChange={(e) => patch({ anchor: e.target.value as typeof v.anchor })}>
-              <option value="bottom">底部对齐</option>
-              <option value="center">居中对齐</option>
-              <option value="top">顶部对齐</option>
-            </select>
-          </label>
-          <div className="switch-row" style={{ marginTop: 6 }}>
-            <span className="t" style={{ fontSize: 12 }}>共享缩放</span>
-            <button className={`switch ${v.sharedScale ? 'on' : ''}`}
-              onClick={() => patch({ sharedScale: !v.sharedScale })} aria-label="切换共享缩放">
-              <i />
-            </button>
+        <AdvancedSection title="更多设置"
+          hint="锚点 · 共享缩放">
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label">锚点</span>
+              <select className="input" value={v.anchor}
+                onChange={(e) => patch({ anchor: e.target.value as typeof v.anchor })}>
+                <option value="bottom">底部对齐</option>
+                <option value="center">居中对齐</option>
+                <option value="top">顶部对齐</option>
+              </select>
+            </label>
+            <div className="switch-row" style={{ marginTop: 6 }}>
+              <span className="t" style={{ fontSize: 12 }}>共享缩放</span>
+              <button className={`switch ${v.sharedScale ? 'on' : ''}`}
+                onClick={() => patch({ sharedScale: !v.sharedScale })} aria-label="切换共享缩放">
+                <i />
+              </button>
+            </div>
           </div>
-        </div>
+        </AdvancedSection>
 
         <button className="btn btn-sm" onClick={onRun} disabled={running}
           style={{ marginTop: 8, width: '100%' }}>

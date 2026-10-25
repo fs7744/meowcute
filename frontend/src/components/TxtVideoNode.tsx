@@ -1,3 +1,4 @@
+import AdvancedSection, { ParamGroup } from './AdvancedSection'
 import type { TxtVideoNode as TxtVideoNodeType } from '../types'
 
 type Props = {
@@ -205,43 +206,6 @@ export default function TxtVideoNode({
           {v.resolution === '720p' && effEngine === 'hy15' ? '（⚠ 当前引擎是 hy15）' : ''}
         </div>
 
-        <label className="gen-field" style={{ marginBottom: 6 }}>
-          <span className="gen-field-label"
-            title="有参考图时，画布按参考图的宽高比重算（面积不变）。方形立绘塞进 16:9 画布，角色只占中间一条、有效像素砍半——这是「同一张图切 720p 反而更糊」的直接原因">
-            画幅
-          </span>
-          <select className="input"
-            value={v.fitAspect === false ? 'off' : 'fit'}
-            onChange={(e) => patch({ fitAspect: e.target.value === 'off' ? false : null })}>
-            <option value="fit">跟随参考图（推荐）</option>
-            <option value="off">按上面的宽高固定</option>
-          </select>
-        </label>
-        <div className="hint" style={{ marginTop: -2 }}>
-          {v.fitAspect === false
-            ? '固定画幅：参考图会被等比缩放居中，两侧或上下留底'
-            : '跟随参考图：方形立绘用方形画布，角色吃满像素；比例差 15% 内不调整'}
-        </div>
-
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label" title="必须是 32 的倍数（Wan patchify 约束）；不是的话后端会向下取整">宽度</span>
-            <input className="input" type="number" min={128} max={1280} step={32}
-              value={v.width} onChange={(e) => patchSize({ width: Number(e.target.value) })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label" title="必须是 32 的倍数（Wan patchify 约束）；不是的话后端会向下取整">高度</span>
-            <input className="input" type="number" min={128} max={1280} step={32}
-              value={v.height} onChange={(e) => patchSize({ height: Number(e.target.value) })} />
-          </label>
-        </div>
-        {(v.width % 32 !== 0 || v.height % 32 !== 0) && (
-          <div className="hint warn" style={{ marginTop: -2 }}>
-            {v.width}×{v.height} 不是 32 的倍数，会按 {Math.floor(v.width / 32) * 32}×
-            {Math.floor(v.height / 32) * 32} 跑（Wan/TI2V 的 patchify 要求）
-          </div>
-        )}
-
         <div className="param-grid">
           <label className="gen-field">
             <span className="gen-field-label"
@@ -276,92 +240,140 @@ export default function TxtVideoNode({
           ) : null}
         </div>
 
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label" title="时序 VAE 要求 4k+1，内部会自动向下取整；改这里等于改时长">帧数</span>
-            <input className="input" type="number" min={5} max={193} step={4}
-              value={v.numFrames} onChange={(e) => patch({ numFrames: Number(e.target.value) })} />
+        <AdvancedSection title="更多设置"
+          hint="画幅 · 宽高 · 帧数 · 引擎 · 输出格式 · 种子 · 步数 · CFG · 插帧放大 · 负面词">
+          <ParamGroup label="画幅与尺寸">
+          <label className="gen-field" style={{ marginBottom: 6 }}>
+            <span className="gen-field-label"
+              title="有参考图时，画布按参考图的宽高比重算（面积不变）。方形立绘塞进 16:9 画布，角色只占中间一条、有效像素砍半——这是「同一张图切 720p 反而更糊」的直接原因">
+              画幅
+            </span>
+            <select className="input"
+              value={v.fitAspect === false ? 'off' : 'fit'}
+              onChange={(e) => patch({ fitAspect: e.target.value === 'off' ? false : null })}>
+              <option value="fit">跟随参考图（推荐）</option>
+              <option value="off">按上面的宽高固定</option>
+            </select>
           </label>
+          <div className="hint" style={{ marginTop: -2 }}>
+            {v.fitAspect === false
+              ? '固定画幅：参考图会被等比缩放居中，两侧或上下留底'
+              : '跟随参考图：方形立绘用方形画布，角色吃满像素；比例差 15% 内不调整'}
+          </div>
+
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label" title="必须是 32 的倍数（Wan patchify 约束）；不是的话后端会向下取整">宽度</span>
+              <input className="input" type="number" min={128} max={1280} step={32}
+                value={v.width} onChange={(e) => patchSize({ width: Number(e.target.value) })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label" title="必须是 32 的倍数（Wan patchify 约束）；不是的话后端会向下取整">高度</span>
+              <input className="input" type="number" min={128} max={1280} step={32}
+                value={v.height} onChange={(e) => patchSize({ height: Number(e.target.value) })} />
+            </label>
+          </div>
+          {(v.width % 32 !== 0 || v.height % 32 !== 0) && (
+            <div className="hint warn" style={{ marginTop: -2 }}>
+              {v.width}×{v.height} 不是 32 的倍数，会按 {Math.floor(v.width / 32) * 32}×
+              {Math.floor(v.height / 32) * 32} 跑（Wan/TI2V 的 patchify 要求）
+            </div>
+          )}
+          </ParamGroup>
+          <ParamGroup label="采样与确定性">
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label" title="时序 VAE 要求 4k+1，内部会自动向下取整；改这里等于改时长">帧数</span>
+              <input className="input" type="number" min={5} max={193} step={4}
+                value={v.numFrames} onChange={(e) => patch({ numFrames: Number(e.target.value) })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label">种子（空=随机）</span>
+              <input className="input" type="number" min={0}
+                value={v.seed ?? ''} placeholder="随机"
+                onChange={(e) => patch({ seed: e.target.value ? Number(e.target.value) : null })} />
+            </label>
+          </div>
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label" title={`画质档位「${QUALITY_CN[v.quality]}」映射值：${effEngine} ${q.steps} 步 / CFG ${q.cfg}；清空则按档位默认`}>步数（空=按档位）</span>
+              <input className="input" type="number" min={4} max={60}
+                value={v.steps ?? ''} placeholder={String(q.steps)}
+                onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label" title="CFG：hy15 蒸馏模型官方推荐 1.0（无 CFG）；Wan 默认 5.0，动作偏弱时上调，过头出重影">引导强度</span>
+              <input className="input" type="number" min={1} max={9} step={0.5}
+                value={v.guidanceScale ?? ''} placeholder={String(q.cfg)}
+                onChange={(e) => patch({ guidanceScale: e.target.value ? Number(e.target.value) : null })} />
+            </label>
+          </div>
+          </ParamGroup>
+          <ParamGroup label="引擎与输出">
+
           <label className="gen-field">
-            <span className="gen-field-label">种子（空=随机）</span>
-            <input className="input" type="number" min={0}
-              value={v.seed ?? ''} placeholder="随机"
-              onChange={(e) => patch({ seed: e.target.value ? Number(e.target.value) : null })} />
+            <span className="gen-field-label" title="两个引擎都支持纯文本；Hunyuan 一致性和细节更好（帧数上限 33），Wan 帧数可到 193、像素风保留更严格">引擎</span>
+            <select className="input" value={v.engine ?? 'auto'}
+              onChange={(e) => applyEngine(e.target.value === 'auto' ? null : e.target.value)}>
+              {Object.entries(ENGINE_CN).map(([id, cn]) => (
+                <option key={id} value={id}>{cn}</option>
+              ))}
+            </select>
           </label>
-        </div>
 
-        <div className="param-grid">
           <label className="gen-field">
-            <span className="gen-field-label" title={`画质档位「${QUALITY_CN[v.quality]}」映射值：${effEngine} ${q.steps} 步 / CFG ${q.cfg}；清空则按档位默认`}>步数（空=按档位）</span>
-            <input className="input" type="number" min={4} max={60}
-              value={v.steps ?? ''} placeholder={String(q.steps)}
-              onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
+            <span className="gen-field-label" title="mp4（默认）：H.264 + yuv420p，浏览器 video 原生播，体积小无帧间压缩损失——最终成片用它。gif：256 色、img 直接播，同规格大数倍且有色带——适合当精灵管线的中间产物">输出格式</span>
+            <select className="input" value={v.format ?? 'mp4'}
+              onChange={(e) => patch({ format: e.target.value as 'mp4' | 'gif' })}>
+              <option value="mp4">MP4（H.264，默认）</option>
+              <option value="gif">GIF（256 色）</option>
+            </select>
           </label>
+          </ParamGroup>
+          <ParamGroup label="后处理">
+
+          <div className="switch-row" style={{ marginTop: 6 }}>
+            <span className="t" style={{ fontSize: 12 }}
+              title="像素素材用最近邻缩放，别被视频底座糊掉；非像素素材别开">
+              像素保真
+            </span>
+            <button className={`switch ${v.pixelArt ? 'on' : ''}`}
+              onClick={() => patch({ pixelArt: !v.pixelArt })} aria-label="切换像素保真">
+              <i />
+            </button>
+          </div>
+
+          <div className="switch-row" style={{ marginTop: 6 }}>
+            <span className="t" style={{ fontSize: 12 }}
+              title="出片后处理：OpenCV 光流双向变形，帧数翻倍（12→24fps 观感直接变顺）。小中幅运动效果好；大幅运动/硬边可能有伪影。非 AI 插帧（RIFE 类权重当前网络拉不到）">
+              插帧 2×（光流）
+            </span>
+            <button className={`switch ${v.interpolate ? 'on' : ''}`}
+              onClick={() => patch({ interpolate: !v.interpolate })} aria-label="切换插帧">
+              <i />
+            </button>
+          </div>
+
+          <div className="switch-row" style={{ marginTop: 6 }}>
+            <span className="t" style={{ fontSize: 12 }}
+              title="出片后处理：2× 放大。像素图走最近邻整数放大（硬边不糊，相当于像素图的正确超分）；其余 Lanczos+USM 锐化。非 AI 超分">
+              放大 2×
+            </span>
+            <button className={`switch ${v.upscale ? 'on' : ''}`}
+              onClick={() => patch({ upscale: !v.upscale })} aria-label="切换放大">
+              <i />
+            </button>
+          </div>
+          </ParamGroup>
+          <ParamGroup label="负面词">
           <label className="gen-field">
-            <span className="gen-field-label" title="CFG：hy15 蒸馏模型官方推荐 1.0（无 CFG）；Wan 默认 5.0，动作偏弱时上调，过头出重影">引导强度</span>
-            <input className="input" type="number" min={1} max={9} step={0.5}
-              value={v.guidanceScale ?? ''} placeholder={String(q.cfg)}
-              onChange={(e) => patch({ guidanceScale: e.target.value ? Number(e.target.value) : null })} />
+            <span className="gen-field-label">负面词（空=用全局默认）</span>
+            <input className="input" value={v.negative} placeholder="模糊, 低质量, 水印…"
+              onChange={(e) => patch({ negative: e.target.value })} />
           </label>
-        </div>
+          </ParamGroup>
+        </AdvancedSection>
 
-        <label className="gen-field">
-          <span className="gen-field-label" title="两个引擎都支持纯文本；Hunyuan 一致性和细节更好（帧数上限 33），Wan 帧数可到 193、像素风保留更严格">引擎</span>
-          <select className="input" value={v.engine ?? 'auto'}
-            onChange={(e) => applyEngine(e.target.value === 'auto' ? null : e.target.value)}>
-            {Object.entries(ENGINE_CN).map(([id, cn]) => (
-              <option key={id} value={id}>{cn}</option>
-            ))}
-          </select>
-        </label>
-
-        <label className="gen-field">
-          <span className="gen-field-label" title="mp4（默认）：H.264 + yuv420p，浏览器 video 原生播，体积小无帧间压缩损失——最终成片用它。gif：256 色、img 直接播，同规格大数倍且有色带——适合当精灵管线的中间产物">输出格式</span>
-          <select className="input" value={v.format ?? 'mp4'}
-            onChange={(e) => patch({ format: e.target.value as 'mp4' | 'gif' })}>
-            <option value="mp4">MP4（H.264，默认）</option>
-            <option value="gif">GIF（256 色）</option>
-          </select>
-        </label>
-
-        <div className="switch-row" style={{ marginTop: 6 }}>
-          <span className="t" style={{ fontSize: 12 }}
-            title="像素素材用最近邻缩放，别被视频底座糊掉；非像素素材别开">
-            像素保真
-          </span>
-          <button className={`switch ${v.pixelArt ? 'on' : ''}`}
-            onClick={() => patch({ pixelArt: !v.pixelArt })} aria-label="切换像素保真">
-            <i />
-          </button>
-        </div>
-
-        <div className="switch-row" style={{ marginTop: 6 }}>
-          <span className="t" style={{ fontSize: 12 }}
-            title="出片后处理：OpenCV 光流双向变形，帧数翻倍（12→24fps 观感直接变顺）。小中幅运动效果好；大幅运动/硬边可能有伪影。非 AI 插帧（RIFE 类权重当前网络拉不到）">
-            插帧 2×（光流）
-          </span>
-          <button className={`switch ${v.interpolate ? 'on' : ''}`}
-            onClick={() => patch({ interpolate: !v.interpolate })} aria-label="切换插帧">
-            <i />
-          </button>
-        </div>
-
-        <div className="switch-row" style={{ marginTop: 6 }}>
-          <span className="t" style={{ fontSize: 12 }}
-            title="出片后处理：2× 放大。像素图走最近邻整数放大（硬边不糊，相当于像素图的正确超分）；其余 Lanczos+USM 锐化。非 AI 超分">
-            放大 2×
-          </span>
-          <button className={`switch ${v.upscale ? 'on' : ''}`}
-            onClick={() => patch({ upscale: !v.upscale })} aria-label="切换放大">
-            <i />
-          </button>
-        </div>
-
-        <label className="gen-field">
-          <span className="gen-field-label">负面词（空=用全局默认）</span>
-          <input className="input" value={v.negative} placeholder="模糊, 低质量, 水印…"
-            onChange={(e) => patch({ negative: e.target.value })} />
-        </label>
 
         <button className="btn btn-sm" onClick={onRun} disabled={running || !v.prompt.trim()}
           style={{ marginTop: 8, width: '100%' }}>

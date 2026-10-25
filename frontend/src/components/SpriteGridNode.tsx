@@ -1,4 +1,5 @@
 import type { SpriteGridNode as SpriteGridNodeType } from '../types'
+import AdvancedSection from './AdvancedSection'
 
 type Props = {
   node: SpriteGridNodeType
@@ -101,43 +102,49 @@ export default function SpriteGridNode({
             <input className="input" type="number" min={0} max={32}
               value={v.cols} onChange={(e) => patch({ cols: Number(e.target.value) })} />
           </label>
-          <label className="gen-field">
-            <span className="gen-field-label"
-              title="相邻单元格之间的透明间隔：给 Unity 自动切片就填 2">帧间距</span>
-            <input className="input" type="number" min={0} max={32}
-              value={v.padding} onChange={(e) => patch({ padding: Number(e.target.value) })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label" title="整张图四周的外边距">外边距</span>
-            <input className="input" type="number" min={0} max={64}
-              value={v.margin} onChange={(e) => patch({ margin: Number(e.target.value) })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label" title="脚踩同一条线（bottom）/ 居中 / 顶部">锚点</span>
-            <select className="input" value={v.anchor}
-              onChange={(e) => patch({ anchor: e.target.value as typeof v.anchor })}>
-              <option value="bottom">底部</option>
-              <option value="center">居中</option>
-              <option value="top">顶部</option>
-            </select>
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label" title="写进索引 JSON，动画预览默认取它">帧率</span>
-            <input className="input" type="number" min={1} max={60} step={1}
-              value={v.fps} onChange={(e) => patch({ fps: Number(e.target.value) })} />
-          </label>
         </div>
 
-        <div className="switch-row" style={{ marginTop: 6 }}>
-          <span className="t" style={{ fontSize: 12 }}
-            title="所有帧用同一个缩放系数：抬腿的帧不会被放大，循环里角色尺寸恒定">
-            共享缩放
-          </span>
-          <button className={`switch ${v.sharedScale ? 'on' : ''}`}
-            onClick={() => patch({ sharedScale: !v.sharedScale })} aria-label="切换共享缩放">
-            <i />
-          </button>
-        </div>
+        <AdvancedSection title="更多设置"
+          hint="帧间距 · 外边距 · 锚点 · 帧率 · 共享缩放">
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label"
+                title="相邻单元格之间的透明间隔：给 Unity 自动切片就填 2">帧间距</span>
+              <input className="input" type="number" min={0} max={32}
+                value={v.padding} onChange={(e) => patch({ padding: Number(e.target.value) })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label" title="整张图四周的外边距">外边距</span>
+              <input className="input" type="number" min={0} max={64}
+                value={v.margin} onChange={(e) => patch({ margin: Number(e.target.value) })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label" title="脚踩同一条线（bottom）/ 居中 / 顶部">锚点</span>
+              <select className="input" value={v.anchor}
+                onChange={(e) => patch({ anchor: e.target.value as typeof v.anchor })}>
+                <option value="bottom">底部</option>
+                <option value="center">居中</option>
+                <option value="top">顶部</option>
+              </select>
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label" title="写进索引 JSON，动画预览默认取它">帧率</span>
+              <input className="input" type="number" min={1} max={60} step={1}
+                value={v.fps} onChange={(e) => patch({ fps: Number(e.target.value) })} />
+            </label>
+          </div>
+
+          <div className="switch-row" style={{ marginTop: 6 }}>
+            <span className="t" style={{ fontSize: 12 }}
+              title="所有帧用同一个缩放系数：抬腿的帧不会被放大，循环里角色尺寸恒定">
+              共享缩放
+            </span>
+            <button className={`switch ${v.sharedScale ? 'on' : ''}`}
+              onClick={() => patch({ sharedScale: !v.sharedScale })} aria-label="切换共享缩放">
+              <i />
+            </button>
+          </div>
+        </AdvancedSection>
 
         {/* 布局快捷方式：方形网格适合 GPU 采样，横排适合 Godot hframes /
             Unity 单行。两种都常用，给按钮比让用户自己算列数快。 */}

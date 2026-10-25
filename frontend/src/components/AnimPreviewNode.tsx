@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AnimPreviewNode as AnimPreviewNodeType } from '../types'
+import AdvancedSection from './AdvancedSection'
 
 type Props = {
   node: AnimPreviewNodeType
@@ -207,23 +208,26 @@ export default function AnimPreviewNode({
                   {[1, 2, 3, 4, 6, 8].map((z) => <option key={z} value={z}>{z}×</option>)}
                 </select>
               </label>
-              <label className="gen-field">
-                <span className="gen-field-label">底色</span>
-                <select className="input" value={v.bg}
-                  onChange={(e) => patch({ bg: e.target.value as typeof v.bg })}>
-                  {Object.entries(BG_LABEL).map(([k, label]) => (
-                    <option key={k} value={k}>{label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="gen-field">
-                <span className="gen-field-label">循环</span>
-                <button className={`switch ${v.loop ? 'on' : ''}`}
-                  onClick={() => patch({ loop: !v.loop })} aria-label="切换循环">
-                  <i />
-                </button>
-              </label>
             </div>
+
+            <AdvancedSection title="更多设置" hint="底色 · 循环">
+                <label className="gen-field">
+                  <span className="gen-field-label">底色</span>
+                  <select className="input" value={v.bg}
+                    onChange={(e) => patch({ bg: e.target.value as typeof v.bg })}>
+                    {Object.entries(BG_LABEL).map(([k, label]) => (
+                      <option key={k} value={k}>{label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="gen-field">
+                  <span className="gen-field-label">循环</span>
+                  <button className={`switch ${v.loop ? 'on' : ''}`}
+                    onClick={() => patch({ loop: !v.loop })} aria-label="切换循环">
+                    <i />
+                  </button>
+                </label>
+            </AdvancedSection>
 
             <div className="hint" style={{ fontSize: 11 }}>
               时长 ≈ {(total / Math.max(0.5, v.fps)).toFixed(2)}s ·

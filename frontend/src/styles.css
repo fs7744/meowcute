@@ -1129,3 +1129,57 @@ video.clip-media { cursor: default; }
 .grid-layouts {
   display: flex; align-items: center; gap: 5px; margin-top: 7px; flex-wrap: wrap;
 }
+
+/* ------------------------------------------------------------------ */
+/* 参数视图模式：简略 / 专业（lib/viewMode.ts）                        */
+/* ------------------------------------------------------------------ */
+.viewmode-toggle {
+  display: inline-flex; border: 1px solid var(--line); background: var(--bg-2);
+}
+.viewmode-toggle button {
+  padding: 0 10px; height: 26px; font-size: 11px; line-height: 26px;
+  background: transparent; border: 0; color: var(--muted); cursor: pointer;
+}
+.viewmode-toggle button + button { border-left: 1px solid var(--line); }
+.viewmode-toggle button:hover { color: var(--white); }
+.viewmode-toggle button.on {
+  background: rgba(0, 255, 136, 0.14); color: var(--green); font-weight: 600;
+}
+
+.adv-section {
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.018);
+}
+.adv-head {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 5px 8px; background: transparent; border: 0;
+  text-align: left; cursor: pointer; color: var(--muted);
+}
+.adv-head:hover { background: rgba(255, 255, 255, 0.04); }
+.adv-head.static { cursor: default; }
+.adv-head.static:hover { background: transparent; }
+.adv-title {
+  font-size: 11px; color: #c9cede; letter-spacing: 0.02em; flex: none;
+}
+.adv-section.pro .adv-title { color: var(--white); }
+.adv-hint {
+  font-size: 10px; opacity: 0.7; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.adv-caret { margin-left: auto; font-size: 9px; opacity: 0.8; flex: none; }
+.adv-body {
+  padding: 7px 8px 9px; border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 7px;
+}
+/* 专业模式下的分组：左侧一道细色条，扫视时能立刻定位分组 */
+.adv-section.pro { border-left: 2px solid rgba(0, 255, 136, 0.35); }
+
+/* 专业模式下的参数小组（ParamGroup）：小标题 + 该组内容 */
+.pgroup { display: flex; flex-direction: column; gap: 7px; }
+.pgroup + .pgroup { margin-top: 4px; }
+.pgroup-title {
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted); opacity: 0.75; padding-bottom: 2px;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+}

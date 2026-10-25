@@ -1,4 +1,5 @@
 import type { RefineNode as RefineNodeType } from '../types'
+import AdvancedSection from './AdvancedSection'
 
 type Props = {
   node: RefineNodeType
@@ -53,14 +54,15 @@ export default function RefineNode({
           </button>
         </div>
 
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label">调色板色数</span>
-            <select className="select" value={px.colors}
-              onChange={(e) => patchPixel({ colors: Number(e.target.value) })}>
-              {[4, 8, 12, 16, 24, 32, 48].map((c) => <option key={c} value={c}>{c} 色</option>)}
-            </select>
-          </label>
+        <label className="gen-field">
+          <span className="gen-field-label">调色板色数</span>
+          <select className="select" value={px.colors}
+            onChange={(e) => patchPixel({ colors: Number(e.target.value) })}>
+            {[4, 8, 12, 16, 24, 32, 48].map((c) => <option key={c} value={c}>{c} 色</option>)}
+          </select>
+        </label>
+
+        <AdvancedSection title="更多设置" hint="固定色板 · 输出像素尺寸 · 手动网格">
           <label className="gen-field">
             <span className="gen-field-label">固定色板</span>
             <select className="select" value={px.palette}
@@ -70,9 +72,7 @@ export default function RefineNode({
               <option value="nes">NES 28 色</option>
             </select>
           </label>
-        </div>
-
-        <div className="param-grid">
+          <div className="param-grid">
           <label className="gen-field">
             <span className="gen-field-label">输出像素尺寸</span>
             <input className="input input-sm" type="number" placeholder="自动" min={8} max={256}
@@ -91,7 +91,8 @@ export default function RefineNode({
                 patchPixel({ gridSize: v === '' ? null : [Number(v), Number(v)] })
               }} />
           </label>
-        </div>
+          </div>
+        </AdvancedSection>
 
         <div className="switch-row">
           <span className="t" style={{ fontSize: 12 }}>背景透明（抠掉纯色底）</span>

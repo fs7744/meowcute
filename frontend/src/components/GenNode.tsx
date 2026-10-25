@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, loadPromptLimits } from '../api'
 import { promptLimitFor } from '../lib/promptLimit'
+import AdvancedSection from './AdvancedSection'
 import type {
   BackgroundOption, GenNode as GenNodeType, PixelOptions, PromptExample, PromptLimits,
   RefAsset, Style, TaskProgress,
@@ -271,57 +272,60 @@ export default function GenNode({
             512 最快（默认）；768 平衡；1024 细节最好但像素量是 512 的 4 倍，
             显存不足时会明显变慢。
           </div>
-          <div className="param-grid">
-            <label className="gen-field">
-              <span className="gen-field-label">宽 / 高（16 对齐）</span>
-              <div className="row">
-                <input className="input input-sm" type="number" min={128} max={1536} step={64}
-                  value={node.params.width}
-                  onChange={(e) => patchParams({ width: Number(e.target.value) || 512 })} />
-                <input className="input input-sm" type="number" min={128} max={1536} step={64}
-                  value={node.params.height}
-                  onChange={(e) => patchParams({ height: Number(e.target.value) || 512 })} />
-              </div>
-            </label>
-            <label className="gen-field">
-              <span className="gen-field-label">生成张数</span>
-              <div className="chips">
-                {[1, 2, 3, 4].map((n) => (
-                  <button key={n} className={`chip ${node.params.n === n ? 'on' : ''}`}
-                    onClick={() => patchParams({ n })}>{n} 张</button>
-                ))}
-              </div>
-            </label>
-            <label className="gen-field">
-              <span className="gen-field-label">种子（空 = 随机）</span>
-              <input className="input input-sm" type="number" placeholder="随机"
-                value={node.params.seed ?? ''}
-                onChange={(e) => patchParams({ seed: e.target.value === '' ? null : Number(e.target.value) })} />
-            </label>
-            <label className="gen-field">
-              <span className="gen-field-label">步数（空 = 自动）</span>
-              <input className="input input-sm" type="number" placeholder="文生图 9 / 编辑 40"
-                value={node.params.steps ?? ''}
-                onChange={(e) => patchParams({ steps: e.target.value === '' ? null : Number(e.target.value) })} />
-            </label>
-            <label className="gen-field">
-              <span className="gen-field-label">提示词质量</span>
-              <select className="select" value={node.params.maxSeqLen ?? ''}
-                onChange={(e) => patchParams({
-                  maxSeqLen: e.target.value === '' ? null : Number(e.target.value),
-                })}>
-                <option value="">自动（推荐）</option>
-                <option value={512}>快速</option>
-                <option value={768}>标准</option>
-                <option value={1024}>高质量</option>
-              </select>
-            </label>
-          </div>
-          <div className="hint" style={{ marginTop: 4 }}>
-            当前档位最多容纳 {maxChars} 字（已扣掉画风与像素契约的固定开销）；
-            质量越高越不容易截断；只影响文本编码，
-            对出图速度影响很小。自动会按提示词长度选档。
-          </div>
+          <AdvancedSection title="更多设置"
+            hint="宽高 · 张数 · 种子 · 步数 · 提示词质量">
+            <div className="param-grid">
+              <label className="gen-field">
+                <span className="gen-field-label">宽 / 高（16 对齐）</span>
+                <div className="row">
+                  <input className="input input-sm" type="number" min={128} max={1536} step={64}
+                    value={node.params.width}
+                    onChange={(e) => patchParams({ width: Number(e.target.value) || 512 })} />
+                  <input className="input input-sm" type="number" min={128} max={1536} step={64}
+                    value={node.params.height}
+                    onChange={(e) => patchParams({ height: Number(e.target.value) || 512 })} />
+                </div>
+              </label>
+              <label className="gen-field">
+                <span className="gen-field-label">生成张数</span>
+                <div className="chips">
+                  {[1, 2, 3, 4].map((n) => (
+                    <button key={n} className={`chip ${node.params.n === n ? 'on' : ''}`}
+                      onClick={() => patchParams({ n })}>{n} 张</button>
+                  ))}
+                </div>
+              </label>
+              <label className="gen-field">
+                <span className="gen-field-label">种子（空 = 随机）</span>
+                <input className="input input-sm" type="number" placeholder="随机"
+                  value={node.params.seed ?? ''}
+                  onChange={(e) => patchParams({ seed: e.target.value === '' ? null : Number(e.target.value) })} />
+              </label>
+              <label className="gen-field">
+                <span className="gen-field-label">步数（空 = 自动）</span>
+                <input className="input input-sm" type="number" placeholder="文生图 9 / 编辑 40"
+                  value={node.params.steps ?? ''}
+                  onChange={(e) => patchParams({ steps: e.target.value === '' ? null : Number(e.target.value) })} />
+              </label>
+              <label className="gen-field">
+                <span className="gen-field-label">提示词质量</span>
+                <select className="select" value={node.params.maxSeqLen ?? ''}
+                  onChange={(e) => patchParams({
+                    maxSeqLen: e.target.value === '' ? null : Number(e.target.value),
+                  })}>
+                  <option value="">自动（推荐）</option>
+                  <option value={512}>快速</option>
+                  <option value={768}>标准</option>
+                  <option value={1024}>高质量</option>
+                </select>
+              </label>
+            </div>
+            <div className="hint" style={{ marginTop: 4 }}>
+              当前档位最多容纳 {maxChars} 字（已扣掉画风与像素契约的固定开销）；
+              质量越高越不容易截断；只影响文本编码，
+              对出图速度影响很小。自动会按提示词长度选档。
+            </div>
+          </AdvancedSection>
         </div>
 
         {/* 4. 背景 */}

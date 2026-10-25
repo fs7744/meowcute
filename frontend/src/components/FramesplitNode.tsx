@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { applyFilters, diffStats, loopSeam } from '../lib/frameSelect'
+import AdvancedSection from './AdvancedSection'
 import type { FrameSplitNode as FrameSplitNodeType } from '../types'
 
 type Props = {
@@ -129,18 +130,6 @@ export default function FramesplitNode({
               value={v.maxFrames}
               onChange={(e) => patch({ maxFrames: Number(e.target.value) })} />
           </label>
-          <label className="gen-field">
-            <span className="gen-field-label">起始（秒）</span>
-            <input className="input" type="number" min={0} step={0.1}
-              value={v.start}
-              onChange={(e) => patch({ start: Number(e.target.value) })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label">结束（秒，空=到结尾）</span>
-            <input className="input" type="number" min={0} step={0.1}
-              value={v.end ?? ''}
-              onChange={(e) => patch({ end: e.target.value === '' ? null : Number(e.target.value) })} />
-          </label>
         </div>
 
         <div className="switch-row" style={{ marginTop: 6 }}>
@@ -150,6 +139,40 @@ export default function FramesplitNode({
             <i />
           </button>
         </div>
+
+        <AdvancedSection title="更多设置"
+          hint="起止时间 · 抠图容差 · 解码长边">
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label">起始（秒）</span>
+              <input className="input" type="number" min={0} step={0.1}
+                value={v.start}
+                onChange={(e) => patch({ start: Number(e.target.value) })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label">结束（秒，空=到结尾）</span>
+              <input className="input" type="number" min={0} step={0.1}
+                value={v.end ?? ''}
+                onChange={(e) => patch({ end: e.target.value === '' ? null : Number(e.target.value) })} />
+            </label>
+          </div>
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label"
+                title="抠图容差：底色与主体太接近时调大，误吃主体时调小">抠图容差</span>
+              <input className="input" type="number" min={10} max={120} step={5}
+                value={v.tolerance}
+                onChange={(e) => patch({ tolerance: Number(e.target.value) })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label"
+                title="解码时长边上限：精灵单元格一般 64~256，没必要按原始 1080p 解码">解码长边</span>
+              <input className="input" type="number" min={64} max={1024} step={64}
+                value={v.maxSide}
+                onChange={(e) => patch({ maxSide: Number(e.target.value) })} />
+            </label>
+          </div>
+        </AdvancedSection>
 
         <button className="btn btn-sm" onClick={onRun} disabled={running || noSource}
           style={{ marginTop: 8, width: '100%' }}>

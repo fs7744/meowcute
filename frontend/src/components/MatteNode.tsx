@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import AdvancedSection from './AdvancedSection'
 import type { MatteNode as MatteNodeType } from '../types'
 
 type Props = {
@@ -105,57 +106,60 @@ export default function MatteNode({
             onChange={(e) => patch({ tolerance: Number(e.target.value) })} />
         </label>
 
-        <div className="switch-row">
-          <span className="t" style={{ fontSize: 12 }}>硬边（像素素材，无半透明）</span>
-          <button className={`switch ${m.hard ? 'on' : ''}`}
-            onClick={() => patch({ hard: !m.hard })} aria-label="切换硬边">
-            <i />
-          </button>
-        </div>
-        {!m.hard ? (
-          <label className="gen-field" style={{ marginTop: -6 }}>
-            <span className="gen-field-label">羽化半径 {m.feather}px</span>
-            <input type="range" min={0} max={24} step={1} value={m.feather}
-              onChange={(e) => patch({ feather: Number(e.target.value) })} />
-          </label>
-        ) : null}
+        <AdvancedSection title="更多设置"
+          hint="硬边/羽化 · 边缘去污 · 裁到主体 · 边缘偏移 · 底部裁切">
+                  <div className="switch-row">
+                    <span className="t" style={{ fontSize: 12 }}>硬边（像素素材，无半透明）</span>
+                    <button className={`switch ${m.hard ? 'on' : ''}`}
+                      onClick={() => patch({ hard: !m.hard })} aria-label="切换硬边">
+                      <i />
+                    </button>
+                  </div>
+                  {!m.hard ? (
+                    <label className="gen-field" style={{ marginTop: -6 }}>
+                      <span className="gen-field-label">羽化半径 {m.feather}px</span>
+                      <input type="range" min={0} max={24} step={1} value={m.feather}
+                        onChange={(e) => patch({ feather: Number(e.target.value) })} />
+                    </label>
+                  ) : null}
 
-        <div className="switch-row">
-          <span className="t" style={{ fontSize: 12 }}>边缘去污（洗掉底色描边）</span>
-          <button className={`switch ${m.despill ? 'on' : ''}`}
-            onClick={() => patch({ despill: !m.despill })} aria-label="切换边缘去污">
-            <i />
-          </button>
-        </div>
+                  <div className="switch-row">
+                    <span className="t" style={{ fontSize: 12 }}>边缘去污（洗掉底色描边）</span>
+                    <button className={`switch ${m.despill ? 'on' : ''}`}
+                      onClick={() => patch({ despill: !m.despill })} aria-label="切换边缘去污">
+                      <i />
+                    </button>
+                  </div>
 
-        <div className="switch-row">
-          <span className="t" style={{ fontSize: 12 }}>裁到主体（去掉透明留白）</span>
-          <button className={`switch ${m.trim ? 'on' : ''}`}
-            onClick={() => patch({ trim: !m.trim })} aria-label="切换裁到主体">
-            <i />
-          </button>
-        </div>
+                  <div className="switch-row">
+                    <span className="t" style={{ fontSize: 12 }}>裁到主体（去掉透明留白）</span>
+                    <button className={`switch ${m.trim ? 'on' : ''}`}
+                      onClick={() => patch({ trim: !m.trim })} aria-label="切换裁到主体">
+                      <i />
+                    </button>
+                  </div>
 
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label" title="负=内缩，去掉一圈底色残影；正=外扩，补回被啃掉的轮廓">
-              边缘 {m.edge > 0 ? `+${m.edge}` : m.edge}px
-            </span>
-            <input type="range" min={-3} max={3} step={1} value={m.edge}
-              onChange={(e) => patch({ edge: Number(e.target.value) })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label" title="从主体底部按比例切掉，用来去掉 AI 画的接地投影">
-              底部裁切 {Math.round(m.bottomTrim * 100)}%
-            </span>
-            <input type="range" min={0} max={0.12} step={0.01} value={m.bottomTrim}
-              onChange={(e) => patch({ bottomTrim: Number(e.target.value) })} />
-          </label>
-        </div>
-        <div className="hint" style={{ marginTop: -6 }}>
-          抠图边界差 1px 就调「边缘」；角色脚下拖着一圈灰影就拉「底部裁切」——
-          投影和浅色主体常常长在一起，自动判断会连带削掉脚，所以这里交给你手上。
-        </div>
+                  <div className="param-grid">
+                    <label className="gen-field">
+                      <span className="gen-field-label" title="负=内缩，去掉一圈底色残影；正=外扩，补回被啃掉的轮廓">
+                        边缘 {m.edge > 0 ? `+${m.edge}` : m.edge}px
+                      </span>
+                      <input type="range" min={-3} max={3} step={1} value={m.edge}
+                        onChange={(e) => patch({ edge: Number(e.target.value) })} />
+                    </label>
+                    <label className="gen-field">
+                      <span className="gen-field-label" title="从主体底部按比例切掉，用来去掉 AI 画的接地投影">
+                        底部裁切 {Math.round(m.bottomTrim * 100)}%
+                      </span>
+                      <input type="range" min={0} max={0.12} step={0.01} value={m.bottomTrim}
+                        onChange={(e) => patch({ bottomTrim: Number(e.target.value) })} />
+                    </label>
+                  </div>
+                  <div className="hint" style={{ marginTop: -6 }}>
+                    抠图边界差 1px 就调「边缘」；角色脚下拖着一圈灰影就拉「底部裁切」——
+                    投影和浅色主体常常长在一起，自动判断会连带削掉脚，所以这里交给你手上。
+                  </div>
+        </AdvancedSection>
 
         <button className="btn btn-sm" onClick={onRun} disabled={running}
           style={{ marginTop: 8, width: '100%' }}>

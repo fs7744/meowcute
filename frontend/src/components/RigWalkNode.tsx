@@ -1,4 +1,5 @@
 import type { RigWalkNode as RigWalkNodeType } from '../types'
+import AdvancedSection from './AdvancedSection'
 
 type Props = {
   node: RigWalkNodeType
@@ -85,45 +86,48 @@ export default function RigWalkNode({
           </label>
         </div>
 
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label" title="臂摆角（与腿反相）">臂摆角</span>
-            <input className="input" type="number" min={0} max={30} step={1}
-              value={v.arm}
-              onChange={(e) => patch({ arm: Number(e.target.value) })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label" title="身体上下起伏（像素）">起伏</span>
-            <input className="input" type="number" min={0} max={16} step={1}
-              value={v.bob}
-              onChange={(e) => patch({ bob: Number(e.target.value) })} />
-          </label>
-        </div>
+        <AdvancedSection title="更多设置"
+          hint="臂摆角 · 起伏 · 抬脚 · 帧率 · 握持">
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label" title="臂摆角（与腿反相）">臂摆角</span>
+              <input className="input" type="number" min={0} max={30} step={1}
+                value={v.arm}
+                onChange={(e) => patch({ arm: Number(e.target.value) })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label" title="身体上下起伏（像素）">起伏</span>
+              <input className="input" type="number" min={0} max={16} step={1}
+                value={v.bob}
+                onChange={(e) => patch({ bob: Number(e.target.value) })} />
+            </label>
+          </div>
 
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label" title="前摆腿抬起高度（模拟离地）">抬脚</span>
-            <input className="input" type="number" min={0} max={20} step={1}
-              value={v.lift}
-              onChange={(e) => patch({ lift: Number(e.target.value) })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label">循环帧率</span>
-            <input className="input" type="number" min={4} max={24}
-              value={v.fps} onChange={(e) => patch({ fps: Number(e.target.value) })} />
-          </label>
-        </div>
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label" title="前摆腿抬起高度（模拟离地）">抬脚</span>
+              <input className="input" type="number" min={0} max={20} step={1}
+                value={v.lift}
+                onChange={(e) => patch({ lift: Number(e.target.value) })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label">循环帧率</span>
+              <input className="input" type="number" min={4} max={24}
+                value={v.fps} onChange={(e) => patch({ fps: Number(e.target.value) })} />
+            </label>
+          </div>
 
-        <div className="switch-row" style={{ marginTop: 6 }}>
-          <span className="t" style={{ fontSize: 12 }}
-            title="双手持枪/握把的角色必须开：两只手属于不同骨骼，各转各的会脱手">
-            握持模式（双臂同向小摆）
-          </span>
-          <button className={`switch ${v.hold ? 'on' : ''}`}
-            onClick={() => patch({ hold: !v.hold })} aria-label="切换握持模式">
-            <i />
-          </button>
-        </div>
+          <div className="switch-row" style={{ marginTop: 6 }}>
+            <span className="t" style={{ fontSize: 12 }}
+              title="双手持枪/握把的角色必须开：两只手属于不同骨骼，各转各的会脱手">
+              握持模式（双臂同向小摆）
+            </span>
+            <button className={`switch ${v.hold ? 'on' : ''}`}
+              onClick={() => patch({ hold: !v.hold })} aria-label="切换握持模式">
+              <i />
+            </button>
+          </div>
+        </AdvancedSection>
 
         <button className="btn btn-sm" onClick={onRun} disabled={running}
           style={{ marginTop: 8, width: '100%' }}>

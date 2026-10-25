@@ -1,4 +1,5 @@
 import type { SequenceNode as SequenceNodeType } from '../types'
+import AdvancedSection from './AdvancedSection'
 
 type Props = {
   node: SequenceNodeType
@@ -85,21 +86,24 @@ export default function SequenceNode({
           </label>
         </div>
 
-        <div className="switch-row" style={{ marginTop: 6 }}>
-          <span className="t" style={{ fontSize: 12 }}>逐帧抠图（透明底）</span>
-          <button className={`switch ${v.matte ? 'on' : ''}`}
-            onClick={() => patch({ matte: !v.matte })} aria-label="切换逐帧抠图">
-            <i />
-          </button>
-        </div>
-        {v.matte ? (
-          <label className="gen-field" style={{ marginTop: 6 }}>
-            <span className="gen-field-label">抠图容差</span>
-            <input className="input" type="number" min={10} max={120} step={5}
-              value={v.tolerance}
-              onChange={(e) => patch({ tolerance: Number(e.target.value) })} />
-          </label>
-        ) : null}
+        <AdvancedSection title="更多设置"
+          hint="逐帧抠图 · 抠图容差">
+          <div className="switch-row" style={{ marginTop: 6 }}>
+            <span className="t" style={{ fontSize: 12 }}>逐帧抠图（透明底）</span>
+            <button className={`switch ${v.matte ? 'on' : ''}`}
+              onClick={() => patch({ matte: !v.matte })} aria-label="切换逐帧抠图">
+              <i />
+            </button>
+          </div>
+          {v.matte ? (
+            <label className="gen-field" style={{ marginTop: 6 }}>
+              <span className="gen-field-label">抠图容差</span>
+              <input className="input" type="number" min={10} max={120} step={5}
+                value={v.tolerance}
+                onChange={(e) => patch({ tolerance: Number(e.target.value) })} />
+            </label>
+          ) : null}
+        </AdvancedSection>
 
         <button className="btn btn-sm" onClick={onRun} disabled={running}
           style={{ marginTop: 8, width: '100%' }}>

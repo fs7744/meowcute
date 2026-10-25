@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, loadPromptLimits, subscribeTask } from '../api'
 import { promptLimitFor } from '../lib/promptLimit'
+import { setViewMode, useViewMode } from '../lib/viewMode'
 import AnimPreviewNode from '../components/AnimPreviewNode'
 import ClipSrcNode from '../components/ClipSrcNode'
 import FramesplitNode from '../components/FramesplitNode'
@@ -69,6 +70,8 @@ const NODE_W: Record<string, number> = {
   viewgen: VIEWGEN_W, threeview: THREEVIEW_W, walkvideo: WALKVIDEO_W,
   sequence: SEQUENCE_W, spritesheet: SPRITESHEET_W, play: PLAY_W,
   txtvideo: TXTVIDEO_W,
+  clipsrc: CLIPSRC_W, framesplit: FRAMESPLIT_W, spritegrid: SPRITEGRID_W,
+  animpreview: ANIMPREVIEW_W,
 }
 
 /** 哪些类型的节点可以作为某个节点的上游（决定自定义工作流是否合法）。 */
@@ -239,6 +242,8 @@ function imageSource(im: ResultImage) {
 
 export default function Canvas({ projectId, onBack }: Props) {
   const [project, setProject] = useState<Project | null>(null)
+  /** 简略 / 专业：顶栏可切，节点卡片据此决定露多少参数 */
+  const viewMode = useViewMode()
   const [template, setTemplate] = useState<Template | null>(null)
   const [styles, setStyles] = useState<Style[]>([])
   /** 设置页「新建节点时的默认值」（width/height/n/background） */
@@ -3408,6 +3413,18 @@ export default function Canvas({ projectId, onBack }: Props) {
             : lastSaved ? `已保存 ${new Date(lastSaved).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
             : '已保存'}
         </span>
+        {/* 参数视图模式：简略只留「决定结果」的那几项，专业铺开全部。
+            放在顶栏而不是每个节点上：这是「我用这个工具的习惯」，一份就够，
+            而且切一次全场生效，比逐个节点展开省事。 */}
+        <div className="viewmode-toggle"
+          title={viewMode === 'simple'
+            ? '简略：每个节点只露关键选项，其余收在「更多设置」里'
+            : '专业：所有参数平铺，分组显示'}>
+          <button className={viewMode === 'simple' ? 'on' : ''}
+            onClick={() => setViewMode('simple')}>简略</button>
+          <button className={viewMode === 'pro' ? 'on' : ''}
+            onClick={() => setViewMode('pro')}>专业</button>
+        </div>
         {project.templateDraftOf ? (
           <>
             <button className="btn btn-sm btn-primary" onClick={commitTemplate}

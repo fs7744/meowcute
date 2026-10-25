@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, loadPromptLimits } from '../api'
+import AdvancedSection from './AdvancedSection'
 import type {
   PromptExample, PromptLimits, WalkVideoNode as WalkVideoNodeType, WalkDir,
   VideoAsset,
@@ -525,149 +526,152 @@ export default function WalkVideoNode({
 
         {/* 视频引擎：HunyuanVideo-1.5 默认（一致性/细节明显更好），Wan2.2 可选
             （像素风保真更严格，但长片会闪烁/变形） */}
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label"
-              title="hy15 = HunyuanVideo-1.5 480p I2V 步数蒸馏：不闪烁、不肢体变形，约 1 分钟/方向，帧数上限 33。wan = Wan2.2 TI2V-5B：像素风更保真，但长片会闪烁、肢体变形">
-              视频引擎
-            </span>
-            <select className="input" value={v.engine ?? 'hy15'}
-              onChange={(e) => {
-                const eng = e.target.value as 'hy15' | 'wan'
-                patch({
-                  engine: eng,
-                  numFrames: eng === 'hy15' ? 21 : 81,
-                  fps: eng === 'hy15' ? 12 : 24,
-                  steps: null,
-                })
-              }}>
-              <option value="hy15">HunyuanVideo-1.5（推荐）</option>
-              <option value="wan">Wan2.2 TI2V-5B</option>
-            </select>
-          </label>
-          <div className="hint" style={{ margin: 0, alignSelf: 'end', fontSize: 11 }}>
-            {isHy15
-              ? '一致性好、不闪烁不变形；动作幅度靠提示词驱动'
-              : '像素风更保真；长片易闪烁、肢体变形'}
+        <AdvancedSection title="更多设置"
+          hint="引擎 · 宽高 · 帧数帧率 · 长边 · 种子 · CFG · 动作合格线 · 重试">
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label"
+                title="hy15 = HunyuanVideo-1.5 480p I2V 步数蒸馏：不闪烁、不肢体变形，约 1 分钟/方向，帧数上限 33。wan = Wan2.2 TI2V-5B：像素风更保真，但长片会闪烁、肢体变形">
+                视频引擎
+              </span>
+              <select className="input" value={v.engine ?? 'hy15'}
+                onChange={(e) => {
+                  const eng = e.target.value as 'hy15' | 'wan'
+                  patch({
+                    engine: eng,
+                    numFrames: eng === 'hy15' ? 21 : 81,
+                    fps: eng === 'hy15' ? 12 : 24,
+                    steps: null,
+                  })
+                }}>
+                <option value="hy15">HunyuanVideo-1.5（推荐）</option>
+                <option value="wan">Wan2.2 TI2V-5B</option>
+              </select>
+            </label>
+            <div className="hint" style={{ margin: 0, alignSelf: 'end', fontSize: 11 }}>
+              {isHy15
+                ? '一致性好、不闪烁不变形；动作幅度靠提示词驱动'
+                : '像素风更保真；长片易闪烁、肢体变形'}
+            </div>
           </div>
-        </div>
 
-        {/* 画质：分辨率是本机实测对成品质量影响最大的一项，以前只在数据模型里、
-            界面上根本改不到——用户问「怎么提高质量」时得给他抓手 */}
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label"
-              title="视频底座出图宽度。Wan2.2 TI2V-5B 原生是 720p 级别，但本机实测：">宽</span>
-            <input className="input" type="number" min={128} max={1024} step={16}
-              value={v.width}
-              onChange={(e) => patch({ width: Number(e.target.value) })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label"
-              title="视频底座出图高度（会按 16 对齐；长边超过「长边上限」时先降）">高</span>
-            <input className="input" type="number" min={128} max={1024} step={16}
-              value={v.height}
-              onChange={(e) => patch({ height: Number(e.target.value) })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label" title="长边超过这个值就先降采样到这个尺寸">长边上限</span>
-            <input className="input" type="number" min={256} max={1024} step={16}
-              value={v.maxSide}
-              onChange={(e) => patch({ maxSide: Number(e.target.value) })} />
-          </label>
-        </div>
-        <div className="hint" style={{ marginTop: -4, lineHeight: 1.6 }}>
-          本机实测（4090 / 同图同种子 / 49 帧）：<b>384×512 最稳</b>（剪影波动 3.4，约 55s/方向）；
-          512×704 动作最多、细节最锐，但波动大（36.4，约 100s/方向）；480×640 两头不占（波动 60）。
-          <button className="btn btn-sm" style={{ marginLeft: 6, height: 22 }}
-            onClick={() => patch({ width: 512, height: 704, maxSide: 704, steps: 40 })}>
-            画质优先
-          </button>
-          <button className="btn btn-sm" style={{ marginLeft: 4, height: 22 }}
-            onClick={() => patch({ width: 384, height: 512, maxSide: 512, steps: null })}>
-            速度优先（默认）
-          </button>
-        </div>
+          {/* 画质：分辨率是本机实测对成品质量影响最大的一项，以前只在数据模型里、
+              界面上根本改不到——用户问「怎么提高质量」时得给他抓手 */}
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label"
+                title="视频底座出图宽度。Wan2.2 TI2V-5B 原生是 720p 级别，但本机实测：">宽</span>
+              <input className="input" type="number" min={128} max={1024} step={16}
+                value={v.width}
+                onChange={(e) => patch({ width: Number(e.target.value) })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label"
+                title="视频底座出图高度（会按 16 对齐；长边超过「长边上限」时先降）">高</span>
+              <input className="input" type="number" min={128} max={1024} step={16}
+                value={v.height}
+                onChange={(e) => patch({ height: Number(e.target.value) })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label" title="长边超过这个值就先降采样到这个尺寸">长边上限</span>
+              <input className="input" type="number" min={256} max={1024} step={16}
+                value={v.maxSide}
+                onChange={(e) => patch({ maxSide: Number(e.target.value) })} />
+            </label>
+          </div>
+          <div className="hint" style={{ marginTop: -4, lineHeight: 1.6 }}>
+            本机实测（4090 / 同图同种子 / 49 帧）：<b>384×512 最稳</b>（剪影波动 3.4，约 55s/方向）；
+            512×704 动作最多、细节最锐，但波动大（36.4，约 100s/方向）；480×640 两头不占（波动 60）。
+            <button className="btn btn-sm" style={{ marginLeft: 6, height: 22 }}
+              onClick={() => patch({ width: 512, height: 704, maxSide: 704, steps: 40 })}>
+              画质优先
+            </button>
+            <button className="btn btn-sm" style={{ marginLeft: 4, height: 22 }}
+              onClick={() => patch({ width: 384, height: 512, maxSide: 512, steps: null })}>
+              速度优先（默认）
+            </button>
+          </div>
 
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label"
-              title={isHy15
-                ? 'HunyuanVideo 帧数（4k+1）。上限 33：61 帧会让序列长度涨到 25.6k tokens，单步从 2.4s 退化到 47s'
-                : 'Wan 帧数（后端对齐 4k+1）'}>
-              {isHy15 ? '帧数（上限 33）' : 'Wan 帧数'}
-            </span>
-            <input className="input" type="number" min={isHy15 ? 13 : 5} max={frameMax} step={4}
-              value={v.numFrames}
-              onChange={(e) => patch({
-                numFrames: Math.max(isHy15 ? 13 : 5, Math.min(frameMax, Number(e.target.value))),
-              })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label">视频帧率</span>
-            <input className="input" type="number" min={8} max={30}
-              value={v.fps} onChange={(e) => patch({ fps: Number(e.target.value) })} />
-          </label>
-        </div>
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label"
+                title={isHy15
+                  ? 'HunyuanVideo 帧数（4k+1）。上限 33：61 帧会让序列长度涨到 25.6k tokens，单步从 2.4s 退化到 47s'
+                  : 'Wan 帧数（后端对齐 4k+1）'}>
+                {isHy15 ? '帧数（上限 33）' : 'Wan 帧数'}
+              </span>
+              <input className="input" type="number" min={isHy15 ? 13 : 5} max={frameMax} step={4}
+                value={v.numFrames}
+                onChange={(e) => patch({
+                  numFrames: Math.max(isHy15 ? 13 : 5, Math.min(frameMax, Number(e.target.value))),
+                })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label">视频帧率</span>
+              <input className="input" type="number" min={8} max={30}
+                value={v.fps} onChange={(e) => patch({ fps: Number(e.target.value) })} />
+            </label>
+          </div>
 
-        <div className="param-grid">
-          <label className="gen-field">
-            <span className="gen-field-label">
-              {isHy15 ? '步数（空=12，8~16 最佳）' : '步数（空=默认 30）'}
-            </span>
-            <input className="input" type="number"
-              min={isHy15 ? 6 : 20} max={isHy15 ? 20 : 50}
-              value={v.steps ?? ''} placeholder={isHy15 ? '12' : '30'}
-              onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label" title="同一个种子 + 同一张图 + 同一段提示词 = 同一条视频。视频底座对种子极敏感（动作幅度能差一倍），不满意就换个种子重跑，比调参数快">种子（空=随机）</span>
-            <input className="input" type="number" min={0}
-              value={v.seed ?? ''} placeholder="随机"
-              onChange={(e) => patch({ seed: e.target.value ? Number(e.target.value) : null })} />
-          </label>
-        </div>
+          <div className="param-grid">
+            <label className="gen-field">
+              <span className="gen-field-label">
+                {isHy15 ? '步数（空=12，8~16 最佳）' : '步数（空=默认 30）'}
+              </span>
+              <input className="input" type="number"
+                min={isHy15 ? 6 : 20} max={isHy15 ? 20 : 50}
+                value={v.steps ?? ''} placeholder={isHy15 ? '12' : '30'}
+                onChange={(e) => patch({ steps: e.target.value ? Number(e.target.value) : null })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label" title="同一个种子 + 同一张图 + 同一段提示词 = 同一条视频。视频底座对种子极敏感（动作幅度能差一倍），不满意就换个种子重跑，比调参数快">种子（空=随机）</span>
+              <input className="input" type="number" min={0}
+                value={v.seed ?? ''} placeholder="随机"
+                onChange={(e) => patch({ seed: e.target.value ? Number(e.target.value) : null })} />
+            </label>
+          </div>
 
-        <div className="switch-row" style={{ marginTop: 6 }}>
-          <span className="t" style={{ fontSize: 12 }}
-            title="像素素材用最近邻缩放：保住硬边，不会被视频底座的重采样糊掉">
-            像素保真（最近邻缩放）
-          </span>
-          <button className={`switch ${v.pixelArt ? 'on' : ''}`}
-            onClick={() => patch({ pixelArt: !v.pixelArt })} aria-label="切换像素保真">
-            <i />
-          </button>
-        </div>
+          <div className="switch-row" style={{ marginTop: 6 }}>
+            <span className="t" style={{ fontSize: 12 }}
+              title="像素素材用最近邻缩放：保住硬边，不会被视频底座的重采样糊掉">
+              像素保真（最近邻缩放）
+            </span>
+            <button className={`switch ${v.pixelArt ? 'on' : ''}`}
+              onClick={() => patch({ pixelArt: !v.pixelArt })} aria-label="切换像素保真">
+              <i />
+            </button>
+          </div>
 
-        {/* ---- 行走动作控制（轻量闭环：不上更大模型也能逼出「真正在走」） ---- */}
-        <div className="param-grid" style={{ marginTop: 6 }}>
-          <label className="gen-field">
-            <span className="gen-field-label" title="引导强度。默认 5.0。实测 7.5 能把动作幅度拉到 2.5 倍，但剪影波动从 4.6 涨到 29（糊帧风险）；先改提示词与种子，再考虑动它">
-              引导 CFG（空=5.0）
-            </span>
-            <input className="input" type="number" min={1} max={9} step={0.5}
-              value={v.guidanceScale ?? ''} placeholder="5.0"
-              onChange={(e) => patch({ guidanceScale: e.target.value ? Number(e.target.value) : null })} />
-          </label>
-          <label className="gen-field">
-            <span className="gen-field-label" title="动作幅度合格线：剪影 1-IoU，真实行走约 5~20，定格 <3。低于此值自动加压重跑">
-              动作合格线
-            </span>
-            <input className="input" type="number" min={1} max={30} step={1}
-              value={v.motionThreshold}
-              onChange={(e) => patch({ motionThreshold: Number(e.target.value) })} />
-          </label>
-        </div>
-        <div className="param-grid" style={{ marginTop: 4 }}>
-          <label className="gen-field" style={{ gridColumn: '1 / -1' }}>
-            <span className="gen-field-label" title="动作不达标时自动加压（每次 CFG +1.5、步数 +5）重跑的次数；0 = 不重试">
-              不达标自动重试次数：{v.retries}
-            </span>
-            <input className="input" type="range" min={0} max={5} step={1}
-              value={v.retries}
-              onChange={(e) => patch({ retries: Number(e.target.value) })} />
-          </label>
-        </div>
+          {/* ---- 行走动作控制（轻量闭环：不上更大模型也能逼出「真正在走」） ---- */}
+          <div className="param-grid" style={{ marginTop: 6 }}>
+            <label className="gen-field">
+              <span className="gen-field-label" title="引导强度。默认 5.0。实测 7.5 能把动作幅度拉到 2.5 倍，但剪影波动从 4.6 涨到 29（糊帧风险）；先改提示词与种子，再考虑动它">
+                引导 CFG（空=5.0）
+              </span>
+              <input className="input" type="number" min={1} max={9} step={0.5}
+                value={v.guidanceScale ?? ''} placeholder="5.0"
+                onChange={(e) => patch({ guidanceScale: e.target.value ? Number(e.target.value) : null })} />
+            </label>
+            <label className="gen-field">
+              <span className="gen-field-label" title="动作幅度合格线：剪影 1-IoU，真实行走约 5~20，定格 <3。低于此值自动加压重跑">
+                动作合格线
+              </span>
+              <input className="input" type="number" min={1} max={30} step={1}
+                value={v.motionThreshold}
+                onChange={(e) => patch({ motionThreshold: Number(e.target.value) })} />
+            </label>
+          </div>
+          <div className="param-grid" style={{ marginTop: 4 }}>
+            <label className="gen-field" style={{ gridColumn: '1 / -1' }}>
+              <span className="gen-field-label" title="动作不达标时自动加压（每次 CFG +1.5、步数 +5）重跑的次数；0 = 不重试">
+                不达标自动重试次数：{v.retries}
+              </span>
+              <input className="input" type="range" min={0} max={5} step={1}
+                value={v.retries}
+                onChange={(e) => patch({ retries: Number(e.target.value) })} />
+            </label>
+          </div>
+        </AdvancedSection>
 
         <button className="btn btn-sm" onClick={onRun} disabled={running}
           style={{ marginTop: 8, width: '100%' }}>
