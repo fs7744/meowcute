@@ -1216,6 +1216,8 @@ video.clip-media { cursor: default; }
 .me-name { font-family: var(--mono); font-size: 13px; color: var(--green); }
 .me-tools { display: flex; gap: 4px; }
 .me-tools .btn.on { border-color: var(--green); color: var(--green); background: rgba(0, 255, 136, .1); }
+/* 「按住看原图」这类瞬时按钮也要能看出按下态 */
+.me-bar .btn.on { border-color: var(--green); color: var(--green); background: rgba(0, 255, 136, .1); }
 .me-size { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
 .me-size input[type="range"] { width: 110px; accent-color: var(--green); }
 .me-size span { font-family: var(--mono); min-width: 42px; }

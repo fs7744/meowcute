@@ -22,12 +22,15 @@ type Props = {
   onClose: () => void
 }
 
-const OVERLAY_ALPHA = 0.62
+/** 显示透明度的默认值：留 60% 让下面的图透出来——涂错位置时能一眼看见。 */
+const OVERLAY_ALPHA_DEFAULT = 0.4
+/** 下限不是 0：完全透明等于没涂，用户会以为笔刷坏了。8% 已经几乎只看得到轮廓。 */
+const OVERLAY_ALPHA_MIN = 0.08
 /** 常用蒙版色：撞色时一键换。红/绿/蓝/黄/白/黑覆盖了绝大多数画面底色。 */
 const SWATCHES = ['#ff3b6b', '#00e08a', '#2f8bff', '#ffd400', '#ffffff', '#000000']
 
 /** #rrggbb + alpha → rgba()，供 canvas 的 fillStyle/strokeStyle 直接用。 */
-function tint(hex: string, alpha = OVERLAY_ALPHA): string {
+function tint(hex: string, alpha = 1): string {
   const h = (hex || '').replace('#', '')
   const v = h.length === 3 ? h.split('').map((c) => c + c).join('') : h
   const n = Number.parseInt(v || 'ff3b6b', 16)
@@ -62,10 +65,33 @@ export default function MaskEditor({
   const [overlayHex, setOverlayHex] = useState(() => {
     try { return localStorage.getItem('pf.maskColor') || '#ff3b6b' } catch { return '#ff3b6b' }
   })
-  const overlayCss = useMemo(() => tint(overlayHex), [overlayHex])
+  /** 蒙版**显示**透明度（只影响覆盖层，不影响导出的蒙版）。
+   *
+   *  两个作用：调低能看清下面的图（判断有没有涂错位置），调高能在杂乱背景上
+   *  确认哪里涂到了。和颜色一样记在 localStorage。
+   */
+  const [overlayAlpha, setOverlayAlpha] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem('pf.maskAlpha'))
+      return Number.isFinite(v) && v >= OVERLAY_ALPHA_MIN && v <= 1
+        ? v : OVERLAY_ALPHA_DEFAULT
+    } catch { return OVERLAY_ALPHA_DEFAULT }
+  })
+  /** 按住 H 临时隐藏蒙版：用原图核对「到底涂到哪了」，松手恢复。 */
+  const [peek, setPeek] = useState(false)
+  /** 覆盖层一律用**不透明**色绘制，透明度交给 canvas 元素的 CSS opacity。
+   *
+   *  这不是实现细节：如果直接把 rgba(...,0.4) 画进画布，同一笔拖动时相邻线段
+   *  会互相叠加（0.4 → 0.64 → 0.78…），涂过两遍的地方比涂一遍深，看起来像
+   *  「有的地方没涂上」。用不透明色 + CSS opacity，叠加多少次都是同一个深度。
+   */
+  const overlaySolid = useMemo(() => tint(overlayHex, 1), [overlayHex])
   useEffect(() => {
     try { localStorage.setItem('pf.maskColor', overlayHex) } catch { /* 隐私模式忽略 */ }
   }, [overlayHex])
+  useEffect(() => {
+    try { localStorage.setItem('pf.maskAlpha', String(overlayAlpha)) } catch { /* 同上 */ }
+  }, [overlayAlpha])
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [saving, setSaving] = useState(false)
@@ -148,21 +174,21 @@ export default function MaskEditor({
       oc.save()
       oc.drawImage(base, 0, 0)
       oc.globalCompositeOperation = 'source-in'
-      oc.fillStyle = overlayCss
+      oc.fillStyle = overlaySolid
       oc.fillRect(0, 0, over.width, over.height)
       oc.restore()
     }
     for (const op of ops) {
       paint(mc, op, op.t === 'rect' ? '#fff' : (op.erase ? null : '#fff'))
-      paint(oc, op, op.t === 'rect' ? overlayCss : (op.erase ? null : overlayCss))
+      paint(oc, op, op.erase ? null : overlaySolid)
     }
-  }, [paint, overlayCss])
+  }, [paint, overlaySolid])
 
   // 换蒙版色时把已有内容重涂一遍（底图 + 操作列表都按新色重画）
   useEffect(() => {
     if (!open) return
     redraw(opsRef.current)
-  }, [overlayCss, open, redraw])
+  }, [overlaySolid, open, redraw])
 
   // ---- 打开时初始化三块画布（尺寸 = 源图像素尺寸） ----
   useEffect(() => {
@@ -277,7 +303,7 @@ export default function MaskEditor({
       if (mask && over) {
         const op = drawing.current
         paint(mask.getContext('2d')!, op, op.erase ? null : '#fff')
-        paint(over.getContext('2d')!, op, op.erase ? null : overlayCss)
+        paint(over.getContext('2d')!, op, op.erase ? null : overlaySolid)
       }
     }
     setDirty(true)
@@ -304,14 +330,14 @@ export default function MaskEditor({
       // 增量画最后一段：全量重放只在撤销时做
       const seg: Op = { t: 'brush', pts: [last, [p.x, p.y]], size: op.size, erase: op.erase }
       paint(mask.getContext('2d')!, seg, op.erase ? null : '#fff')
-      paint(over.getContext('2d')!, seg, op.erase ? null : overlayCss)
+      paint(over.getContext('2d')!, seg, op.erase ? null : overlaySolid)
     } else {
       op.x1 = p.x
       op.y1 = p.y
       const band = bandRef.current?.getContext('2d')
       if (band) {
         band.clearRect(0, 0, srcW, srcH)
-        band.fillStyle = overlayCss
+        band.fillStyle = overlaySolid
         band.fillRect(Math.min(op.x0, op.x1), Math.min(op.y0, op.y1),
           Math.abs(op.x1 - op.x0), Math.abs(op.y1 - op.y0))
       }
@@ -330,7 +356,7 @@ export default function MaskEditor({
       const mask = maskRef.current, over = overRef.current
       if (!mask || !over) return
       paint(mask.getContext('2d')!, op, op.erase ? null : '#fff')
-      paint(over.getContext('2d')!, op, overlayCss)
+      paint(over.getContext('2d')!, op, overlaySolid)
       commit(op)
       return
     }
@@ -430,6 +456,8 @@ export default function MaskEditor({
       if (e.key === 'Escape') { requestClose(); return }
       if (e.code === 'Space') { spaceRef.current = true; return }
       const k = e.key.toLowerCase()
+      // 按住 H 看原图：核对「涂到的位置对不对」时最常用，比反复调透明度快
+      if (k === 'h') { setPeek(true); return }
       if ((e.ctrlKey || e.metaKey) && k === 'z') {
         e.preventDefault()
         if (e.shiftKey) redo(); else undo()
@@ -441,12 +469,19 @@ export default function MaskEditor({
       else if (k === '[') setSize((s) => Math.max(2, Math.round(s / 1.25)))
       else if (k === ']') setSize((s) => Math.min(400, Math.round(s * 1.25)))
     }
-    const onUp = (e: KeyboardEvent) => { if (e.code === 'Space') spaceRef.current = false }
+    const onUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') spaceRef.current = false
+      if (e.key.toLowerCase() === 'h') setPeek(false)
+    }
     window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onUp)
+    // 切走窗口时 keyup 收不到：不复位就会一直「按住」状态
+    const onBlur = () => { setPeek(false); spaceRef.current = false }
+    window.addEventListener('blur', onBlur)
     return () => {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('keyup', onUp)
+      window.removeEventListener('blur', onBlur)
     }
   }, [open, undo, redo, requestClose])
 
@@ -472,6 +507,21 @@ export default function MaskEditor({
             value={size} onChange={(e) => setSize(Number(e.target.value))} />
           <span>{size}px</span>
         </label>
+        <label className="me-size"
+          title="蒙版显示透明度：调低能看清下面的图（核对有没有涂错位置），调高能在杂乱背景上确认涂到哪；不影响导出的蒙版">
+          透明度
+          <input type="range" min={Math.round(OVERLAY_ALPHA_MIN * 100)} max={100}
+            value={Math.round(overlayAlpha * 100)}
+            onChange={(e) => setOverlayAlpha(Number(e.target.value) / 100)} />
+          <span>{Math.round(overlayAlpha * 100)}%</span>
+        </label>
+        <button className={`btn btn-sm ${peek ? 'on' : 'btn-ghost'}`}
+          title="按住 H 临时隐藏蒙版，用原图核对涂到哪了（松手恢复）"
+          onPointerDown={() => setPeek(true)}
+          onPointerUp={() => setPeek(false)}
+          onPointerLeave={() => setPeek(false)}>
+          看原图
+        </button>
         <div className="me-color" title="蒙版颜色：画面本身偏红/粉时换一个，避免看不出涂到哪">
           <span>蒙版色</span>
           {SWATCHES.map((c) => (
@@ -529,8 +579,10 @@ export default function MaskEditor({
           {/* 蒙版层不显示（红色覆盖层负责显示），但必须挂进 DOM：
               没有它 maskRef.current 是 null，涂抹和载入历史蒙版都会静默失效。 */}
           <canvas ref={maskRef} className="me-canvas me-canvas-hidden" />
-          <canvas ref={overRef} className="me-canvas" style={{ width: stageSize.w, height: stageSize.h }} />
-          <canvas ref={bandRef} className="me-canvas" style={{ width: stageSize.w, height: stageSize.h }} />
+          <canvas ref={overRef} className="me-canvas"
+            style={{ width: stageSize.w, height: stageSize.h, opacity: peek ? 0 : overlayAlpha }} />
+          <canvas ref={bandRef} className="me-canvas"
+            style={{ width: stageSize.w, height: stageSize.h, opacity: peek ? 0 : overlayAlpha }} />
           {cursor ? (
             <div className="me-ring" style={{
               left: (cursor.x - size / 2) * zoom,
@@ -542,7 +594,7 @@ export default function MaskEditor({
       </div>
 
       <div className="me-tip">
-        左键涂抹（蒙版色高亮=会被重画）· 空格/中键拖动平移 · 滚轮缩放 ·
+        左键涂抹（蒙版色高亮=会被重画）· 按住 H 看原图 · 空格/中键拖动平移 · 滚轮缩放 ·
         B 笔刷 / E 橡皮 / R 矩形 · [ ] 调笔刷 · Ctrl+Z 撤销
         {dirty ? ' · 有未保存的笔迹' : ''}
       </div>
