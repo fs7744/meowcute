@@ -59,6 +59,47 @@ def auto_cols(n: int) -> int:
     return max(1, min(n, math.ceil(math.sqrt(n))))
 
 
+def frame_rects(
+    count: int,
+    *,
+    cell: int,
+    cols: int,
+    padding: int = 0,
+    margin: int = 0,
+) -> List[Dict[str, int]]:
+    """按网格布局算出每帧在图集里的矩形（与 compose_grid 同一套公式）。
+
+    为什么单独抽出来：引擎导出（Godot SpriteFrames 的 region、Unity 切片）
+    手上只有「精灵图 + 拼板参数」，没有 PIL 帧对象。要么让它自己按公式反算，
+    要么重跑一次拼板——后者等于把同一张图再算一遍，还多一个走偏的机会。
+    公式只写这一处，拼板和导出都从这里取，改布局不会出现两套不一致。
+    """
+    n = max(0, int(count))
+    if not n:
+        return []
+    cell = max(1, int(cell))
+    cols = max(1, min(int(cols) if cols and cols > 0 else auto_cols(n), n))
+    pad = max(0, int(padding))
+    mar = max(0, int(margin))
+    out: List[Dict[str, int]] = []
+    for i in range(n):
+        c, r = i % cols, i // cols
+        out.append({"i": i, "x": mar + c * (cell + pad),
+                    "y": mar + r * (cell + pad), "w": cell, "h": cell})
+    return out
+
+
+def sheet_size(count: int, *, cell: int, cols: int, padding: int = 0,
+               margin: int = 0) -> Tuple[int, int]:
+    """同一套公式算整图尺寸（导出前用它校验精灵图真的对得上参数）。"""
+    n = max(1, int(count))
+    cols = max(1, min(int(cols) if cols and cols > 0 else auto_cols(n), n))
+    rows = (n + cols - 1) // cols
+    pad, mar = max(0, int(padding)), max(0, int(margin))
+    return (cols * int(cell) + (cols - 1) * pad + mar * 2,
+            rows * int(cell) + (rows - 1) * pad + mar * 2)
+
+
 def compose_grid(
     frames: Sequence[Image.Image],
     *,
@@ -69,8 +110,8 @@ def compose_grid(
 ) -> Tuple[Image.Image, List[Dict[str, Any]]]:
     """规整帧 → 网格拼板。返回 (sheet, 帧坐标表)。
 
-    cols<=0 表示一行排完；否则按列数折行。间距只出现在**相邻单元格之间**，
-    外边距在整张图四周。
+    cols<=0 表示自动（接近正方形）；否则按列数折行。间距只出现在**相邻
+    单元格之间**，外边距在整张图四周。
     """
     if not frames:
         raise ValueError("没有可合成的帧")
@@ -78,19 +119,12 @@ def compose_grid(
     # cols<=0 = 自动（见 auto_cols）：整图接近正方形
     cols = int(cols) if cols and cols > 0 else auto_cols(n)
     cols = max(1, min(cols, n))
-    rows = (n + cols - 1) // cols
-    pad = max(0, int(padding))
-    mar = max(0, int(margin))
-    w = cols * cell + (cols - 1) * pad + mar * 2
-    h = rows * cell + (rows - 1) * pad + mar * 2
+    w, h = sheet_size(n, cell=cell, cols=cols, padding=padding, margin=margin)
     sheet = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    table: List[Dict[str, Any]] = []
+    table = frame_rects(n, cell=cell, cols=cols, padding=padding, margin=margin)
     for i, f in enumerate(frames):
-        c, r = i % cols, i // cols
-        x = mar + c * (cell + pad)
-        y = mar + r * (cell + pad)
-        sheet.alpha_composite(_place_cell(f, cell), (x, y))
-        table.append({"i": i, "x": x, "y": y, "w": cell, "h": cell})
+        t = table[i]
+        sheet.alpha_composite(_place_cell(f, cell), (t["x"], t["y"]))
     return sheet, table
 
 

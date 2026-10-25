@@ -46,7 +46,8 @@ def _lock(pid: str) -> threading.Lock:
 ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen",
                  "parts", "rigwalk", "txtvideo",
                  "threeview", "walkvideo", "sequence", "spritesheet", "play",
-                 "clipsrc", "framesplit", "spritegrid", "animpreview")
+                 "clipsrc", "framesplit", "spritegrid", "animpreview",
+                 "godot2d")
 
 # 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
 # 默认关掉等于把开关藏起来。
@@ -275,6 +276,26 @@ DEFAULT_ANIMPREVIEW = {
     "bg": "checker",
 }
 
+# Godot 导出节点（素材链第 5 步）：精灵图 → SpriteFrames(.tres) + 场景(.tscn) + zip。
+# 参数全部是「交付形态」的选择，没有一个是给模型看的。
+DEFAULT_GODOT2D = {
+    "enabled": True,
+    # Godot 里的动画名（SpriteFrames 的 animation 名，可中文）
+    "animName": "default",
+    # 文件名主干（ASCII）：tres / tscn / png 都用它
+    "name": "walk",
+    "fps": 12,
+    "loop": True,
+    # atlas=一张图集 + AtlasTexture 切格（文件少）/ files=逐帧 PNG（切片麻烦但直观）
+    "mode": "atlas",
+    # res:// 下的相对目录：导出物必须整体落在这里，.tres 里的路径才成立
+    "folder": "sprites",
+    # 节点原点对齐：脚底（像素角色默认）/ 居中 / 顶部
+    "origin": "bottom",
+    # 像素风必须最近邻，否则 GPU 一采样就糊
+    "textureFilter": "nearest",
+}
+
 
 def _now() -> float:
     return round(time.time(), 3)
@@ -414,6 +435,10 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                 n["meta"] = None
                 n["animpreview"] = {**DEFAULT_ANIMPREVIEW,
                                     **(n.get("animpreview") if isinstance(n.get("animpreview"), dict) else {})}
+            elif n["type"] == "godot2d":
+                n["meta"] = None
+                n["godot2d"] = {**DEFAULT_GODOT2D,
+                                **(n.get("godot2d") if isinstance(n.get("godot2d"), dict) else {})}
             else:
                 n.update({"images": [], "prompt": "", "negative": "", "meta": {}, "genId": None})
             n["createdAt"] = _now()
@@ -619,11 +644,20 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "result": n.get("result") if isinstance(n.get("result"), dict) else None,
                 "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
                 "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                # 索引 JSON 的地址：白名单里漏了它 → 刷新页面后「下载索引 JSON」
+                # 按钮凭空消失（文件其实还在项目目录里），用户只能重跑一次拼板。
+                "indexUrl": str(n.get("indexUrl") or "")[:400] or None,
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
         elif n["type"] == "animpreview":
             item.update({
                 "animpreview": _clean_animpreview(n.get("animpreview")),
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "godot2d":
+            item.update({
+                "godot2d": _clean_godot2d(n.get("godot2d")),
                 "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
@@ -1145,6 +1179,40 @@ def _clean_animpreview(a: Any) -> Dict[str, Any]:
     }
 
 
+def _clean_godot2d(g: Any) -> Dict[str, Any]:
+    """Godot 导出参数：交付形态（模式 / 目录 / 原点 / 过滤）+ 动画名与文件名。
+
+    文件名主干只留 ASCII：Godot 的 res:// 路径在 Windows/macOS/Linux 之间要
+    通用，中文文件名在某些导出/打包链路上会翻车；动画名仍然可以中文（那是
+    资源里的字符串，不是路径）。
+    """
+    g = g if isinstance(g, dict) else {}
+    mode = "files" if str(g.get("mode") or "") == "files" else "atlas"
+    origin = str(g.get("origin") or "bottom")[:8]
+    if origin not in ("bottom", "center", "top"):
+        origin = "bottom"
+    filt = "linear" if str(g.get("textureFilter") or "") == "linear" else "nearest"
+    stem = "".join(c for c in str(g.get("name") or "walk").lower()
+                   if c.isalnum() or c in "-_")[:40].strip("-_") or "walk"
+    # 目录：允许 a/b 分层，逐段只留安全字符（与 pipelines/godot2d.safe_folder 同口径）
+    segs = []
+    for seg in str(g.get("folder") or "sprites").replace("\\", "/").split("/"):
+        clean = "".join(c for c in seg.lower() if c.isalnum() or c in "-_").strip("-_")
+        if clean and clean not in (".", ".."):
+            segs.append(clean[:40])
+    return {
+        "enabled": bool(g.get("enabled", True)),
+        "animName": str(g.get("animName") or "default")[:64],
+        "name": stem,
+        "fps": _cl(g.get("fps"), 12.0, 0.5, 60.0),
+        "loop": bool(g.get("loop", True)),
+        "mode": mode,
+        "folder": "/".join(segs[:4]) or "sprites",
+        "origin": origin,
+        "textureFilter": filt,
+    }
+
+
 def _clean_pixel(p: Any) -> Dict[str, Any]:
     p = p if isinstance(p, dict) else {}
 
@@ -1211,11 +1279,16 @@ def delete_project(pid: str) -> bool:
     d = project_dir(pid)
     if not d.is_dir():
         return False
-    try:
-        shutil.rmtree(d)
-        return True
-    except Exception:
-        return False
+    # Windows 上刚被读过的文件（浏览器在下载导出 zip、杀毒在扫新写的 png）
+    # 句柄还没释放，rmtree 会抛 PermissionError。重试几次比直接失败好：
+    # 失败会往上冒成 404「项目不存在」，而项目明明还在磁盘上。
+    for attempt in range(3):
+        try:
+            shutil.rmtree(d)
+            return True
+        except Exception:
+            time.sleep(0.15 * (attempt + 1))
+    return not d.exists()
 
 
 def rename_project(pid: str, name: str) -> Optional[Dict[str, Any]]:

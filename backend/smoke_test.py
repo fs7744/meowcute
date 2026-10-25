@@ -164,12 +164,17 @@ def _run_checks(client) -> int:
     check("有视频转素材模板", cs is not None)
     if cs:
         ctypes = [n["type"] for n in cs["graph"]["nodes"]]
-        check("视频转素材链 = 选视频 → 拆解帧 → 精灵图 → 动画预览",
+        check("视频转素材链 = 选视频 → 拆解帧 → 精灵图 → 动画预览 → Godot 导出",
               ctypes == ["clipsrc", "framesplit", "spritegrid",
-                         "animpreview", "result"], str(ctypes))
+                         "animpreview", "godot2d"], str(ctypes))
         check("视频转素材模板不跑模型（没有生成/视角/视频节点）",
               not any(t in ctypes for t in
                       ("generate", "viewgen", "walkvideo", "txtvideo")), str(ctypes))
+        # 结果卡必须挂在一个真会写它的节点下游才不是死卡：这条链的产出是
+        # 精灵图（spritegrid 节点自己展示）+ 播放器 + 导出包，摆一张空结果卡
+        # 只会让人以为「漏了一步」。所以链末必须是 godot2d，不能是 result。
+        check("视频转素材链末是 Godot 导出（不留空结果卡）",
+              ctypes[-1] == "godot2d" and "result" not in ctypes, str(ctypes))
     r = client.get("/api/styles")
     st = r.json().get("styles", [])
     check("画风 15 个", len(st) == 15, str(len(st)))
@@ -1925,9 +1930,9 @@ def _run_checks(client) -> int:
                     json={"name": "视频转素材", "templateId": "clip_to_sprite"})
     cpid = r.json()["project"]["id"]
     check("视频转素材模板建项目", r.status_code == 200 and bool(cpid))
-    check("节点链 = 选视频 → 拆解帧 → 精灵图 → 动画预览",
+    check("节点链 = 选视频 → 拆解帧 → 精灵图 → 动画预览 → Godot 导出",
           [n["type"] for n in r.json()["project"]["nodes"]]
-          == ["clipsrc", "framesplit", "spritegrid", "animpreview", "result"],
+          == ["clipsrc", "framesplit", "spritegrid", "animpreview", "godot2d"],
           str([n["type"] for n in r.json()["project"]["nodes"]]))
 
     _src = []
@@ -2006,9 +2011,117 @@ def _run_checks(client) -> int:
         "projectId": cpid, "files": ["nope-1.png", "nope-2.png"]})
     check("帧全读不出来时明确 400", r.status_code == 400)
 
+    # Godot 导出：tres / tscn / zip 三件套 + 路径自洽
+    _sheet_file = _g["sheet"]["file"]
+    _payload = {
+        "projectId": cpid, "sheetFile": _sheet_file, "cell": 64, "cols": 3,
+        "count": 6, "padding": 2, "margin": 4, "fps": 12,
+        "animName": "行走", "name": "Walk Cycle", "loop": True,
+        "mode": "atlas", "folder": "res://Assets/Sprites", "origin": "bottom",
+        "textureFilter": "nearest",
+    }
+    r = client.post("/api/godot2d", json=_payload)
+    _gd = r.json()
+    check("Godot 导出成功", r.status_code == 200 and _gd.get("ok"), str(_gd)[:200])
+    check("文件名主干转 ASCII + 目录转小写",
+          (_gd["stem"], _gd["folder"]) == ("walkcycle", "assets/sprites"),
+          f'{_gd.get("stem")} / {_gd.get("folder")}')
+    check("导出物 = 图集 + tres + tscn + README + zip",
+          sorted([f["name"] for f in _gd["files"]])
+          == ["README.txt", "walkcycle.png", "walkcycle.tres", "walkcycle.tscn"]
+          and _gd["zip"]["name"].endswith(".zip"),
+          str([f["name"] for f in _gd["files"]]))
+
+    _tres = client.get(next(f["url"] for f in _gd["files"]
+                            if f["name"].endswith(".tres"))).text
+    check("SpriteFrames 头正确（format=3 + load_steps = 帧数 + 2）",
+          'type="SpriteFrames" load_steps=8 format=3' in _tres,
+          _tres.splitlines()[0] if _tres else "空")
+    check("tres 的 res:// 路径与导出目录一致",
+          'path="res://assets/sprites/walkcycle.png"' in _tres)
+    check("每帧一个 AtlasTexture + region 落在网格上",
+          _tres.count('sub_resource type="AtlasTexture"') == 6
+          and "region = Rect2(4, 4, 64, 64)" in _tres
+          and "region = Rect2(70, 4, 64, 64)" in _tres
+          and "region = Rect2(136, 70, 64, 64)" in _tres,
+          str(_tres.count('AtlasTexture"')))
+    check("动画名原样写进资源（可中文）+ 帧率 + 循环",
+          '"name": &"行走"' in _tres and '"speed": 12.0' in _tres
+          and '"loop": true' in _tres)
+
+    _tscn = client.get(next(f["url"] for f in _gd["files"]
+                            if f["name"].endswith(".tscn"))).text
+    check("场景是 AnimatedSprite2D + 指向 SpriteFrames + 自动播放",
+          'type="AnimatedSprite2D"' in _tscn
+          and 'path="res://assets/sprites/walkcycle.tres"' in _tscn
+          and 'autoplay = "行走"' in _tscn, _tscn[:120])
+    check("像素风最近邻 + 脚底对齐原点（offset y = -32）",
+          "texture_filter = 1" in _tscn and "offset = Vector2(0, -32)" in _tscn,
+          _tscn)
+    check("导出包自检通过（路径命中 + 帧数一致）",
+          _gd["meta"]["checks"]["pathsMatch"] is True
+          and _gd["meta"]["checks"]["framesMatch"] is True
+          and not _gd["meta"]["warnings"], str(_gd["meta"].get("checks")))
+
+    _zr = client.get(_gd["zip"]["url"])
+    check("zip 可下载且是 application/zip",
+          _zr.status_code == 200
+          and _zr.headers.get("content-type", "").startswith("application/zip"))
+    import io as _io
+    import zipfile as _zip
+    with _zip.ZipFile(_io.BytesIO(_zr.content)) as _z:
+        _names = _z.namelist()
+    check("zip 条目带目标目录前缀（解到工程根目录后 res:// 路径才成立）",
+          "assets/sprites/walkcycle.tres" in _names
+          and "assets/sprites/walkcycle.tscn" in _names
+          and "assets/sprites/walkcycle.png" in _names, str(_names))
+
+    r = client.post("/api/godot2d", json={**_payload, "mode": "files",
+                                          "folder": "gfx/hero", "name": "run8"})
+    _gf = r.json()
+    check("逐帧模式：每帧一个 PNG + 引用逐帧文件",
+          r.status_code == 200
+          and any(f["name"] == "README.txt" for f in _gf["files"])
+          and _gf["resPaths"]["png"].endswith("/frames/frame_000.png"),
+          str(_gf.get("resPaths")))
+    _ftres = client.get(next(f["url"] for f in _gf["files"]
+                             if f["name"].endswith(".tres"))).text
+    check("逐帧模式的 tres 引用 6 个独立 PNG",
+          _ftres.count("[ext_resource") == 6
+          and 'path="res://gfx/hero/frames/frame_005.png"' in _ftres,
+          str(_ftres.count("[ext_resource")))
+
+    r = client.post("/api/godot2d", json={**_payload, "cell": 128})
+    check("图集尺寸与参数不符时明确 400（不导出错位的包）",
+          r.status_code == 400 and "尺寸" in r.text, r.text[:160])
+    r = client.post("/api/godot2d", json={**_payload, "sheetFile": "nope.png"})
+    check("精灵图不存在时明确 400", r.status_code == 400)
+    check("导出目录挡目录穿越",
+          client.get(f"/api/projects/{cpid}/export/%2e%2e%2fproject.json")
+          .status_code == 404)
+    check("导出文件按文本提供 tres/tscn（浏览器能直接看）",
+          client.get(next(f["url"] for f in _gd["files"]
+                          if f["name"].endswith(".tscn")))
+          .headers.get("content-type", "").startswith("text/plain"))
+
+    _gsaved = client.put(f"/api/projects/{cpid}", json={
+        "nodes": [{"id": "gd1", "type": "godot2d", "x": 0, "y": 0,
+                   "godot2d": {**_gd["meta"], "animName": "行走", "name": "Walk Cycle",
+                               "folder": "Assets/Sprites"}}],
+        "edges": []}).json()["project"]["nodes"][0]["godot2d"]
+    check("godot2d 参数存盘往返（目录/文件名统一清洗）",
+          _gsaved["folder"] == "assets/sprites" and _gsaved["name"] == "walkcycle"
+          and _gsaved["animName"] == "行走", str(_gsaved))
+    _ig = client.put(f"/api/projects/{cpid}", json={
+        "nodes": [{"id": "s1", "type": "spritegrid", "x": 0, "y": 0,
+                   "spritegrid": {}, "indexUrl": "/api/projects/x/images/a.json"}],
+        "edges": []}).json()["project"]["nodes"][0]
+    check("精灵图节点的 indexUrl 存盘往返（刷新后下载按钮还在）",
+          _ig.get("indexUrl") == "/api/projects/x/images/a.json", str(_ig)[:160])
+
     print("== 删除项目 ==")
     r = client.delete(f"/api/projects/{pid}")
-    check("删除项目", r.status_code == 200)
+    check("删除项目", r.status_code == 200, f"{r.status_code} {r.text[:200]}")
     r = client.get(f"/api/projects/{pid}")
     check("删除后 404", r.status_code == 404)
 

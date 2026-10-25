@@ -20,7 +20,7 @@ _PATH = DATA_DIR / "custom_templates.json"
 _ALLOWED = ("generate", "result", "input", "refine", "matte", "viewgen",
             "threeview", "walkvideo", "sequence", "spritesheet", "play",
             "txtvideo", "parts", "rigwalk",
-            "clipsrc", "framesplit", "spritegrid", "animpreview")
+            "clipsrc", "framesplit", "spritegrid", "animpreview", "godot2d")
 _ICON_COLORS = ["#FFB020", "#40E0D0", "#FF6B9D", "#8B7BFF", "#5B9DFF"]
 
 
@@ -123,12 +123,14 @@ def _clean_node(n: Any) -> Optional[Dict[str, Any]]:
             "rigwalk": n.get("rigwalk") if isinstance(n.get("rigwalk"), dict) else {},
             "result": None,
         })
-    elif n["type"] in ("clipsrc", "framesplit", "spritegrid", "animpreview"):
-        # 这四个节点自己带一个同名字段存参数；拆帧产物（frames）跨项目无效，
-        # 模板里只保留参数与结构。
+    elif n["type"] in ("clipsrc", "framesplit", "spritegrid", "animpreview",
+                       "godot2d"):
+        # 这几个节点自己带一个同名字段存参数；拆帧产物（frames）与导出包
+        # 跨项目无效，模板里只保留参数与结构。
         item.update({
             n["type"]: n.get(n["type"]) if isinstance(n.get(n["type"]), dict) else {},
             "result": None,
+            "meta": None,
         })
     else:
         item.update({"images": [], "prompt": "", "negative": "", "meta": {}, "genId": None})
@@ -188,7 +190,10 @@ def _public(t: Dict[str, Any]) -> Dict[str, Any]:
               "matte": "扣除背景", "result": "图片结果",
               "viewgen": "生成视角", "threeview": "四视图拼板",
               "walkvideo": "行走视频", "sequence": "序列帧",
-              "spritesheet": "精灵整图", "play": "可操控预览"}
+              "spritesheet": "精灵整图", "play": "可操控预览",
+              "clipsrc": "选择视频", "framesplit": "拆解帧",
+              "spritegrid": "精灵图", "animpreview": "动画预览",
+              "godot2d": "Godot 导出"}
     for i, n in enumerate(nodes):
         steps.append({"n": i + 1, "title": labels.get(n.get("type"), n.get("type")),
                       "detail": "画布节点，占位坐标见 graph"})

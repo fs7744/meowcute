@@ -59,6 +59,30 @@ def assets_dir(pid: str, kind: str = "images") -> Path:
     return d
 
 
+def exports_dir(pid: str) -> Path:
+    """引擎导出包目录（exports/）。
+
+    不进 ALLOWED_KINDS：那一套按扩展名白名单只放 png/json/视频，而导出包里
+    有 tres / tscn / zip / txt——混进去会让「按资产类型取图」的通用路由
+    多出一堆它不认识的扩展名。导出包走自己的路由（见 export_path）。
+    """
+    d = project_dir(pid) / "exports"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def export_path(pid: str, rel: str) -> Optional[Path]:
+    """解析导出包内的相对路径（挡目录穿越）。rel 形如 walk/walk.tres。"""
+    raw = str(rel or "").replace("\\", "/").strip("/")
+    if not raw or ".." in raw.split("/") or ":" in raw:
+        return None
+    root = exports_dir(pid).resolve()
+    p = (root / raw).resolve()
+    if p != root and root not in p.parents:
+        return None
+    return p if p.is_file() else None
+
+
 def new_asset_id(prefix: str = "a") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
@@ -399,6 +423,8 @@ _README = """\
   images/        产出。模型生成的原图（out-*.png）、像素精修后的成品
                  （px-*.png）、扣掉背景的素材（bg-*.png）。
                  同名不同序号对应同一次生成的多张。
+  exports/       引擎导出包（Godot 的 .tres / .tscn / zip）。可整目录删除，
+                 不影响画布——回节点上重新导出即可。
 
 文件名里的时间戳就是生成时刻，例如 out-20261020-210533-2-a1b2.png
 表示 2026-10-20 21:05:33 那次生成的第二张原图。

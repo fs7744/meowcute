@@ -411,6 +411,35 @@ pixelArt?: boolean
       meta: import('./types').SpriteGridMeta
     }>),
 
+  /** 精灵图 → Godot 4 工程包（.tres + .tscn + zip，同步）。 */
+  godotExport: (payload: {
+    projectId: string
+    sheetFile: string
+    cell?: number
+    cols?: number
+    count?: number
+    padding?: number
+    margin?: number
+    fps?: number
+    animName?: string
+    name?: string
+    loop?: boolean
+    mode?: 'atlas' | 'files'
+    folder?: string
+    origin?: 'bottom' | 'center' | 'top'
+    textureFilter?: 'nearest' | 'linear'
+  }) =>
+    fetch('/api/godot2d', jsonInit(payload)).then(j<{
+      ok: boolean
+      stem: string
+      folder: string
+      mode: string
+      files: import('./types').Godot2DFile[]
+      zip: import('./types').Godot2DFile
+      resPaths: { png: string; tres: string; scene: string }
+      meta: import('./types').Godot2DMeta
+    }>),
+
   /** 八方向 · 序列帧：每方向视频 → 抽帧/去重/抠图（任务制）。 */
   sequence: (payload: {
     projectId: string

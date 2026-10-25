@@ -437,7 +437,7 @@ TEMPLATES: List[Dict[str, Any]] = [
     {
         "id": "clip_to_sprite",
         "name": "视频转素材 · 序列帧精灵图",
-        "tagline": "视频 / GIF → 拆帧挑帧 → 精灵图 → 动画预览",
+        "tagline": "视频 / GIF → 拆帧挑帧 → 精灵图 → 动画预览 → Godot 4 工程包",
         "status": "available",
         "accent": "#5AD2A0",
         "icon": "sprite",
@@ -447,7 +447,8 @@ TEMPLATES: List[Dict[str, Any]] = [
             "「选择视频」把片段导进来（可先播一遍确认）→「拆解帧」把它拆成一摞帧，"
             "你可以用「跳帧步长」和「近似度过滤」两把筛子快速去重，再逐张勾选真正"
             "想要的那几帧 →「精灵图」把选中的帧按网格拼成一张（附带引擎索引 JSON）"
-            "→「动画预览」按你设的帧率循环播放，看动作顺不顺。"
+            "→「动画预览」按你设的帧率循环播放，看动作顺不顺 →「Godot 导出」"
+            "把精灵图变成能直接双击运行的 AnimatedSprite2D 场景（.tres + .tscn + zip）。"
             "为什么不让程序自动抽 8 帧就完事：动作素材的取舍是审美决定——哪几个"
             "姿势构成一个完整循环，只有你自己看得到。所以这里的筛子是「帮你把 200 帧"
             "压到 20 帧」，最后一刀留给你。"
@@ -461,7 +462,7 @@ TEMPLATES: List[Dict[str, Any]] = [
             "抠图可选：默认 u2net 去背景，直接得到透明底素材",
             "共享缩放：抬腿的帧不会被放大，整段循环里角色尺寸恒定",
             "索引 JSON 双格式：自带帧坐标表 + Phaser 3 (JSON Array) 兼容段",
-            "帧间距 / 外边距分开设：要给 Unity 自动切片就留 2px 透明间隔",
+            "Godot 4 一键出包：SpriteFrames(.tres) + AnimatedSprite2D 场景(.tscn)",
             "动画预览可调帧率与倍率，逐帧步进看接缝",
         ],
         "inputs": [
@@ -473,16 +474,20 @@ TEMPLATES: List[Dict[str, Any]] = [
              "hint": "单元格边长 / 每行列数 / 帧间距 / 外边距 / 锚点 / 共享缩放"},
             {"key": "animpreview", "label": "动画预览", "required": False,
              "hint": "播放帧率 / 显示倍率 / 循环 / 底色"},
+            {"key": "godot2d", "label": "Godot 导出", "required": False,
+             "hint": "动画名 / 文件名 / 图集或逐帧 / res:// 目录 / 原点 / 纹理过滤"},
         ],
         "steps": [
             {"n": 1, "title": "选择视频", "detail": "导入视频或 GIF，先点播放确认片段对不对"},
             {"n": 2, "title": "拆解帧", "detail": "拆成帧后按相似度与跳帧步长筛，再逐张勾选"},
             {"n": 3, "title": "精灵图", "detail": "选中帧按网格拼图 + 导出引擎索引 JSON"},
             {"n": 4, "title": "动画预览", "detail": "按设定帧率循环播放，逐帧检查接缝"},
+            {"n": 5, "title": "Godot 导出", "detail": "生成 SpriteFrames + AnimatedSprite2D 场景，打包成 zip"},
         ],
         "outputs": [
             {"label": "精灵图 PNG", "detail": "透明底、网格对齐，直接进引擎"},
-            {"label": "索引 JSON", "detail": "帧坐标 + pivot，Phaser / Unity / Godot 都能吃"},
+            {"label": "Godot 4 工程包", "detail": ".tres + .tscn + zip：解到工程根目录，双击场景就能播"},
+            {"label": "索引 JSON", "detail": "帧坐标 + pivot，Phaser / Unity 都能吃"},
             {"label": "透明底序列帧", "detail": "每一帧单独成文件，不想用图集时可以直接用"},
             {"label": "动画预览", "detail": "画布上直接循环播放，验证循环是否闭合"},
         ],
@@ -495,13 +500,16 @@ TEMPLATES: List[Dict[str, Any]] = [
             "maxSeqLen": None,
         },
         "notes": [
-            "画布是一条直线：选择视频 → 拆解帧 → 精灵图 → 动画预览。",
-            "拆帧是任务制的（抠图较重），带进度与取消；精灵图是同步的，点完立刻出。",
+            "画布是一条直线：选择视频 → 拆解帧 → 精灵图 → 动画预览 → Godot 导出。",
+            "拆帧是任务制的（抠图较重），带进度与取消；精灵图与 Godot 导出是同步的，点完立刻出。",
             "近似度阈值默认 0（不过滤）。拆完之后节点会给出「本段素材的帧间差异中位数」，照着它调最省事。",
             "循环动画记得首尾不要选重复姿势：末帧和首帧太像，播起来会卡一下。",
-            "要做多方向行走素材，仍可用菜单里的「行走视频 / 序列帧 / 精灵整图」节点自己搭。",
+            "Godot 导出默认文件落在 res://sprites/ —— 解压时把这个文件夹放到工程根目录，"
+            "节点上会显示确切的 res:// 路径，路径对不上 Godot 会报资源缺失。",
+            "这条链刻意不放「图片结果」卡：精灵图和动画预览本身就是看得见的产出，"
+            "多摆一张空卡只会让人以为漏了东西。",
         ],
-        # 内置节点图：选择视频 → 拆解帧 → 精灵图 → 动画预览。
+        # 内置节点图：选择视频 → 拆解帧 → 精灵图 → 动画预览 → Godot 导出。
         # 入口刻意是「选择视频」而不是「选择图片」：这条链面对的是已经拍好/
         # 生成好的视频，不涉及任何模型推理。
         "graph": {
@@ -523,14 +531,17 @@ TEMPLATES: List[Dict[str, Any]] = [
                 {"id": "ap1", "type": "animpreview", "x": 1720, "y": 240,
                  "animpreview": {"enabled": True, "fps": 12, "zoom": 4,
                                  "loop": True, "bg": "checker"}},
-                {"id": "rs1", "type": "result", "x": 2220, "y": 240,
-                 "images": [], "prompt": "", "negative": "", "meta": {}},
+                {"id": "gd1", "type": "godot2d", "x": 2180, "y": 240,
+                 "godot2d": {"enabled": True, "animName": "default",
+                             "name": "walk", "fps": 12, "loop": True,
+                             "mode": "atlas", "folder": "sprites",
+                             "origin": "bottom", "textureFilter": "nearest"}},
             ],
             "edges": [
                 {"from": "in1", "to": "fs1"},
                 {"from": "fs1", "to": "sg1"},
                 {"from": "sg1", "to": "ap1"},
-                {"from": "ap1", "to": "rs1"},
+                {"from": "ap1", "to": "gd1"},
             ],
         },
     },

@@ -18,6 +18,8 @@
 - /api/spritesheet                               八方向行走：序列帧 → 每方向精灵表 + 总览（任务制）
 - /api/clipsplit                                 视频转素材：视频/GIF → 拆帧 + 指纹 + 抠图（任务制）
 - /api/spritegrid                                视频转素材：选中帧 → 网格精灵图 + 索引 JSON（同步）
+- /api/godot2d                                   精灵图 → Godot 4 工程包（tres/tscn/zip，同步）
+- /api/projects/{pid}/export/{path}               导出包文件下载（tres / tscn / zip / 逐帧 PNG）
 
 生成是「任务制」：POST /api/generate 立即返回 taskId，前端订阅 SSE 看进度，
 完成事件里带结果（同时留档 10 分钟供 /api/tasks/{id} 兜底查询）。
@@ -57,6 +59,7 @@ from .pipelines import refine as refine_mod
 from .pipelines import sequence as sequence_mod
 from .pipelines import clipframes as clipframes_mod
 from .pipelines import spritegrid as spritegrid_mod
+from .pipelines import godot2d as godot2d_mod
 from .pipelines import parts as parts_mod
 from .pipelines import rigwalk as rigwalk_mod
 from .pipelines import spritesheet as spritesheet_mod
@@ -544,6 +547,32 @@ async def reveal_project_folder(pid: str) -> Dict[str, Any]:
     if not ok:
         return {"ok": False, "root": info["root"], "message": "无法打开文件管理器，路径已复制到界面"}
     return {"ok": True, "root": info["root"], "message": "已在文件管理器中打开"}
+
+
+@app.get("/api/projects/{pid}/export/{path:path}")
+async def project_export_file(pid: str, path: str):
+    """导出包里的任意文件（.tres / .tscn / .zip / README / 逐帧 PNG）。
+
+    单独一条路由而不是复用下面的 /{kind}/{filename}：那条按扩展名白名单只放
+    png / json / 视频，Godot 的资源文件（tres / tscn）和 zip 都不在里面。
+    必须声明在通用路由**之前**——`export/walk.tres` 也能匹配 `{kind}/{filename}`，
+    先声明的先命中。
+    """
+    p = storage.export_path(pid, path)
+    if p is None:
+        raise HTTPException(404, "导出文件不存在")
+    low = p.name.lower()
+    if low.endswith(".zip"):
+        media, as_attachment = "application/zip", True
+    elif low.endswith(".txt"):
+        media, as_attachment = "text/plain; charset=utf-8", True
+    elif low.endswith(".png"):
+        media, as_attachment = "image/png", False
+    else:                       # .tres / .tscn：让浏览器直接显示文本
+        media, as_attachment = "text/plain; charset=utf-8", False
+    return FileResponse(str(p), media_type=media,
+                        filename=p.name if as_attachment else None,
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/projects/{pid}/{kind}/{filename}")
@@ -2375,6 +2404,64 @@ async def sprite_grid(payload: SpriteGridPayload) -> Dict[str, Any]:
         "indexFile": idx_path.name,
         "meta": {**meta, "missing": missing},
     }
+
+
+# --------------------------------------------------------------------------- #
+# 精灵图 → Godot 4 · 2D 序列动画包
+# --------------------------------------------------------------------------- #
+class GodotExportPayload(BaseModel):
+    projectId: str
+    # 精灵图在项目里的文件名（images/<sheetFile>）；参数由前端从精灵图节点带过来
+    sheetFile: str
+    cell: int = 128
+    cols: int = 0
+    count: int = 0
+    padding: int = 0
+    margin: int = 0
+    fps: float = 12.0
+    animName: str = "default"
+    name: str = "walk"
+    loop: bool = True
+    mode: str = "atlas"          # atlas（一张图集 + AtlasTexture）/ files（逐帧 PNG）
+    folder: str = "sprites"      # res:// 下的相对目录
+    origin: str = "bottom"       # bottom | center | top：节点原点对齐哪里
+    textureFilter: str = "nearest"
+
+
+@app.post("/api/godot2d")
+async def godot2d_export(payload: GodotExportPayload) -> Dict[str, Any]:
+    """精灵图 → Godot 4 工程包（.tres + .tscn + zip）。
+
+    同步而不是任务制：只做文本生成 + 一次切图 + 打包，几十毫秒。走任务制
+    反而让用户等一次轮询——「点完就拿到下载链接」才是这个节点的意义。
+    """
+    if projects_mod.load_project(payload.projectId) is None:
+        raise HTTPException(404, "项目不存在")
+    sheet_path = storage.asset_path(payload.projectId, "images", payload.sheetFile)
+    if sheet_path is None:
+        raise HTTPException(400, "找不到精灵图文件：先跑一遍「精灵图」节点")
+    try:
+        return await asyncio.to_thread(
+            godot2d_mod.run_export,
+            storage.project_dir(payload.projectId),
+            sheet_path=sheet_path,
+            url_base=f"/api/projects/{payload.projectId}/export",
+            cell=_clamp(payload.cell, 8, 512, 128),
+            cols=_clamp(payload.cols, 0, 64, 0),
+            count=_clamp(payload.count, 0, 400, 0),
+            padding=_clamp(payload.padding, 0, 32, 0),
+            margin=_clamp(payload.margin, 0, 64, 0),
+            fps=max(0.1, min(float(payload.fps), 60.0)),
+            anim_name=(payload.animName or "default")[:64],
+            stem=payload.name or "walk",
+            loop=bool(payload.loop),
+            mode=payload.mode,
+            folder=payload.folder,
+            origin=payload.origin,
+            texture_filter=payload.textureFilter,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # --------------------------------------------------------------------------- #

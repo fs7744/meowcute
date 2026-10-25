@@ -6,6 +6,7 @@ import AnimPreviewNode from '../components/AnimPreviewNode'
 import ClipSrcNode from '../components/ClipSrcNode'
 import FramesplitNode from '../components/FramesplitNode'
 import SpriteGridNode from '../components/SpriteGridNode'
+import GodotExportNode from '../components/GodotExportNode'
 import GenNode from '../components/GenNode'
 import InputNode from '../components/InputNode'
 import MatteNode from '../components/MatteNode'
@@ -28,6 +29,7 @@ import type {
   BackgroundOption, CanvasNode, ClipSrcNode as ClipSrcNodeType, GenerateResult,
   FrameSplitNode as FrameSplitNodeType, FrameSplitMeta,
   GenNode as GenNodeType,
+  Godot2DNode as Godot2DNodeType, Godot2DMeta,
   InputNode as InputNodeType, MatteNode as MatteNodeType, PlayNode as PlayNodeType,
   Project, PromptExample, PromptLimits, PromptPreview, RefineNode as RefineNodeType,
   ResultImage,
@@ -65,13 +67,14 @@ const CLIPSRC_W = 360
 const FRAMESPLIT_W = 460
 const SPRITEGRID_W = 420
 const ANIMPREVIEW_W = 340
+const GODOT_W = 380
 const NODE_W: Record<string, number> = {
   generate: GEN_W, result: RES_W, input: INPUT_W, refine: REFINE_W, matte: MATTE_W,
   viewgen: VIEWGEN_W, threeview: THREEVIEW_W, walkvideo: WALKVIDEO_W,
   sequence: SEQUENCE_W, spritesheet: SPRITESHEET_W, play: PLAY_W,
   txtvideo: TXTVIDEO_W,
   clipsrc: CLIPSRC_W, framesplit: FRAMESPLIT_W, spritegrid: SPRITEGRID_W,
-  animpreview: ANIMPREVIEW_W,
+  animpreview: ANIMPREVIEW_W, godot2d: GODOT_W,
 }
 
 /** 哪些类型的节点可以作为某个节点的上游（决定自定义工作流是否合法）。 */
@@ -91,6 +94,10 @@ const UPSTREAM_RULES: Record<string, string[]> = {
   sequence: ['walkvideo'],
   spritesheet: ['sequence'],
   play: ['spritesheet'],
+  // Godot 导出读的是精灵图节点的产出；动画预览只是播放器、不产图，但画布上
+  // 常把它排在精灵图和导出之间（模板就是这条直线），所以两种上游都放行——
+  // 解析时会穿过播放器找到最近的精灵图
+  godot2d: ['spritegrid', 'animpreview'],
   result: ['generate', 'refine', 'matte', 'viewgen', 'threeview',
            'walkvideo', 'sequence', 'spritesheet', 'play', 'txtvideo',
            'parts', 'rigwalk'],
@@ -107,6 +114,7 @@ const UPSTREAM_HINT: Record<string, string> = {
   sequence: '行走视频',
   spritesheet: '序列帧',
   play: '精灵整图',
+  godot2d: '精灵图（可隔着「动画预览」）',
   result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 四视图拼板 / 行走链',
 }
 
@@ -119,7 +127,8 @@ function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): b
 /** 只能接收单条入边的类型：新连线替换旧入边，避免多源歧义。
  *  四视图拼板不在列：它要收正/侧/背/右四路。 */
 const SINGLE_INPUT = new Set(['refine', 'matte', 'result', 'viewgen',
-                              'walkvideo', 'sequence', 'spritesheet', 'play'])
+                              'walkvideo', 'sequence', 'spritesheet', 'play',
+                              'godot2d'])
 
 /** 右键「添加节点」的目录：分类 → 具体节点。
  *  节点类型只会越来越多，平铺成一条长列表很快就用不了了。 */
@@ -183,6 +192,8 @@ const NODE_CATALOG: {
         hint: '选中帧按网格拼图，导出帧索引 JSON（Phaser / Unity / Godot）' },
       { type: 'animpreview', label: '动画预览', dot: 'd-play',
         hint: '按设定帧率循环播放，可逐帧步进检查接缝' },
+      { type: 'godot2d', label: 'Godot 导出', dot: 'd-godot',
+        hint: 'SpriteFrames(.tres) + AnimatedSprite2D 场景(.tscn)，解压即用' },
     ],
   },
   {
@@ -224,7 +235,7 @@ const NODE_LABEL: Record<string, string> = {
   spritesheet: '精灵整图', play: '可操控预览',
   txtvideo: '文本生视频', parts: '拆件', rigwalk: '骨骼行走',
   clipsrc: '选择视频', framesplit: '拆解帧', spritegrid: '精灵图',
-  animpreview: '动画预览',
+  animpreview: '动画预览', godot2d: 'Godot 导出',
 }
 const nodeLabel = (t: string) => NODE_LABEL[t] || t
 
@@ -654,6 +665,7 @@ export default function Canvas({ projectId, onBack }: Props) {
     else if (type === 'framesplit') addFrameSplitNode(at)
     else if (type === 'spritegrid') addSpriteGridNode(at)
     else if (type === 'animpreview') addAnimPreviewNode(at)
+    else if (type === 'godot2d') addGodotNode(at)
     else addEmptyResultNode(at)
   }
 
@@ -846,6 +858,24 @@ export default function Canvas({ projectId, onBack }: Props) {
     const node: AnimPreviewNodeType = {
       id: newId('ap'), type: 'animpreview', x: spot.x, y: spot.y,
       animpreview: { enabled: true, fps: 12, zoom: 4, loop: true, bg: 'checker' },
+      meta: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addGodotNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(GODOT_W, 420)
+    const node: Godot2DNodeType = {
+      id: newId('gd'), type: 'godot2d', x: spot.x, y: spot.y,
+      godot2d: {
+        enabled: true, animName: 'default', name: 'walk', fps: 12, loop: true,
+        mode: 'atlas', folder: 'sprites', origin: 'bottom',
+        textureFilter: 'nearest',
+      },
       meta: null, createdAt: Date.now() / 1000,
     }
     setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
@@ -1840,6 +1870,87 @@ export default function Canvas({ projectId, onBack }: Props) {
         sheetUrl: sheet.url,
         indexUrl,
       } as any)
+    } catch (e: any) {
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
+  }
+
+  // ---- 素材链第 5 步：精灵图 → Godot 4 工程包（纯文本生成，同步） ----
+  /** 沿入边向上找最近的「精灵图」节点。
+   *  中间隔着「动画预览」（纯前端播放器、不产图）时要能穿过去：模板就是
+   *  选择视频 → 拆解帧 → 精灵图 → 动画预览 → Godot 导出 这条直线。 */
+  const upstreamGrid = (nodeId: string) => {
+    const p = projectRef.current
+    if (!p) return null
+    const seen = new Set<string>([nodeId])
+    let cur = nodeId
+    for (let depth = 0; depth < 6; depth++) {
+      const e = p.edges.find((x) => x.to === cur)
+      if (!e || seen.has(e.from)) return null
+      seen.add(e.from)
+      const n = p.nodes.find((x) => x.id === e.from)
+      if (!n) return null
+      if (n.type === 'spritegrid') {
+        const g = n as SpriteGridNodeType
+        const sheet = g.result ?? (g.images ?? [])[0] ?? null
+        const meta = g.meta
+        if (!sheet || !meta?.count) {
+          return { ready: false as const, count: 0, cell: 0, cols: 0 }
+        }
+        return {
+          ready: true as const,
+          sheetFile: `${sheet.assetId}.png`,
+          count: meta.count, cell: meta.cell, cols: meta.cols,
+          padding: meta.padding, margin: meta.margin, anchor: meta.anchor,
+          fps: meta.fps,
+        }
+      }
+      if (n.type !== 'animpreview') return null
+      cur = n.id
+    }
+    return null
+  }
+
+  const runGodotExport = async (node: Godot2DNodeType) => {
+    if (!node.godot2d?.enabled) return
+    if (isRunning(node.id)) return
+    const up = upstreamGrid(node.id)
+    if (!up) {
+      alert('左上角没有「精灵图」节点：把「精灵图」（或「动画预览」）连到它的输入端口')
+      return
+    }
+    if (!up.ready) {
+      alert('上游还没有精灵图：先在「精灵图」节点上点一次「生成精灵图」')
+      return
+    }
+    markBusy(node.id, true)
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const o = node.godot2d
+      const r = await api.godotExport({
+        projectId: project!.id,
+        sheetFile: up.sheetFile,
+        cell: up.cell, cols: up.cols, count: up.count,
+        padding: up.padding, margin: up.margin,
+        fps: o.fps, animName: o.animName, name: o.name, loop: o.loop,
+        mode: o.mode, folder: o.folder, origin: o.origin,
+        textureFilter: o.textureFilter,
+      })
+      // 落盘成一份自包含清单：刷新页面后 zip / tres / tscn 的下载链接还在
+      const meta: Godot2DMeta = {
+        ...r.meta, stem: r.stem, folder: r.folder,
+        files: r.files, zip: r.zip, resPaths: r.resPaths,
+      }
+      setProject((p) => p ? {
+        ...p,
+        nodes: p.nodes.map((n) => n.id === node.id
+          ? ({ ...n, meta } as CanvasNode) : n),
+      } : p)
     } catch (e: any) {
       setTasks((t) => ({
         ...t,
@@ -2888,6 +2999,10 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is AnimPreviewNodeType => n.type === 'animpreview'),
     [project?.nodes],
   )
+  const godotNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is Godot2DNodeType => n.type === 'godot2d'),
+    [project?.nodes],
+  )
 
   /** 某个节点的入边来自哪一类上游（节点卡上显示「输入：xxx」）。 */
   const upstreamLabel = useCallback((id: string): string | null => {
@@ -3314,6 +3429,27 @@ export default function Canvas({ projectId, onBack }: Props) {
               onFinishLink={finishLink}
             />
           ))}
+
+          {godotNodes.map((n, i) => {
+            const up = upstreamGrid(n.id)
+            return (
+              <GodotExportNode
+                key={n.id}
+                node={n}
+                index={i}
+                running={isRunning(n.id)}
+                error={tasks[n.id]?.error ?? null}
+                upstream={up && up.ready
+                  ? { count: up.count, cell: up.cell, cols: up.cols } : null}
+                onChange={(patch) => patchNode(n.id, patch)}
+                onDelete={() => deleteNode(n.id)}
+                onDragStart={startDragNode(n.id)}
+                onRun={() => runGodotExport(n)}
+                onStartLink={startLink}
+                onFinishLink={finishLink}
+              />
+            )
+          })}
 
           {sequenceNodes.map((n, i) => (
             <SequenceNode

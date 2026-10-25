@@ -692,6 +692,7 @@ button { cursor: pointer; }
 .ctx-dot.d-sequence { background: #8ae278; }
 .ctx-dot.d-sheet { background: #40c8b4; }
 .ctx-dot.d-play { background: #ff66b2; }
+.ctx-dot.d-godot { background: #4f9cff; }
 
 /* --- 分类次级菜单：一级只列分类，悬停展开具体节点 ---
    节点类型会越来越多，一次性平铺会变成一个长到用不了的列表。 */
@@ -1105,6 +1106,21 @@ video.clip-media { cursor: default; }
 }
 .grid-actions { display: flex; gap: 6px; margin-top: 6px; }
 .grid-actions a { text-decoration: none; display: inline-flex; align-items: center; }
+.grid-actions.wrap { flex-wrap: wrap; }
+
+/* --- Godot 导出节点：res:// 路径清单 ---
+   路径要能被逐字复制（用户要拿去核对工程目录），所以单独一块等宽文本，
+   不做截断省略——截断后反而看不出差在哪一层。 */
+.godot-paths {
+  margin-top: 7px; padding: 6px 8px; border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.35); display: grid; gap: 3px;
+}
+.godot-paths > div { display: flex; gap: 6px; align-items: baseline; font-size: 11px; }
+.godot-paths span { color: var(--muted); flex: none; min-width: 52px; }
+.godot-paths code {
+  font-family: var(--mono); font-size: 11px; color: var(--cyan);
+  word-break: break-all;
+}
 
 /* --- 动画预览节点 --- */
 .anim-stage {

@@ -1046,11 +1046,81 @@ export type AnimPreviewNode = {
   createdAt?: number
 }
 
+/** Godot 导出参数（第五步，对应后端 _clean_godot2d）。 */
+export type Godot2DOptions = {
+  enabled: boolean
+  /** Godot 里的动画名（SpriteFrames 的 animation 名，可中文） */
+  animName: string
+  /** 文件名主干（ASCII）：tres / tscn / png 都用它 */
+  name: string
+  fps: number
+  loop: boolean
+  /** atlas = 一张图集 + AtlasTexture 切格 / files = 逐帧 PNG */
+  mode: 'atlas' | 'files'
+  /** res:// 下的相对目录：导出物必须整体落在这里 */
+  folder: string
+  /** 节点原点对齐：脚底 / 居中 / 顶部 */
+  origin: 'bottom' | 'center' | 'top'
+  textureFilter: 'nearest' | 'linear'
+}
+
+/** 导出包里的一个文件。 */
+export type Godot2DFile = { name: string; bytes: number; url: string }
+
+/** Godot 导出节点的产物元数据（存盘，刷新后仍能下载上次的包）。
+ *  后端响应是 { files, zip, resPaths, meta }，落盘时合成一个对象，
+ *  节点自己就是一份完整清单——不用再去关联网关。 */
+export type Godot2DMeta = {
+  /** 文件名主干（后端清洗后的实际值） */
+  stem: string
+  folder: string
+  resPaths: { png: string; tres: string; scene: string }
+  files: Godot2DFile[]
+  zip: Godot2DFile
+  animName: string
+  count: number
+  fps: number
+  loop: boolean
+  cell: number
+  cols: number
+  rows: number
+  padding: number
+  margin: number
+  sheetSize: [number, number]
+  mode: 'atlas' | 'files'
+  origin: string
+  textureFilter: string
+  /** 原点对齐导致的 offset.y（脚底 = -cell/2） */
+  originOffsetY: number
+  checks: {
+    pathsMatch: boolean
+    missing: string[]
+    refsChecked: number
+    framesInResource: number
+    framesMatch: boolean
+  }
+  warnings: string[]
+  seconds: number
+}
+
+export type Godot2DNode = {
+  id: string
+  type: 'godot2d'
+  x: number
+  y: number
+  godot2d: Godot2DOptions
+  /** 上游精灵图的产出信息 + 导出文件清单 */
+  meta?: Godot2DMeta | null
+  result?: ResultImage | null
+  createdAt?: number
+}
+
 export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode | MatteNode
   | ViewGenNode | ThreeViewNode
   | WalkVideoNode | SequenceNode | SpriteSheetNode | PlayNode
   | PartsNode | RigWalkNode | TxtVideoNode
   | ClipSrcNode | FrameSplitNode | SpriteGridNode | AnimPreviewNode
+  | Godot2DNode
 export type Edge = { from: string; to: string }
 
 export type Project = {
