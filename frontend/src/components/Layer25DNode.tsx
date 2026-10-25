@@ -63,12 +63,23 @@ export default function Layer25DNode({
   const patch = (p: Partial<typeof v>) => onChange({ layer25d: { ...v, ...p } })
 
   return (
-    <div className="node l25d">
-      <div className="node-head">
+    <div className={`node l25d ${v.enabled ? '' : 'off'} ${running ? 'busy' : ''}`}
+      style={{ left: node.x, top: node.y, width: 420 }} data-node-id={node.id}>
+      <div className="node-head" onMouseDown={onDragStart}>
+        <span className="node-kind">L25D</span>
         <span className="node-title">2.5D 分层模型</span>
         <span className="node-sub">See-Through</span>
         <span className="node-badge">{meta ? `${meta.layers.length} 层` : '未分层'}</span>
-        <button className="node-x" onClick={onDelete} title="删除这张节点">×</button>
+        <button className="node-x" title="删除这张节点"
+          onMouseDown={(e) => e.stopPropagation()} onClick={onDelete}>×</button>
+        <div className="port inl" title="点击完成连线（先点上游节点的输出端口）"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onFinishLink(node.id) }} />
+        <div className="port out" title="按住拖到目标节点即可连线"
+          onMouseDown={(e) => {
+            e.stopPropagation()
+            onStartLink(node.id, { clientX: e.clientX, clientY: e.clientY })
+          }} />
       </div>
 
       <div className="node-body">
@@ -140,13 +151,6 @@ export default function Layer25DNode({
 
         {/* ---- 产出 ---- */}
         {meta ? <Layer25DView meta={meta} onPreview={onPreview} /> : null}
-      </div>
-
-      <div className="node-ports">
-        <span className="port port-in" onMouseDown={(e) => onStartLink(node.id, { clientX: e.clientX, clientY: e.clientY })}
-          onMouseUp={() => onFinishLink(node.id)} title="输入" />
-        <span className="port port-out" onMouseDown={(e) => onStartLink(node.id, { clientX: e.clientX, clientY: e.clientY })}
-          onMouseUp={() => onFinishLink(node.id)} title="输出" />
       </div>
     </div>
   )

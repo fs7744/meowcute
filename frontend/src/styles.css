@@ -429,9 +429,11 @@ button { cursor: pointer; }
 .node.sequence { border-color: rgba(138, 226, 120, 0.55); }
 .node.spritesheet { border-color: rgba(64, 200, 180, 0.55); }
 .node.play { border-color: rgba(255, 102, 178, 0.55); }
-/* 扣背景 / 视角 / 拼板 / 八方向节点被关掉时变成虚线灰框：一眼能看出它现在不参与流程 */
+.node.l25d { border-color: rgba(185, 139, 255, 0.55); }
+/* 扣背景 / 视角 / 拼板 / 八方向 / 2.5D 节点被关掉时变成虚线灰框：一眼能看出它现在不参与流程 */
 .node.matte.off, .node.viewgen.off, .node.threeview.off,
-.node.walkvideo.off, .node.sequence.off, .node.spritesheet.off, .node.play.off {
+.node.walkvideo.off, .node.sequence.off, .node.spritesheet.off, .node.play.off,
+.node.l25d.off {
   border-style: dashed; opacity: 0.72;
 }
 .node.selected { box-shadow: 0 0 0 2px var(--white), 8px 8px 0 rgba(0, 0, 0, 0.55); }
@@ -452,6 +454,13 @@ button { cursor: pointer; }
 .node.sequence .node-kind { color: #8ae278; }
 .node.spritesheet .node-kind { color: #40c8b4; }
 .node.play .node-kind { color: #ff66b2; }
+.node.l25d .node-kind { color: #b98bff; }
+/* 标题栏右侧的副标题 / 状态徽标：节点标题旁的小字 */
+.node-sub { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+.node-badge {
+  font-size: 10px; color: var(--muted); font-family: var(--mono);
+  border: 1px solid var(--line-strong); border-radius: 3px; padding: 1px 5px;
+}
 .node-title { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-idx { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .node-x { background: transparent; border: 0; color: var(--muted); font-size: 14px; padding: 0 4px; }

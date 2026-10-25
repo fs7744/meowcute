@@ -2526,8 +2526,8 @@ def _run_checks(client) -> int:
     _ts4 = client.get("/api/templates").json()["templates"]
     check("有 2.5D 分层模板", any(t.get("id") == "layer25d_model" for t in _ts4))
     _ltpl = next(t for t in _ts4 if t.get("id") == "layer25d_model")
-    check("2.5D 模板 = 选图 → 2.5D 分层 → 结果卡",
-          [n["type"] for n in _ltpl["graph"]["nodes"]] == ["input", "layer25d", "result"],
+    check("2.5D 模板 = 选图 → 2.5D 分层（结果卡多余，已删）",
+          [n["type"] for n in _ltpl["graph"]["nodes"]] == ["input", "layer25d"],
           str([n["type"] for n in _ltpl["graph"]["nodes"]]))
 
     # 环境体检：不管 see-through 装没装，接口都得给出明确结论
