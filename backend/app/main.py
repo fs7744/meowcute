@@ -767,6 +767,50 @@ async def preview_prompt(payload: PreviewPayload) -> Dict[str, Any]:
     return built
 
 
+class NegativePayload(BaseModel):
+    """只要负面词：画风 + 像素选项 + 主体描述（材质检测用）+ 已覆盖的值。"""
+
+    prompt: str = ""
+    styleId: Optional[str] = None
+    pixel: Optional[PixelOptions] = None
+    negative: str = ""
+
+
+@app.post("/api/generate/negative")
+async def preview_negative(payload: NegativePayload) -> Dict[str, Any]:
+    """当前生效的负面词正文 —— **自动态也要能看见**。
+
+    生成卡以前只写一句「当前用全局设置里的默认负面词」，用户看不到具体是哪
+    几个词，想改还得先点「改为自己写」把内容预填出来（等于改之前不能看）。
+    这里把最终会送进模型的那串负面词、以及它是哪几段拼起来的，直接摊给界面。
+
+    复用 `_build_generation_prompt` 而不是在这里重算：负面词是
+    「全局默认 + 像素契约（含材质检测）+ 用户覆盖」三层决定的，抄一遍必然漂。
+    宽高与背景不参与负面词计算，传常量即可。
+    """
+    pixel = payload.pixel or PixelOptions()
+    built = _build_generation_prompt(
+        payload.prompt, payload.styleId, pixel, 512, 512, "gray",
+        negative_override=payload.negative)
+    parts = built["negativeParts"]
+    return {
+        "negative": built["negative"],
+        "parts": parts,
+        "useContract": built["useContract"],
+        "material": built["material"],
+        # 给界面直接显示「N 项」用，省得前端自己按逗号切（中文逗号也要认）
+        "counts": {
+            "base": _negative_count(parts.get("base")),
+            "contract": _negative_count(parts.get("contract")),
+            "custom": _negative_count(parts.get("custom")),
+        },
+    }
+
+
+def _negative_count(text: str) -> int:
+    return len([p for p in (text or "").replace("，", ",").split(",") if p.strip()])
+
+
 # --------------------------------------------------------------------------- #
 # 生成（任务制）
 # --------------------------------------------------------------------------- #
@@ -1837,7 +1881,11 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
                          if payload.maxSeqLen else None),
             task_id=task_id,
             pixel_art=payload.pixelArt,
-            negative=(payload.negative or "").strip(),
+            # 留空 = 用全局设置里的默认负面词（与界面文案、图片生成口径一致）。
+            # provider 只对 None 回落 negativePrompt；把空串传下去，一路到模型
+            # 就是「零负面词」，视频底座很容易出模糊 / 水印 / 文字残影。
+            # 想彻底不要负面词：去全局设置里把默认清空。
+            negative=(payload.negative or "").strip() or None,
             guidance_scale=(None if payload.guidanceScale is None
                             else _clamp(payload.guidanceScale, 1.0, 9.0, 5.0)),
             # 进度条文案按节点语义给：provider 的默认值会把带参考图的文本视频

@@ -464,9 +464,20 @@ def resolve_pixel_negative(base_negative: str, pixel: bool,
     「半透明」只在非半透明主体时否定：史莱姆/果冻/水晶这类主体如果把它挂进
     负面词，等于正面要求「半透明」、负面又禁止「半透明」，模型只能折中成
     实心色块——这是实机效果差的直接原因之一。
+
+    拼接时**按词去重**（保留先后顺序）：全局默认里本来就有「模糊/噪点/渐变/
+    抗锯齿」，契约那半再挂一遍，送进模型没影响（编码器不在乎重复），但界面
+    现在会把最终负面词原文展示给用户，「模糊」出现两次只会让人以为程序没
+    去重、进而怀疑整条链的正确性。
     """
     base = (base_negative or "").strip().strip("，, ")
     extra = pixel_negative_extra(pixel, material)
     if not extra:
         return base
-    return f"{base}, {extra}" if base else extra
+    merged = f"{base}, {extra}" if base else extra
+    seen: List[str] = []
+    for w in merged.replace("，", ",").split(","):
+        w = w.strip()
+        if w and w not in seen:
+            seen.append(w)
+    return ", ".join(seen)

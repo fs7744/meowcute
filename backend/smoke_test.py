@@ -648,6 +648,36 @@ def _run_checks(client) -> int:
     cp = _clean_params({"negative": "我的负面词"})
     check("生成卡负面词进存盘白名单", cp["negative"] == "我的负面词")
 
+    print("== 负面词接口：自动态也要看得见具体内容 ==")
+    # 生成卡把「当前生效的负面词」直接摆在输入框里（自动态也可改），
+    # 内容由这个接口给——以前界面上只有一句「用全局默认」，看不见是哪几个词。
+    _ng = client.post("/api/generate/negative", json={
+        "prompt": "一只猫", "styleId": "pixel_16bit",
+        "pixel": {"enabled": True, "gridSnap": True, "colors": 16,
+                  "palette": "auto", "gridSize": None, "targetSize": None},
+    }).json()
+    check("自动态返回生效正文（不是空串）",
+          isinstance(_ng.get("negative"), str) and len(_ng["negative"]) > 10,
+          str(_ng.get("negative"))[:60])
+    check("分段计数齐全（界面显示「N 项 + M 项」用）",
+          _ng["counts"]["base"] > 0 and _ng["counts"]["contract"] > 0,
+          str(_ng.get("counts")))
+    check("未覆盖时 overridden 为假", _ng["parts"]["overridden"] is False)
+    _ng2 = client.post("/api/generate/negative", json={
+        "prompt": "一只猫", "styleId": "pixel_16bit",
+        "pixel": {"enabled": True}, "negative": "我写的这一句",
+    }).json()
+    check("传了覆盖就只返回覆盖值", _ng2["negative"] == "我写的这一句"
+          and _ng2["parts"]["overridden"] is True, _ng2["negative"])
+    # 不选画风 = 不开契约：契约那半必须是空的，否则界面会显示一堆
+    # 「像素专用」负面词挂在写实画风上（用户看了只会更困惑）
+    _ng3 = client.post("/api/generate/negative", json={
+        "prompt": "一只猫", "styleId": None, "pixel": {"enabled": True},
+    }).json()
+    check("不选画风时契约那半为空、只剩全局默认",
+          _ng3["useContract"] is False and _ng3["parts"]["contract"] == ""
+          and _ng3["counts"]["contract"] == 0, str(_ng3["counts"]))
+
     print("== 三视图拼板接口 ==")
     # 三张不同底色的「视角图」：抠掉各自底色后应拼成一张 3 格宽的板
     def _view_img(bg, subject):

@@ -162,7 +162,7 @@ export default function ViewGenNode({
         <div style={{ marginTop: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span className="gen-field-label" style={{ flex: 1 }}>
-              视角提示词（{customInstr || customNeg ? '已自定义' : '自动拼接'}）
+              视角提示词（{customInstr ? '已自定义' : '自动拼接'}）
             </span>
             <button className="ex-chip"
               onClick={() => setShowPrompt((s) => !s)}>
@@ -214,32 +214,37 @@ export default function ViewGenNode({
                   </div>
                 </>
               )}
-
-              <div className="hint"
-                style={{ marginTop: 8, paddingTop: 6, borderTop: '1px dashed var(--line)' }}>
-                负面提示词{customNeg ? '（自定义）' : '（程序默认）'}
-              </div>
-              {customNeg ? (
-                <textarea className="textarea"
-                  style={{ marginTop: 4, minHeight: 56, fontSize: 11 }}
-                  value={node.viewgen?.negative || ''}
-                  onChange={(e) => patch({ negative: e.target.value })} />
-              ) : (
-                <div className="hint" style={{ marginTop: 2 }}>
-                  {preview ? (preview.negative ?? '（背景选「无」时不传负面词）') : '读取中…'}
-                </div>
-              )}
-              <div className="hint" style={{ marginTop: 2 }}>
-                {customNeg ? `${(node.viewgen?.negative || '').length} 字` : ''}
-                <button className="ex-chip" style={{ marginLeft: 6 }}
-                  onClick={() => patch({
-                    negative: customNeg ? '' : (preview?.negative ?? ''),
-                  })}>
-                  {customNeg ? '恢复默认' : '改为自己写'}
-                </button>
-              </div>
-            </>
+              </>
           )}
+
+          {/* 负面词：**挪到折叠面板外面**，且自动态也直接摆在输入框里。
+              以前它藏在「查看 / 修改」面板里、自动态还是只读文字——想看默认是哪
+              几个词得先展开，想改还得再点一下「改为自己写」预填。现在和生成卡
+              同一个模式：看得见，直接改，一改就固定成自定义。 */}
+          <div className="gen-field" style={{ marginTop: 8 }}>
+            <div className="gen-field-head">
+              <span className="gen-field-label">
+                负面词{customNeg ? '（已自定义）' : '（自动）'}
+              </span>
+              {customNeg ? (
+                <button className="ex-chip" type="button"
+                  onClick={() => patch({ negative: '' })}>
+                  恢复自动
+                </button>
+              ) : null}
+            </div>
+            <textarea className="textarea neg-textarea"
+              style={{ minHeight: 56 }}
+              title="真正会送进模型的负面词，可以直接改（一改就固定成自定义）"
+              value={customNeg ? (node.viewgen?.negative || '') : (preview?.negative ?? '')}
+              placeholder={preview === null ? '读取中…' : '（背景选「无」时不传负面词）'}
+              onChange={(e) => patch({ negative: e.target.value })} />
+            <div className="hint" style={{ lineHeight: 1.6 }}>
+              {customNeg
+                ? '已固定成这一段：换背景 / 换角色都不会再自动变。点「恢复自动」回到程序默认。'
+                : '自动 = 程序按背景与画风拼的那串。直接改就固定成自定义。'}
+            </div>
+          </div>
         </div>
 
         {inherit ? (

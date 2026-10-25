@@ -1,7 +1,7 @@
 import type {
-  BackgroundOption, DoctorReport, GenerateResult, GenParams, MatteOptions, PixelOptions,
-  Project, ProjectFilesInfo, ProjectSummary, PromptExample, PromptPreview, ResultImage,
-  PromptLimits, Style, TaskProgress, Template, RefAsset, VideoAsset,
+  BackgroundOption, DoctorReport, GenerateResult, GenParams, MatteOptions, NegativePreview,
+  PixelOptions, Project, ProjectFilesInfo, ProjectSummary, PromptExample, PromptPreview,
+  ResultImage, PromptLimits, Style, TaskProgress, Template, RefAsset, VideoAsset,
 } from './types'
 
 async function j<T>(r: Response): Promise<T> {
@@ -169,6 +169,11 @@ export const api = {
     /** 生成卡上覆盖的负面词（空 = 全局默认 + 像素契约） */
     negative?: string
   }) => fetch('/api/generate/preview', jsonInit(payload)).then(j<PromptPreview>),
+
+  /** 当前生效的负面词正文（自动态也看得见，用于生成卡直接展示 + 直接改）。 */
+  genNegative: (payload: {
+    prompt?: string; styleId: string | null; pixel: PixelOptions; negative?: string
+  }) => fetch('/api/generate/negative', jsonInit(payload)).then(j<NegativePreview>),
 
   generate: (payload: {
     projectId: string

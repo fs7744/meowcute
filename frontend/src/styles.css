@@ -1318,3 +1318,14 @@ video.clip-media { cursor: default; }
   padding-bottom: 6px; margin-bottom: 4px;
   border-bottom: 1px dashed var(--line);
 }
+
+/* 生成卡 · 负面词输入框：自动态也直接摆在这里可改（一改就固定成自定义），
+   所以外观必须是「输入框」而不是只读展示——用户看到能打字的地方才会去改。
+   负面词是逗号分隔的清单，用等宽字体数项数更稳。 */
+.neg-textarea {
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}

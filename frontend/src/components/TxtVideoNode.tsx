@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import AdvancedSection, { ParamGroup } from './AdvancedSection'
+import { api } from '../api'
 import type { TxtVideoNode as TxtVideoNodeType } from '../types'
 
 type Props = {
@@ -55,6 +57,22 @@ export default function TxtVideoNode({
   }
   const v = { ...DEFAULTS, ...node.txtvideo }
   const patch = (p: Partial<typeof v>) => onChange({ txtvideo: { ...v, ...p } })
+
+  // 负面词留空时用的是「全局设置里的默认」——但默认具体是哪几个词，界面上
+  // 以前只写在 label 里（「空=用全局默认」），用户看不见内容，想改也无从改起。
+  // 拉一次设置把它显示出来：看得见才谈得上改不改。
+  const [globalNeg, setGlobalNeg] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    api.settings()
+      .then((r) => {
+        if (!alive) return
+        const n = (r.settings?.providers?.diffusers?.negativePrompt || '').trim()
+        setGlobalNeg(n)
+      })
+      .catch(() => { if (alive) setGlobalNeg('') })
+    return () => { alive = false }
+  }, [])
 
   // 画质档位 → 步数/CFG 映射（按引擎）。hy15 是 step-distilled：官方 8-12 步、
   // CFG 1.0（无 CFG 单次前向）；Wan 非蒸馏：30 步 / CFG 5.0 是实测甜点。
@@ -367,10 +385,28 @@ export default function TxtVideoNode({
           </ParamGroup>
           <ParamGroup label="负面词">
           <label className="gen-field">
-            <span className="gen-field-label">负面词（空=用全局默认）</span>
-            <input className="input" value={v.negative} placeholder="模糊, 低质量, 水印…"
+            <span className="gen-field-label"
+              title="留空 = 用全局设置里的默认负面词；写了就只用你写的这一段">
+              负面词{v.negative.trim() ? '（自定义）' : '（全局默认）'}
+            </span>
+            <input className="input" value={v.negative}
+              placeholder={globalNeg || '模糊, 低质量, 水印…'}
               onChange={(e) => patch({ negative: e.target.value })} />
           </label>
+          {/* 默认内容直接显示：以前只写「空=用全局默认」，用户不知道默认是
+              哪几个词，也就没法判断要不要改。 */}
+          <div className="hint" style={{ marginTop: 3, lineHeight: 1.6 }}>
+            {v.negative.trim() ? (
+              <>已固定成你写的这一段：不会再用全局默认。</>
+            ) : globalNeg === null ? (
+              <>读取全局默认中…</>
+            ) : globalNeg ? (
+              <>留空 = 用全局设置里的默认（当前：{globalNeg}）。要改有两种方式：
+                在这里直接写（只对本节点生效），或去「设置」里改全局默认。</>
+            ) : (
+              <>全局设置里没有默认负面词，当前留空就是不带负面词——要加就在上面写一段。</>
+            )}
+          </div>
           </ParamGroup>
         </AdvancedSection>
 

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type {
   EraseMeta, EraseMethod, EraseMethodInfo, EraseNode as EraseNodeType,
@@ -56,6 +56,16 @@ export default function EraseNode({
   const [showPrompt, setShowPrompt] = useState(false)
   const [promptInfo, setPromptInfo] = useState<any>(null)
   const [promptBusy, setPromptBusy] = useState(false)
+  // AI 方式下负面词留空 = 用程序默认（残留轮廓 / 水印 / 文字 / 鬼影…）。
+  // 默认是哪几个词必须看得见：以前只有展开「查看最终提示词」才显示。
+  const [defaultNeg, setDefaultNeg] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    api.eraseInstruction({})
+      .then((info) => { if (alive) setDefaultNeg(info.negative || '') })
+      .catch(() => { if (alive) setDefaultNeg('') })
+    return () => { alive = false }
+  }, [])
 
   const meta: EraseMeta | null = node.meta ?? null
   const out = node.result ?? (node.images ?? [])[0] ?? null
@@ -297,6 +307,18 @@ export default function EraseNode({
                   value={v.negative}
                   onChange={(e) => patch({ negative: e.target.value })} />
               </label>
+              {/* 默认内容直接显示：留空的人要知道自己默认在挡什么 */}
+              <div className="hint" style={{ marginTop: 2, lineHeight: 1.6 }}>
+                {v.negative.trim() ? (
+                  <>已固定成你写的这一段，不再用程序默认。</>
+                ) : defaultNeg === null ? (
+                  <>读取程序默认中…</>
+                ) : defaultNeg ? (
+                  <>留空 = 程序默认（{defaultNeg}）</>
+                ) : (
+                  <>留空 = 不带负面词。</>
+                )}
+              </div>
               <button className="btn btn-xs btn-ghost" style={{ marginTop: 6 }}
                 onClick={() => patch({ constraint: '', negative: '' })}
                 title="把约束条款和负面词恢复成程序默认值">恢复默认条款</button>

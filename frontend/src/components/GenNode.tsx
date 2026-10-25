@@ -3,8 +3,8 @@ import { api, loadPromptLimits } from '../api'
 import { promptLimitFor } from '../lib/promptLimit'
 import AdvancedSection from './AdvancedSection'
 import type {
-  BackgroundOption, GenNode as GenNodeType, PixelOptions, PromptExample, PromptLimits,
-  RefAsset, Style, TaskProgress,
+  BackgroundOption, GenNode as GenNodeType, NegativePreview, PixelOptions, PromptExample,
+  PromptLimits, RefAsset, Style, TaskProgress,
 } from '../types'
 
 type Props = {
@@ -71,21 +71,35 @@ export default function GenNode({
   const running = !!task?.progress && !task.progress.doneAt
   const p = task?.progress
 
-  // 「改为自己写」：先把当前实际会用的负面词（全局默认 + 像素契约）拉回来
-  // 预填，让用户在原稿上删改，而不是面对一个空框凭空重写。
-  const openNegativeEditor = async () => {
-    let seedText = ''
-    try {
-      const data = await api.preview({
-        prompt: node.prompt, styleId: node.styleId,
-        width: node.params.width, height: node.params.height,
-        background: node.params.background, pixel: node.pixel, negative: '',
+  // ---- 负面词：自动态也把「真正会送进模型的那串」显示出来 ----
+  // 以前这里只有一句「当前用全局设置里的默认负面词」，用户看不到具体是哪几个
+  // 词，想改还得先点「改为自己写」把内容预填出来 —— 改之前不能看。
+  // 现在直接把生效内容放进输入框：看得见、改得动。
+  const [autoNeg, setAutoNeg] = useState<NegativePreview | null>(null)
+  const [negErr, setNegErr] = useState(false)
+  useEffect(() => {
+    let alive = true
+    // 防抖：prompt 每敲一个字都变，但负面词只通过「材质检测（半透明关键词）」
+    // 依赖它，没必要每个字符都请求一次。
+    const t = setTimeout(() => {
+      api.genNegative({
+        prompt: node.prompt, styleId: node.styleId, pixel: node.pixel, negative: '',
       })
-      seedText = data.negative || ''
-    } catch { /* 接口失败就让用户自己写 */ }
-    // 空串会回到「自动」，用一个空格占位以进入编辑态（后端会 strip 掉）
-    patchParams({ negative: seedText || ' ' })
-  }
+        .then((r) => { if (alive) { setAutoNeg(r); setNegErr(false) } })
+        .catch(() => { if (alive) setNegErr(true) })
+    }, 400)
+    return () => { alive = false; clearTimeout(t) }
+  }, [node.prompt, node.styleId, node.pixel?.enabled, node.pixel?.colors, node.pixel?.palette])
+
+  // 负面词的三种状态：
+  //   自动态 —— 输入框显示后端拼好的那串（看得见），一改就固定成自定义；
+  //   自定义 —— 输入框显示用户写的，换画风/材质都不再自动变；
+  //   空串   —— 后端按空串处理，回到「全局默认 + 像素契约」。
+  const hasCustomNeg = !!(node.params.negative || '').trim()
+  const negText = hasCustomNeg ? node.params.negative : (autoNeg?.negative ?? '')
+  const negCount = negText
+    ? negText.replace(/，/g, ',').split(',').filter((s) => s.trim()).length
+    : 0
 
   const grouped = useMemo(() => {
     const g: Record<string, Style[]> = {}
@@ -374,39 +388,45 @@ export default function GenNode({
           ) : null}
         </div>
 
-        {/* 负面词：默认是「全局设置 + 像素契约自动追加」，这里可以整段覆盖。
-            非像素画风时用户往往要把「抗锯齿/渐变」那套拿掉，以前只能改全局
-            设置，节点上没有地方看也没有地方改。 */}
+        {/* 负面词：始终把**当前生效的内容**摆在输入框里。
+            自动态 = 全局默认 + 像素契约追加（后端算，不在这里复制逻辑）；
+            用户一改就固定成自定义，点「恢复自动」回到程序拼的那套。 */}
         <div className="gen-field">
           <div className="gen-field-head">
             <span className="gen-field-label">
-              负面词{node.params.negative ? '（已自定义）' : '（自动）'}
+              负面词{hasCustomNeg ? '（已自定义）' : '（自动）'}
             </span>
-            {node.params.negative ? (
+            <span className="hint" style={{ fontSize: 10 }}>
+              {hasCustomNeg ? `${negCount} 项` : ''}
+            </span>
+            {hasCustomNeg ? (
               <button className="ex-chip" type="button"
                 onClick={() => patchParams({ negative: '' })}>
-                恢复默认
+                恢复自动
               </button>
             ) : null}
           </div>
-          {node.params.negative ? (
-            <textarea className="textarea"
-              style={{ minHeight: 56, fontSize: 11 }}
-              value={node.params.negative}
-              onChange={(e) => patchParams({ negative: e.target.value })} />
-          ) : (
-            <div className="hint" style={{ lineHeight: 1.6 }}>
-              当前用「全局设置里的默认负面词
-              {node.pixel?.enabled && style?.pixelClass ? ' + 像素契约追加的反锯齿/渐变等' : ''}」，
-              点下面的按钮可以整段改成自己的。
-            </div>
-          )}
-          {!node.params.negative ? (
-            <button className="ex-chip" type="button" style={{ marginTop: 4 }}
-              onClick={() => openNegativeEditor()}>
-              改为自己写（预填当前内容）
-            </button>
-          ) : null}
+          <textarea className="textarea neg-textarea"
+            style={{ minHeight: 64 }}
+            title="这就是真正会送进模型的负面词，可以直接改"
+            value={negText}
+            placeholder={autoNeg === null && !negErr ? '读取自动负面词…' : ''}
+            onChange={(e) => patchParams({ negative: e.target.value })} />
+          <div className="hint" style={{ lineHeight: 1.6 }}>
+            {hasCustomNeg ? (
+              <>已固定成这一段：换画风 / 换材质都不会再自动变。点「恢复自动」回到程序拼的那套。</>
+            ) : negErr ? (
+              <>读不到自动负面词（后端没响应），可以直接在这里写。</>
+            ) : (
+              <>
+                自动 = 全局设置里的默认
+                {autoNeg?.counts.base ? `（${autoNeg.counts.base} 项）` : ''}
+                {autoNeg?.useContract
+                  ? ` + 像素契约追加（${autoNeg.counts.contract} 项，主要是抗锯齿 / 渐变这类）` : ''}
+                。<b>直接改这里就固定成自定义</b>；留空回到自动。
+              </>
+            )}
+          </div>
         </div>
 
         {/* 5. 画风 */}

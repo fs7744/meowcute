@@ -1403,3 +1403,13 @@ export type PromptPreview = {
     base: string; contract: string; custom: string; overridden: boolean
   }
 }
+
+/** 当前生效的负面词（自动态也能看见具体内容）。 */
+export type NegativePreview = {
+  negative: string
+  parts: { base: string; contract: string; custom: string; overridden: boolean }
+  useContract: boolean
+  material: string
+  /** 每段各有几项，界面直接显示「9 项 + 7 项」 */
+  counts: { base: number; contract: number; custom: number }
+}

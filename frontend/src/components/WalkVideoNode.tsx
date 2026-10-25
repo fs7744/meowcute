@@ -341,30 +341,33 @@ export default function WalkVideoNode({
           </span>
         </div>
 
-        {/* 负面词：以前写死在管线里（模糊/重影/站桩/单帧定格…），
-            界面上看不到也改不了。默认值仍由程序给，这里可以覆盖或清空。 */}
+        {/* 负面词：默认值由程序给（写死在管线里那套：模糊/重影/站桩/单帧定格…），
+            但**默认是什么必须看得见**——以前自动态只显示一段不能点的文字，想改
+            要先按「改为自己写」。现在和生成卡同款：输入框里始终是真正会送进模型
+            的那串，直接改就固定成自定义，按「恢复自动」回到程序默认。 */}
         <div className="gen-field">
           <div className="gen-field-head">
             <span className="gen-field-label">
-              负面词{customNeg ? '（自定义）' : '（默认）'}
+              负面词{customNeg ? '（已自定义）' : '（默认）'}
             </span>
-            <button className="ex-chip" type="button"
-              onClick={() => patch({ negative: customNeg ? '' : walkDefNeg })}>
-              {customNeg ? '恢复默认' : '改为自己写'}
-            </button>
+            {customNeg ? (
+              <button className="ex-chip" type="button"
+                onClick={() => patch({ negative: '' })}>
+                恢复默认
+              </button>
+            ) : null}
           </div>
-          {customNeg ? (
-            <textarea
-              className="textarea"
-              style={{ minHeight: 56, fontSize: 11 }}
-              value={v.negative || ''}
-              onChange={(e) => patch({ negative: e.target.value })}
-            />
-          ) : (
-            <span className="hint" style={{ lineHeight: 1.6 }}>
-              {walkDefNeg || '（读取中…）'}
-            </span>
-          )}
+          <textarea className="textarea neg-textarea"
+            style={{ minHeight: 56 }}
+            title="真正会送进模型的负面词，可以直接改（一改就固定成自定义）"
+            value={customNeg ? (v.negative || '') : walkDefNeg}
+            placeholder={walkDefNeg ? '' : '读取中…'}
+            onChange={(e) => patch({ negative: e.target.value })} />
+          <div className="hint" style={{ lineHeight: 1.6 }}>
+            {customNeg
+              ? '已固定成这一段：改镜头 / 改方向都不会再自动变。点「恢复默认」回到程序给的那套。'
+              : '默认 = 程序针对「行走视频」给的那套（模糊 / 重影 / 站桩 / 单帧定格…）。直接改就固定成自定义。'}
+          </div>
         </div>
 
         {/* ---- 方向立绘：每个真实方向用哪张图当参考（可预览 / 可自选） ---- */}

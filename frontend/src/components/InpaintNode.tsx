@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import type { InpaintMeta, InpaintNode as InpaintNodeType, RefAsset } from '../types'
 import AdvancedSection from './AdvancedSection'
@@ -51,6 +51,16 @@ export default function InpaintNode({
   const [showPrompt, setShowPrompt] = useState(false)
   const [promptInfo, setPromptInfo] = useState<any>(null)
   const [promptBusy, setPromptBusy] = useState(false)
+  // 负面词留空 = 用程序默认（接缝 / 亮边 / 色块拼接感…）。默认是哪几个词必须
+  // **看得见**：以前只有点「查看最终提示词」才显示，等于改之前不能看。
+  const [defaultNeg, setDefaultNeg] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    api.inpaintInstruction({ instruction: '', constraint: '', negative: '', refCount: 0 })
+      .then((info) => { if (alive) setDefaultNeg(info.negative || '') })
+      .catch(() => { if (alive) setDefaultNeg('') })
+    return () => { alive = false }
+  }, [])
 
   const meta: InpaintMeta | null = node.meta ?? null
   const out = node.result ?? (node.images ?? [])[0] ?? null
@@ -307,11 +317,25 @@ export default function InpaintNode({
           </label>
           <label className="gen-field" style={{ marginTop: 6 }}>
             <span className="gen-field-label"
-              title="留空=用程序默认负面词（接缝 / 亮边 / 拼接感 / 重影…）">负面词（可改）</span>
+              title="留空=用程序默认负面词（接缝 / 亮边 / 拼接感 / 重影…）">
+              负面词（可改）
+            </span>
             <input className="input" placeholder="留空 = 程序默认"
               value={v.negative}
               onChange={(e) => patch({ negative: e.target.value })} />
           </label>
+          {/* 程序默认是哪几个词，直接显示：留空的人知道自己默认在挡什么。 */}
+          <div className="hint" style={{ marginTop: 2, lineHeight: 1.6 }}>
+            {v.negative.trim() ? (
+              <>已固定成你写的这一段，不再用程序默认。</>
+            ) : defaultNeg === null ? (
+              <>读取程序默认中…</>
+            ) : defaultNeg ? (
+              <>留空 = 程序默认（{defaultNeg}）</>
+            ) : (
+              <>留空 = 不带负面词。</>
+            )}
+          </div>
 
           <div className="ip-prompt-actions">
             <button className="btn btn-xs btn-ghost" onClick={loadPrompt} disabled={promptBusy}>
