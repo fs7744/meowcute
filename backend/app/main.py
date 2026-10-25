@@ -22,6 +22,9 @@
 - /api/inpaint                                   局部重绘：涂抹蒙版 + 提示词 → 只重画这一块（任务制）
 - /api/inpaint/instruction                       局部重绘：提示词拼装预览（我写的 / 程序加的 / 参考图声明）
 - /api/projects/{pid}/mask                       上传涂抹蒙版（白色=重绘区）
+- /api/erase                                     去除局部：涂抹擦除水印/杂物（扩散/纹理/镜像/AI 四选一）
+- /api/erase/instruction                         去除局部：AI 方式的提示词拼装预览
+- /api/erase/methods                             去除局部：四种方式的适用场景说明
 - /api/projects/{pid}/export/{path}               导出包文件下载（tres / tscn / zip / 逐帧 PNG）
 
 生成是「任务制」：POST /api/generate 立即返回 taskId，前端订阅 SSE 看进度，
@@ -64,6 +67,7 @@ from .pipelines import clipframes as clipframes_mod
 from .pipelines import spritegrid as spritegrid_mod
 from .pipelines import godot2d as godot2d_mod
 from .pipelines import inpaint as inpaint_mod
+from .pipelines import erase as erase_mod
 from .pipelines import parts as parts_mod
 from .pipelines import rigwalk as rigwalk_mod
 from .pipelines import spritesheet as spritesheet_mod
@@ -1013,8 +1017,19 @@ async def task_stream(task_id: str):
     async def gen():
         q = progress_mod.subscribe(task_id)
         try:
-            # 先推一次当前快照，避免前端错过早期进度
+            # 先推一次当前快照，避免前端错过早期进度。
+            # **已完成的任务必须在这里就发 done 并结束**：毫秒级的任务（去除局部、
+            # 抠图）经常在 SSE 建连之前就 finish 了，那时队列里不会再有新事件，
+            # 前端只能收到一个「label=完成 但没有 done」的 progress —— 于是
+            # 节点一直卡在「处理中…」，按钮永久禁用（2026-10-25 实测踩到）。
             snap = progress_mod.get(task_id)
+            if snap and snap.done_at:
+                res = task_results.get(task_id)
+                payload = {"type": "done", **snap.snapshot()}
+                if res is not None:
+                    payload["result"] = res
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                return
             if snap:
                 yield f"data: {json.dumps({'type': 'progress', **snap.snapshot()}, ensure_ascii=False)}\n\n"
             while True:
@@ -2657,6 +2672,146 @@ async def _run_inpaint(task_id: str, payload: InpaintPayload) -> None:
             "meta": {**meta, "seconds": round(time.time() - t0, 1)},
         }
         progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+# --------------------------------------------------------------------------- #
+# 去除局部：涂掉水印 / 杂物（三条非 AI 路线 + AI 补全）
+# --------------------------------------------------------------------------- #
+class ErasePayload(BaseModel):
+    projectId: str
+    sourceKind: str = "images"
+    sourceFile: str
+    maskFile: str = ""
+    method: str = "telea"               # telea | offset | mirror | ai
+    expand: int = 6                     # 有效蒙版外扩（吃掉抗锯齿残影）
+    feather: int = 2
+    hard: bool = False
+    matchColor: bool = True
+    matchStrength: float = 0.6
+    palette: str = "none"
+    paletteColors: int = 48
+    # 以下只对 method=ai 有意义
+    instruction: str = ""
+    constraint: str = ""
+    negative: str = ""
+    aiMode: str = "crop"
+    context: float = 0.35
+    steps: Optional[int] = None
+    seed: Optional[int] = None
+    maxSeqLen: Optional[int] = None
+
+
+class EraseInstructionPayload(BaseModel):
+    instruction: str = ""
+    constraint: str = ""
+
+
+@app.get("/api/erase/methods")
+async def erase_methods() -> Dict[str, Any]:
+    """四种方式的清单（含「什么时候用」）：方法选择本身是产品知识，交给界面显示。"""
+    return {"methods": erase_mod.methods_info()}
+
+
+@app.post("/api/erase/instruction")
+async def erase_instruction(payload: EraseInstructionPayload) -> Dict[str, Any]:
+    """AI 方式的提示词拼装预览：默认条款也要能被用户看见、被改。"""
+    info = erase_mod.build_prompt(payload.instruction, payload.constraint)
+    return {
+        **info,
+        "negative": erase_mod.DEFAULT_NEGATIVE,
+        "chars": len(info["full"]),
+        "maxChars": limits_mod.chars_for_tokens(limits_mod.SEQ_LEN_MAX),
+    }
+
+
+@app.post("/api/erase")
+async def erase(payload: ErasePayload) -> Dict[str, Any]:
+    """去除局部（任务制）。
+
+    非 AI 三条路线本身是毫秒级的，但仍然走任务制：一是和 AI 共用一条前端代码
+    路径（都 awaitTask），二是任务制带取消，AI 那条几十秒的能中途停。
+    """
+    if projects_mod.load_project(payload.projectId) is None:
+        raise HTTPException(404, "项目不存在")
+    src = _load_source(payload.projectId, ThreeViewSource(
+        kind=("refs" if payload.sourceKind == "refs" else "images"),
+        file=payload.sourceFile))
+    if src is None:
+        raise HTTPException(404, "源图不存在：先把上游的图接过来（或重跑上游节点）")
+    mask_name = (payload.maskFile or "").strip()
+    if not mask_name:
+        raise HTTPException(400, "还没有涂抹蒙版：先点「涂抹区域」圈出要擦掉的东西")
+    mask_img = storage.load_image(payload.projectId, "masks", mask_name)
+    if mask_img is None:
+        raise HTTPException(404, "蒙版文件不存在：重新涂抹一次")
+    m = inpaint_mod.load_mask(mask_img)
+    if m.size != src.size:
+        raise HTTPException(
+            400, f"蒙版尺寸 {m.size[0]}×{m.size[1]} 与源图 {src.width}×{src.height} "
+                 f"不一致：换图之后要重新涂抹")
+    if inpaint_mod.mask_bbox(m) is None:
+        raise HTTPException(400, "蒙版是空的：先用笔刷涂出要擦掉的东西")
+
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备中…")
+    asyncio.create_task(_run_erase(task_id, payload))
+    return {"taskId": task_id}
+
+
+async def _run_erase(task_id: str, payload: ErasePayload) -> None:
+    t0 = time.time()
+    try:
+        src = _load_source(payload.projectId, ThreeViewSource(
+            kind=("refs" if payload.sourceKind == "refs" else "images"),
+            file=payload.sourceFile))
+        if src is None:
+            raise RuntimeError("源图不存在")
+        mask_img = storage.load_image(payload.projectId, "masks", payload.maskFile)
+        if mask_img is None:
+            raise RuntimeError("蒙版文件不存在")
+
+        provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
+        out, meta = await erase_mod.run_erase(
+            src, inpaint_mod.load_mask(mask_img),
+            method=payload.method,
+            expand=_clamp(payload.expand, 0, 64, 6),
+            feather_px=_clamp(payload.feather, 0, 32, 2),
+            hard=bool(payload.hard),
+            match_color=bool(payload.matchColor),
+            match_strength=max(0.0, min(float(payload.matchStrength), 1.0)),
+            palette="source" if payload.palette == "source" else "none",
+            palette_colors=_clamp(payload.paletteColors, 8, 256, 48),
+            instruction=payload.instruction,
+            constraint=payload.constraint,
+            negative=payload.negative,
+            ai_mode=payload.aiMode,
+            context=max(0.0, min(float(payload.context), 2.0)),
+            steps=payload.steps, seed=payload.seed,
+            max_seq_len=payload.maxSeqLen,
+            provider_cfg=provider_cfg, task_id=task_id,
+        )
+        info = storage.save_image(payload.projectId, out, kind="images", prefix="er")
+        orig_url = (f"/api/projects/{payload.projectId}/"
+                    f"{'refs' if payload.sourceKind == 'refs' else 'images'}"
+                    f"/{payload.sourceFile}")
+        image = {
+            "assetId": info["id"], "url": info["url"],
+            "width": info["width"], "height": info["height"],
+            "origAssetId": payload.sourceFile, "origUrl": orig_url,
+        }
+        task_results[task_id] = {
+            "taskId": task_id,
+            "image": image,
+            "images": [image],
+            "meta": {**meta, "seconds": round(time.time() - t0, 2)},
+        }
+        progress_mod.report(task_id, 2, 2, "完成")
         progress_mod.finish(task_id)
     except progress_mod.CancelledError:
         progress_mod.finish(task_id, "已取消")

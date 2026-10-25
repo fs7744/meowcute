@@ -1284,3 +1284,23 @@ video.clip-media { cursor: default; }
   width: 22px; height: 18px; padding: 0; border: 1px solid var(--line);
   background: transparent; cursor: pointer;
 }
+
+/* --- 去除局部节点：补法选择 ---
+   四种补法是这个节点的核心决策（跑不跑模型、用哪种参照），所以做成一行 chip，
+   选中项高亮，"慢" 的 AI 那条带一个角标——选择成本要一眼看得出来。 */
+.er-methods { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+.er-m {
+  flex: 1 1 0; min-width: 72px; padding: 5px 6px; cursor: pointer;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, .3);
+  color: var(--muted); font-size: 12px; line-height: 1.2; position: relative;
+}
+.er-m:hover { border-color: var(--line-strong); color: var(--text); }
+.er-m.on {
+  border-color: var(--green); color: var(--green);
+  background: rgba(0, 255, 136, .1);
+}
+.er-m-tag {
+  position: absolute; top: -6px; right: -4px; font-size: 9px;
+  background: rgba(255, 213, 0, .9); color: #1a1a1a; padding: 0 3px;
+}
+.ctx-dot.d-erase { background: #4fb6ff; }

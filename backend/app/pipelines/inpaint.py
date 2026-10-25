@@ -393,7 +393,9 @@ async def run_inpaint(
         raise ValueError(
             f"蒙版尺寸 {mask.size[0]}×{mask.size[1]} 与源图 "
             f"{src.width}×{src.height} 不一致：换图后要重新涂抹")
-    if not (instruction or "").strip():
+    # 「只有约束条款、没有用户正文」是合法的：去除局部的默认条款本身就是一句
+    # 完整指令（「把这块的东西去掉，补成周围背景」），不能按空提示词拦掉。
+    if not (instruction or "").strip() and not (constraint or "").strip():
         raise ValueError("提示词是空的：先写一句要重绘成什么")
 
     bbox = mask_bbox(mask)

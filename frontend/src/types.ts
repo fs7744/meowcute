@@ -800,6 +800,8 @@ export type ResultMeta = {
   play?: PlayMeta
   /** 局部重绘节点的产出（选区覆盖率 / 送模型尺寸 / 提示词全文） */
   inpaint?: InpaintMeta
+  /** 去除局部节点的产出（补法 / 走的像素 / 平移量） */
+  erase?: EraseMeta
 }
 
 export type ResultNode = {
@@ -1207,12 +1209,97 @@ export type InpaintNode = {
   createdAt?: number
 }
 
+/** 去除局部的补法。 */
+export type EraseMethod = 'telea' | 'offset' | 'mirror' | 'ai'
+
+/** 后端 /api/erase/methods 返回的一种补法（含适用场景）。 */
+export type EraseMethodInfo = {
+  id: EraseMethod
+  label: string
+  hint: string
+  needsModel: boolean
+}
+
+/** 去除局部参数（对应后端 _clean_erase）。 */
+export type EraseOptions = {
+  enabled: boolean
+  method: EraseMethod
+  /** 有效蒙版外扩：吃掉水印边缘的抗锯齿残影 */
+  expand: number
+  feather: number
+  hard: boolean
+  matchColor: boolean
+  matchStrength: number
+  palette: 'none' | 'source'
+  paletteColors: number
+  /** 以下只对 method=ai 有意义 */
+  instruction: string
+  constraint: string
+  negative: string
+  aiMode: 'crop' | 'full'
+  context: number
+  steps: number | null
+  seed: number | null
+  maxSeqLen: number | null
+  maskFile: string
+  mask: InpaintMaskInfo | null
+}
+
+/** 去除局部的产出元数据。 */
+export type EraseMeta = {
+  method: EraseMethod
+  methodLabel: string
+  engine?: string
+  expand: number
+  feather: number
+  hard: boolean
+  matchColor: boolean
+  matchStrength: number
+  palette: string
+  paletteColors: number
+  paletteSnapped: number
+  holePixels: number
+  coverage: number
+  /** offset 方式匹配到的平移量 */
+  offset?: number[] | null
+  score?: number
+  diffuseFilled?: number
+  reason?: string
+  ai?: {
+    mode?: string
+    targetSize?: [number, number]
+    cropSize?: [number, number]
+    steps?: number | null
+    model?: string
+    seqLen?: number
+    prompt?: string
+  } | null
+  prompt?: string
+  constraint?: string
+  constraintCustom?: boolean
+  negative?: string
+  warnings: string[]
+  seconds: number
+}
+
+export type EraseNode = {
+  id: string
+  type: 'erase'
+  x: number
+  y: number
+  erase: EraseOptions
+  result?: ResultImage | null
+  images?: ResultImage[]
+  meta?: EraseMeta | null
+  createdAt?: number
+}
+
 export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode | MatteNode
   | ViewGenNode | ThreeViewNode
   | WalkVideoNode | SequenceNode | SpriteSheetNode | PlayNode
   | PartsNode | RigWalkNode | TxtVideoNode
   | ClipSrcNode | FrameSplitNode | SpriteGridNode | AnimPreviewNode
-  | Godot2DNode | InpaintNode
+  | Godot2DNode | InpaintNode | EraseNode
 export type Edge = { from: string; to: string }
 
 export type Project = {

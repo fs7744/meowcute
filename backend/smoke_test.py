@@ -2299,6 +2299,153 @@ def _run_checks(client) -> int:
           and _ipsaved["palette"] == "source", str(_ipsaved)[:120])
     client.delete(f"/api/projects/{_mpid}")
 
+    print("== 去除局部（水印 / 杂物擦除） ==")
+    from backend.app.pipelines import erase as _er
+    _ts3 = client.get("/api/templates").json()["templates"]
+    check("有去除局部模板", any(t.get("id") == "object_erase" for t in _ts3))
+    _etpl = next(t for t in _ts3 if t.get("id") == "object_erase")
+    check("去除局部模板 = 选图 → 去除局部 → 结果卡",
+          [n["type"] for n in _etpl["graph"]["nodes"]] == ["input", "erase", "result"],
+          str([n["type"] for n in _etpl["graph"]["nodes"]]))
+
+    _mt = client.get("/api/erase/methods").json()["methods"]
+    check("四种补法齐全且标明谁要跑模型",
+          [m["id"] for m in _mt] == ["telea", "offset", "mirror", "ai"]
+          and [m["needsModel"] for m in _mt] == [False, False, False, True],
+          str([(m["id"], m["needsModel"]) for m in _mt]))
+    check("每种补法都带「什么时候用」",
+          all(len(m.get("hint") or "") > 6 for m in _mt))
+
+    _ei = client.post("/api/erase/instruction", json={}).json()
+    # AI 这条路是两段式（先补平再让模型收尾），条款描述的是「画自然」而不是「去掉」：
+    # 模型没有蒙版输入，让它「擦掉一条刺眼白条」只会得到一整块暗方块（真机实测）
+    check("AI 方式的默认条款是「补平后画自然」两段式",
+          "连成一体" in _ei["full"] and "补过的痕迹" in _ei["full"]
+          and _ei["constraint"] == _ei["defaultConstraint"], _ei["full"][:60])
+    _ei2 = client.post("/api/erase/instruction",
+                       json={"instruction": "这是木地板", "constraint": "我的约束"}).json()
+    check("补充说明在前、自定义约束整段替换",
+          _ei2["full"].startswith("这是木地板") and _ei2["constraint"] == "我的约束"
+          and _ei2["constraintCustom"] is True)
+
+    # 合成两张测试图：平滑渐变底 / 重复砖墙，各打一条白色"水印"
+    def _grad_img(H=384, W=512, seed=7):
+        rng = np.random.default_rng(seed)
+        yy, xx = np.mgrid[0:H, 0:W]
+        base = np.stack([60 + 40 * xx / W, 80 + 30 * yy / H,
+                         110 + 20 * (xx + yy) / (W + H)], -1)
+        return np.clip(base + rng.normal(0, 6, base.shape), 0, 255).astype(np.uint8)
+
+    def _brick_img(H=384, W=512, seed=11):
+        rng = np.random.default_rng(seed)
+        yy, xx = np.mgrid[0:H, 0:W]
+        bw, bh = 64, 32
+        row = yy // bh
+        shift = (row % 2) * (bw // 2)
+        mortar = (((xx + shift) % bw) < 4) | ((yy % bh) < 4)
+        tone = ((row * 7 + ((xx + shift) // bw) * 13) % 40) - 20
+        base = np.zeros((H, W, 3), np.float32)
+        base[..., 0] = 150 + tone
+        base[..., 1] = 95 + tone
+        base[..., 2] = 80 + tone
+        base[mortar] = 200
+        return np.clip(base + rng.normal(0, 5, base.shape), 0, 255).astype(np.uint8)
+
+    def _wm(clean, box):
+        im = Image.fromarray(clean.copy())
+        ImageDraw.Draw(im).rectangle(box, fill=(248, 248, 252))
+        return im
+
+    _box = (120, 150, 400, 210)
+    _ermask = Image.new("L", (512, 384), 0)
+    ImageDraw.Draw(_ermask).rectangle(_box, fill=255)
+    _hole = _er._hole_mask(_ermask, 6)
+
+    for _name, _clean in (("平滑渐变", _grad_img()), ("重复砖墙", _brick_img())):
+        _dirty = _wm(_clean, _box)
+        _errs = {}
+        for _m in ("telea", "offset", "mirror"):
+            _o, _om = asyncio.run(_er.run_erase(
+                _dirty, _ermask, method=_m, expand=6, feather_px=0,
+                hard=True, match_color=False))
+            _arr = np.asarray(_o.convert("RGB")).astype(int)
+            _gt = _clean.astype(int)
+            _errs[_m] = float(np.abs(_arr[_hole] - _gt[_hole]).mean())
+            _out_max = int(np.abs(_arr[~_hole] - np.asarray(_dirty)[~_hole].astype(int)).max())
+            check(f"{_name}·{_om['methodLabel']}：外扩区外像素逐位不变",
+                  _out_max == 0, f"最大差 {_out_max}")
+        check(f"{_name}·补完的区域接近原图（误差 < 30/255）",
+              all(v < 30 for v in _errs.values()),
+              " ".join(f"{k}={v:.1f}" for k, v in _errs.items()))
+        print(f"       （{_name} 与真值差："
+              + " ".join(f"{k}={v:.1f}" for k, v in _errs.items()) + "）")
+        if _name == "重复砖墙":
+            check("重复纹理上「纹理平移」明显优于「扩散修复」",
+                  _errs["offset"] < _errs["telea"] * 0.7,
+                  f"offset={_errs['offset']:.1f} telea={_errs['telea']:.1f}")
+    check("非 AI 方式是毫秒级（单次 < 1s）",
+          all(True for _ in ()) and _om["seconds"] < 1.0, str(_om["seconds"]))
+
+    # AI 方式：注入假生成器走通链路（真机已验证过同一条重绘路径）
+    async def _fake_erase_gen(img, prompt, neg, refs, *, steps, seed,
+                              max_seq_len, provider_cfg, task_id, progress=None):
+        return Image.new("RGBA", img.size, (150, 150, 150, 255)), {"steps": 40, "model": "fake"}
+
+    _ao, _am = asyncio.run(_er.run_erase(
+        _wm(_grad_img(), _box), _ermask, method="ai", expand=6,
+        generator=_fake_erase_gen))
+    check("AI 方式走通并回报提示词 + 先补平的痕迹",
+          _am["method"] == "ai" and "连成一体" in (_am.get("prompt") or "")
+          and _am["ai"] is not None
+          and (_am.get("prefill") or {}).get("engine"), str(_am.get("prefill")))
+    check("AI 方式的选区外也不变",
+          int(np.abs(np.asarray(_ao.convert("RGB")).astype(int)[~_hole]
+                     - np.asarray(_wm(_grad_img(), _box))[~_hole].astype(int)).max()) == 0)
+
+    # 参数 / 接口
+    _epid = client.post("/api/projects",
+                        json={"name": "er", "templateId": "object_erase"}
+                        ).json()["project"]["id"]
+    _esrc = Image.fromarray(_grad_img())
+    _ebuf = io.BytesIO(); _esrc.save(_ebuf, "PNG"); _ebuf.seek(0)
+    _esid = client.post(f"/api/projects/{_epid}/refs",
+                        files={"file": ("s.png", _ebuf, "image/png")}).json()["ref"]["id"]
+    _embuf = io.BytesIO(); _ermask.save(_embuf, "PNG"); _embuf.seek(0)
+    _emf = client.post(f"/api/projects/{_epid}/mask",
+                       files={"file": ("m.png", _embuf, "image/png")}).json()["mask"]["file"]
+    check("去除：没有源图时 404",
+          client.post("/api/erase", json={
+              "projectId": _epid, "sourceFile": "nope.png",
+              "maskFile": _emf}).status_code == 404)
+    check("去除：没有蒙版时 400",
+          client.post("/api/erase", json={
+              "projectId": _epid, "sourceKind": "refs", "sourceFile": _esid}
+          ).status_code == 400)
+    _eblank = io.BytesIO()
+    Image.new("L", (512, 384), 0).save(_eblank, "PNG"); _eblank.seek(0)
+    _emf2 = client.post(f"/api/projects/{_epid}/mask",
+                        files={"file": ("b.png", _eblank, "image/png")})
+    check("去除：空蒙版上传 400", _emf2.status_code == 400)
+    _esaved = client.put(f"/api/projects/{_epid}", json={
+        "nodes": [{"id": "er1", "type": "erase", "x": 0, "y": 0, "erase": {
+            "method": "offset", "expand": 999, "feather": 99,
+            "palette": "source", "instruction": "这是木地板",
+            "maskFile": _emf,
+            "mask": {"file": _emf, "url": "/m.png", "width": 512,
+                     "height": 384, "coverage": 0.11, "box": [120, 150, 401, 211]},
+        }}], "edges": []}).json()["project"]["nodes"][0]["erase"]
+    check("去除局部参数存盘往返 + 夹紧（外扩 64 / 羽化 32）",
+          _esaved["method"] == "offset" and _esaved["expand"] == 64
+          and _esaved["feather"] == 32 and _esaved["palette"] == "source"
+          and _esaved["instruction"] == "这是木地板"
+          and _esaved["maskFile"] == _emf, str(_esaved)[:180])
+    check("非法补法回落为扩散修复",
+          client.put(f"/api/projects/{_epid}", json={
+              "nodes": [{"id": "e2", "type": "erase", "x": 0, "y": 0,
+                         "erase": {"method": "magic"}}], "edges": []
+          }).json()["project"]["nodes"][0]["erase"]["method"] == "telea")
+    client.delete(f"/api/projects/{_epid}")
+
     print("== 删除项目 ==")
     r = client.delete(f"/api/projects/{pid}")
     check("删除项目", r.status_code == 200, f"{r.status_code} {r.text[:200]}")

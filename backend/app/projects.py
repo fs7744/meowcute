@@ -47,7 +47,7 @@ ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen",
                  "parts", "rigwalk", "txtvideo",
                  "threeview", "walkvideo", "sequence", "spritesheet", "play",
                  "clipsrc", "framesplit", "spritegrid", "animpreview",
-                 "godot2d", "inpaint")
+                 "godot2d", "inpaint", "erase")
 
 # 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
 # 默认关掉等于把开关藏起来。
@@ -334,6 +334,34 @@ DEFAULT_INPAINT = {
 }
 
 
+# 去除局部节点：涂掉水印/杂物，用周围内容补上。三条非 AI 路线（毫秒级）
+# 加一条 AI 路线（几十秒），默认走扩散修复——这是水印/字幕最常见的场景。
+DEFAULT_ERASE = {
+    "enabled": True,
+    # telea=扩散修复 / offset=纹理平移 / mirror=镜像 / ai=模型补全
+    "method": "telea",
+    # 有效蒙版的外扩：水印边缘的抗锯齿比笔画宽 1~3px，不外扩会留一圈残影
+    "expand": 6,
+    "feather": 2,
+    "hard": False,
+    "matchColor": True,
+    "matchStrength": 0.6,
+    "palette": "none",
+    "paletteColors": 48,
+    # 以下四项只对 method=ai 有意义；其余方式用不到提示词
+    "instruction": "",
+    "constraint": "",
+    "negative": "",
+    "aiMode": "crop",
+    "context": 0.35,
+    "steps": None,
+    "seed": None,
+    "maxSeqLen": None,
+    "maskFile": "",
+    "mask": None,
+}
+
+
 def _now() -> float:
     return round(time.time(), 3)
 
@@ -475,6 +503,15 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                 n["meta"] = None
                 n["godot2d"] = {**DEFAULT_GODOT2D,
                                 **(n.get("godot2d") if isinstance(n.get("godot2d"), dict) else {})}
+            elif n["type"] == "erase":
+                n["result"] = None
+                n["images"] = []
+                n["meta"] = None
+                eopts = {**DEFAULT_ERASE,
+                         **(n.get("erase") if isinstance(n.get("erase"), dict) else {})}
+                eopts["maskFile"] = ""
+                eopts["mask"] = None
+                n["erase"] = eopts
             elif n["type"] == "inpaint":
                 # 蒙版与产出图跨项目无效：结构留下，运行时数据清空
                 n["result"] = None
@@ -705,6 +742,14 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         elif n["type"] == "godot2d":
             item.update({
                 "godot2d": _clean_godot2d(n.get("godot2d")),
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "erase":
+            item.update({
+                "erase": _clean_erase(n.get("erase")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:8],
                 "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
@@ -1305,6 +1350,50 @@ def _clean_inpaint(g: Any) -> Dict[str, Any]:
         "matchStrength": _cl(g.get("matchStrength"), 0.45, 0.0, 1.0),
         "palette": pal,
         "paletteColors": _ci(g.get("paletteColors"), 48, 8, 256),
+        "steps": (_ci(g.get("steps"), 0, 4, 60) or None) if g.get("steps") else None,
+        "seed": (_ci(g.get("seed"), 0, 0, 2**31 - 1))
+        if g.get("seed") not in (None, "") else None,
+        "maxSeqLen": (_ci(g.get("maxSeqLen"), 0, 256, 1536) or None)
+        if g.get("maxSeqLen") else None,
+        "maskFile": str(g.get("maskFile") or "")[:200],
+        "mask": mask_info,
+    }
+
+
+def _clean_erase(g: Any) -> Dict[str, Any]:
+    """去除局部参数：白名单 + 夹紧（漏一项就是「改了存不下」）。"""
+    g = g if isinstance(g, dict) else {}
+    method = str(g.get("method") or "telea")[:8]
+    if method not in ("telea", "offset", "mirror", "ai"):
+        method = "telea"
+    pal = "source" if str(g.get("palette") or "") == "source" else "none"
+    mask = g.get("mask") if isinstance(g.get("mask"), dict) else None
+    mask_info = None
+    if mask:
+        box = mask.get("box") if isinstance(mask.get("box"), list) else []
+        mask_info = {
+            "file": str(mask.get("file") or "")[:200],
+            "url": str(mask.get("url") or "")[:400],
+            "width": _ci(mask.get("width"), 0, 0, 8192),
+            "height": _ci(mask.get("height"), 0, 0, 8192),
+            "coverage": _cl(mask.get("coverage"), 0.0, 0.0, 1.0),
+            "box": [_ci(v, 0, 0, 8192) for v in box][:4],
+        }
+    return {
+        "enabled": bool(g.get("enabled", True)),
+        "method": method,
+        "expand": _ci(g.get("expand"), 6, 0, 64),
+        "feather": _ci(g.get("feather"), 2, 0, 32),
+        "hard": bool(g.get("hard")),
+        "matchColor": bool(g.get("matchColor", True)),
+        "matchStrength": _cl(g.get("matchStrength"), 0.6, 0.0, 1.0),
+        "palette": pal,
+        "paletteColors": _ci(g.get("paletteColors"), 48, 8, 256),
+        "instruction": str(g.get("instruction") or "")[:2000],
+        "constraint": str(g.get("constraint") or "")[:4000],
+        "negative": str(g.get("negative") or "")[:600],
+        "aiMode": "full" if str(g.get("aiMode") or "") == "full" else "crop",
+        "context": _cl(g.get("context"), 0.35, 0.0, 2.0),
         "steps": (_ci(g.get("steps"), 0, 4, 60) or None) if g.get("steps") else None,
         "seed": (_ci(g.get("seed"), 0, 0, 2**31 - 1))
         if g.get("seed") not in (None, "") else None,

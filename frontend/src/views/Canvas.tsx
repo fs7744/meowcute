@@ -8,6 +8,7 @@ import FramesplitNode from '../components/FramesplitNode'
 import SpriteGridNode from '../components/SpriteGridNode'
 import GodotExportNode from '../components/GodotExportNode'
 import InpaintNode from '../components/InpaintNode'
+import EraseNode from '../components/EraseNode'
 import MaskEditor from '../components/MaskEditor'
 import GenNode from '../components/GenNode'
 import InputNode from '../components/InputNode'
@@ -33,6 +34,7 @@ import type {
   GenNode as GenNodeType,
   Godot2DNode as Godot2DNodeType, Godot2DMeta,
   InpaintNode as InpaintNodeType,
+  EraseMethodInfo, EraseNode as EraseNodeType,
   InputNode as InputNodeType, MatteNode as MatteNodeType, PlayNode as PlayNodeType,
   Project, PromptExample, PromptLimits, PromptPreview, RefineNode as RefineNodeType,
   ResultImage,
@@ -72,6 +74,7 @@ const SPRITEGRID_W = 420
 const ANIMPREVIEW_W = 340
 const GODOT_W = 380
 const INPAINT_W = 400
+const ERASE_W = 400
 const NODE_W: Record<string, number> = {
   generate: GEN_W, result: RES_W, input: INPUT_W, refine: REFINE_W, matte: MATTE_W,
   viewgen: VIEWGEN_W, threeview: THREEVIEW_W, walkvideo: WALKVIDEO_W,
@@ -79,6 +82,7 @@ const NODE_W: Record<string, number> = {
   txtvideo: TXTVIDEO_W,
   clipsrc: CLIPSRC_W, framesplit: FRAMESPLIT_W, spritegrid: SPRITEGRID_W,
   animpreview: ANIMPREVIEW_W, godot2d: GODOT_W, inpaint: INPAINT_W,
+  erase: ERASE_W,
 }
 
 /** 哪些类型的节点可以作为某个节点的上游（决定自定义工作流是否合法）。 */
@@ -102,11 +106,12 @@ const UPSTREAM_RULES: Record<string, string[]> = {
   // 常把它排在精灵图和导出之间（模板就是这条直线），所以两种上游都放行——
   // 解析时会穿过播放器找到最近的精灵图
   godot2d: ['spritegrid', 'animpreview'],
-  // 局部重绘要一张「可以改的图」：自己上传的、生成的、精修/抠过的、结果卡里的都行
+  // 局部重绘 / 去除局部要一张「可以改的图」：上传的、生成的、精修/抠过的、结果卡的都行
   inpaint: ['input', 'generate', 'matte', 'refine', 'result'],
+  erase: ['input', 'generate', 'matte', 'refine', 'result'],
   result: ['generate', 'refine', 'matte', 'viewgen', 'threeview',
            'walkvideo', 'sequence', 'spritesheet', 'play', 'txtvideo',
-           'parts', 'rigwalk', 'inpaint'],
+           'parts', 'rigwalk', 'inpaint', 'erase'],
 }
 
 const UPSTREAM_HINT: Record<string, string> = {
@@ -122,7 +127,8 @@ const UPSTREAM_HINT: Record<string, string> = {
   play: '精灵整图',
   godot2d: '精灵图（可隔着「动画预览」）',
   inpaint: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
-  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 四视图拼板 / 行走链 / 局部重绘',
+  erase: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
+  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 四视图拼板 / 行走链 / 局部重绘 / 去除局部',
 }
 
 function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): boolean {
@@ -135,7 +141,7 @@ function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): b
  *  四视图拼板不在列：它要收正/侧/背/右四路。 */
 const SINGLE_INPUT = new Set(['refine', 'matte', 'result', 'viewgen',
                               'walkvideo', 'sequence', 'spritesheet', 'play',
-                              'godot2d', 'inpaint'])
+                              'godot2d', 'inpaint', 'erase'])
 
 /** 右键「添加节点」的目录：分类 → 具体节点。
  *  节点类型只会越来越多，平铺成一条长列表很快就用不了了。 */
@@ -186,6 +192,8 @@ const NODE_CATALOG: {
     items: [
       { type: 'inpaint', label: '局部重绘', dot: 'd-inpaint',
         hint: '笔刷涂出要改的地方 + 一句话，只重画这一块' },
+      { type: 'erase', label: '去除局部', dot: 'd-erase',
+        hint: '涂掉水印/杂物，用周围内容补上（3 种非 AI 方式 + AI 补全）' },
     ],
   },
   {
@@ -250,6 +258,7 @@ const NODE_LABEL: Record<string, string> = {
   txtvideo: '文本生视频', parts: '拆件', rigwalk: '骨骼行走',
   clipsrc: '选择视频', framesplit: '拆解帧', spritegrid: '精灵图',
   animpreview: '动画预览', godot2d: 'Godot 导出', inpaint: '局部重绘',
+  erase: '去除局部',
 }
 const nodeLabel = (t: string) => NODE_LABEL[t] || t
 
@@ -271,6 +280,8 @@ export default function Canvas({ projectId, onBack }: Props) {
   const viewMode = useViewMode()
   const [template, setTemplate] = useState<Template | null>(null)
   const [styles, setStyles] = useState<Style[]>([])
+  /** 去除局部的四种补法（含适用场景）：知识在后端，前端只显示 */
+  const [eraseMethods, setEraseMethods] = useState<EraseMethodInfo[]>([])
   /** 设置页「新建节点时的默认值」（width/height/n/background） */
   const [nodeDefaults, setNodeDefaults] = useState<Record<string, any>>({})
   /** 提示词上限：生成卡自己会拦，工作流入口也要拦（否则绕过按钮照样发出去） */
@@ -330,6 +341,8 @@ export default function Canvas({ projectId, onBack }: Props) {
    *  的世界层——position:fixed 会相对那个变换后的容器定位。 */
   const [maskEdit, setMaskEdit] = useState<{
     nodeId: string; srcUrl: string; w: number; h: number; maskUrl: string | null
+    /** true = 去除局部（文案不同：涂的是要去掉的东西，不是要重画的地方） */
+    erase?: boolean
   } | null>(null)
 
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -374,6 +387,9 @@ export default function Canvas({ projectId, onBack }: Props) {
       // 设置页的「新建节点默认值」：新建生成卡时预填（模板 defaults 仍可覆盖）
       setNodeDefaults(se.settings?.defaults || {})
       loadPromptLimits().then(setLimits).catch(() => undefined)
+      // 补法清单只是辅助数据：拿不到也能用（卡片里有内置兜底）
+      api.eraseMethods().then((r) => alive && setEraseMethods(r.methods))
+        .catch(() => undefined)
       lastPayload.current = JSON.stringify({
         name: pr.project.name, nodes: pr.project.nodes,
         edges: pr.project.edges, viewport: pr.project.viewport,
@@ -686,6 +702,7 @@ export default function Canvas({ projectId, onBack }: Props) {
     else if (type === 'animpreview') addAnimPreviewNode(at)
     else if (type === 'godot2d') addGodotNode(at)
     else if (type === 'inpaint') addInpaintNode(at)
+    else if (type === 'erase') addEraseNode(at)
     else addEmptyResultNode(at)
   }
 
@@ -914,6 +931,27 @@ export default function Canvas({ projectId, onBack }: Props) {
         mode: 'crop', context: 0.35, feather: 4, expand: 8, hard: false,
         matchColor: true, matchStrength: 0.45, palette: 'none',
         paletteColors: 48, steps: null, seed: null, maxSeqLen: null,
+        maskFile: '', mask: null,
+      },
+      result: null, images: [], meta: null,
+      createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addEraseNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(ERASE_W, 520)
+    const node: EraseNodeType = {
+      id: newId('er'), type: 'erase', x: spot.x, y: spot.y,
+      erase: {
+        enabled: true, method: 'telea', expand: 6, feather: 2, hard: false,
+        matchColor: true, matchStrength: 0.6, palette: 'none', paletteColors: 48,
+        instruction: '', constraint: '', negative: '', aiMode: 'crop',
+        context: 0.35, steps: null, seed: null, maxSeqLen: null,
         maskFile: '', mask: null,
       },
       result: null, images: [], meta: null,
@@ -2086,14 +2124,75 @@ export default function Canvas({ projectId, onBack }: Props) {
     setProject((p) => p ? {
       ...p,
       nodes: p.nodes.map((n) => {
-        if (n.id !== nodeId || n.type !== 'inpaint') return n
-        const nd = n as InpaintNodeType
-        return {
-          ...nd,
-          inpaint: { ...nd.inpaint, maskFile: mask.file, mask },
-        } as CanvasNode
+        if (n.id !== nodeId) return n
+        // 局部重绘与去除局部共用同一个涂抹编辑器，蒙版回写按节点类型分流
+        if (n.type === 'inpaint') {
+          const nd = n as InpaintNodeType
+          return { ...nd, inpaint: { ...nd.inpaint, maskFile: mask.file, mask } } as CanvasNode
+        }
+        if (n.type === 'erase') {
+          const nd = n as EraseNodeType
+          return { ...nd, erase: { ...nd.erase, maskFile: mask.file, mask } } as CanvasNode
+        }
+        return n
       }),
     } : p)
+  }
+
+  // ---- 去除局部：非 AI 毫秒级 / AI 几十秒，共用任务制 ----
+  const runErase = async (node: EraseNodeType) => {
+    if (!node.erase?.enabled) return
+    if (isRunning(node.id)) return
+    const up = upstreamImage(node)
+    if (!up) {
+      alert('没有可用的源图：把「选择图片 / 生成图 / 像素精修 / 扣除背景」连到它的输入端口')
+      return
+    }
+    if (!node.erase.maskFile) {
+      alert('还没有涂抹区域：先点「涂抹要去掉的东西」把水印/杂物圈出来')
+      return
+    }
+    markBusy(node.id, true)
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const o = node.erase
+      const { taskId } = await api.erase({
+        projectId: project!.id,
+        sourceKind: up.kind,
+        sourceFile: up.file,
+        maskFile: o.maskFile,
+        method: o.method, expand: o.expand, feather: o.feather, hard: o.hard,
+        matchColor: o.matchColor, matchStrength: o.matchStrength,
+        palette: o.palette, paletteColors: o.paletteColors,
+        instruction: o.instruction, constraint: o.constraint, negative: o.negative,
+        aiMode: o.aiMode, context: o.context,
+        steps: o.steps, seed: o.seed, maxSeqLen: o.maxSeqLen,
+      })
+      activeTaskRef.current = taskId
+      setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+      const r: any = await awaitTask<any>(taskId, node.id)
+      if (activeTaskRef.current === taskId) activeTaskRef.current = null
+      const im = r.image || {}
+      const result: ResultImage = {
+        assetId: im.assetId, url: im.url, width: im.width, height: im.height,
+        origAssetId: im.origAssetId || up.file,
+        origUrl: im.origUrl || up.url,
+        origSize: [up.width, up.height],
+      }
+      setProject((p) => p ? {
+        ...p,
+        nodes: p.nodes.map((n) => n.id === node.id
+          ? ({ ...n, result, images: [result], meta: r.meta } as CanvasNode) : n),
+      } : p)
+      pushDownstreamResult(node.id, [result], { erase: r.meta })
+    } catch (e: any) {
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
   }
 
   // ---- 骨骼路线：拆件 → 骨骼行走（纯 CPU，确定性） ----
@@ -3142,6 +3241,10 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is InpaintNodeType => n.type === 'inpaint'),
     [project?.nodes],
   )
+  const eraseNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is EraseNodeType => n.type === 'erase'),
+    [project?.nodes],
+  )
 
   /** 某个节点的入边来自哪一类上游（节点卡上显示「输入：xxx」）。 */
   const upstreamLabel = useCallback((id: string): string | null => {
@@ -3620,6 +3723,36 @@ export default function Canvas({ projectId, onBack }: Props) {
             )
           })}
 
+          {eraseNodes.map((n, i) => {
+            const up = upstreamImage(n)
+            return (
+              <EraseNode
+                key={n.id}
+                node={n}
+                index={i}
+                running={isRunning(n.id)}
+                progress={tasks[n.id]?.progress?.label}
+                error={tasks[n.id]?.error ?? null}
+                methods={eraseMethods}
+                upstream={up}
+                onChange={(patch) => patchNode(n.id, patch)}
+                onDelete={() => deleteNode(n.id)}
+                onDragStart={startDragNode(n.id)}
+                onRun={() => runErase(n)}
+                onOpenMask={() => {
+                  if (!up) { alert('先接一张源图，再涂抹'); return }
+                  setMaskEdit({
+                    nodeId: n.id, srcUrl: up.url, w: up.width, h: up.height,
+                    maskUrl: n.erase?.mask?.url || null, erase: true,
+                  })
+                }}
+                onStartLink={startLink}
+                onFinishLink={finishLink}
+                onPreview={(url, title, orig) => setPreview({ src: url, origSrc: orig, title })}
+              />
+            )
+          })}
+
           {sequenceNodes.map((n, i) => (
             <SequenceNode
               key={n.id}
@@ -3843,7 +3976,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         srcW={maskEdit?.w || 1}
         srcH={maskEdit?.h || 1}
         initialMaskUrl={maskEdit?.maskUrl || null}
-        title="涂抹要重绘的区域"
+        title={maskEdit?.erase ? '涂抹要去掉的东西' : '涂抹要重绘的区域'}
         onSaved={(mask) => {
           if (maskEdit) applyMask(maskEdit.nodeId, mask)
         }}

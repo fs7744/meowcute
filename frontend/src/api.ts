@@ -471,6 +471,48 @@ pixelArt?: boolean
       .then((d: any) => d as { ok: boolean; mask: import('./types').InpaintMaskInfo })
   },
 
+  /** 去除局部：四种补法及其适用场景（界面直接显示，不在前端硬编码知识）。 */
+  eraseMethods: () =>
+    fetch('/api/erase/methods').then(j<{ methods: import('./types').EraseMethodInfo[] }>),
+
+  /** 去除局部：AI 方式的提示词拼装预览。 */
+  eraseInstruction: (payload: { instruction?: string; constraint?: string }) =>
+    fetch('/api/erase/instruction', jsonInit(payload)).then(j<{
+      body: string
+      constraint: string
+      defaultConstraint: string
+      constraintCustom: boolean
+      refClause: string
+      full: string
+      negative: string
+      chars: number
+      maxChars: number
+    }>),
+
+  /** 去除局部（任务制：非 AI 毫秒级，AI 几十秒）。 */
+  erase: (payload: {
+    projectId: string
+    sourceKind?: 'images' | 'refs'
+    sourceFile: string
+    maskFile: string
+    method?: import('./types').EraseMethod
+    expand?: number
+    feather?: number
+    hard?: boolean
+    matchColor?: boolean
+    matchStrength?: number
+    palette?: 'none' | 'source'
+    paletteColors?: number
+    instruction?: string
+    constraint?: string
+    negative?: string
+    aiMode?: 'crop' | 'full'
+    context?: number
+    steps?: number | null
+    seed?: number | null
+    maxSeqLen?: number | null
+  }) => fetch('/api/erase', jsonInit(payload)).then(j<{ taskId: string }>),
+
   /** 局部重绘（任务制）。 */
   inpaint: (payload: {
     projectId: string
@@ -537,6 +579,17 @@ export function subscribeTask(
         finished = true
         close()
         onDone((data.result as GenerateResult) ?? null, data as TaskProgress)
+      } else if (data.doneAt) {
+        // 服务端的 progress 快照里已经带 doneAt：任务其实结束了。
+        // 毫秒级任务常在建连之前就完成，只发 progress 不发 done——不在这兜住
+        // 就会永远「处理中」。等一次微任务再查一次真实状态拿结果。
+        finished = true
+        close()
+        fetch(`/api/tasks/${taskId}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((res) => onDone((res?.result as GenerateResult) ?? null,
+                                (res?.progress as TaskProgress) ?? data))
+          .catch(() => onDone(null, data as TaskProgress))
       } else {
         onProgress(data as TaskProgress)
       }
