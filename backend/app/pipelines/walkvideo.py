@@ -40,6 +40,9 @@ from PIL import Image
 
 from .. import progress as progress_mod
 from ..prompt_limits import fit_seq_len
+# hy15 分窗阈值的默认值（41）：单点定义，免得两处漂移。依据见该常量的注释
+# （段数越少漂移越小，41 帧/段峰值 18.76GB 仍在 24G 安全区）。
+from ..providers.hy15 import DEFAULT_WINDOW as DEFAULT_HY15_WINDOW
 
 # --------------------------------------------------------------------------- #
 # 方向定义
@@ -392,19 +395,24 @@ async def generate_walk(
     retries: int = 2,
     negative: str = "",
     engine: Optional[str] = None,
-    window: int = 0,
+    window: int = DEFAULT_HY15_WINDOW,
 ) -> Tuple[List[Image.Image], Dict[str, Any]]:
     """方向立绘 + 动作提示词 → 行走视频帧序列。
 
     引擎（2026-10-24 起默认 HunyuanVideo-1.5，可切 Wan2.2）：
-      - hy15：一致性好、不闪烁不变形，但帧数越多越慢（61 帧起每步 2.4s→47s）、
-        CFG 无意义（step-distilled 官方 guidance=1.0），动作幅度靠提示词驱动；
+      - hy15：一致性好、不闪烁不变形；单步耗时随帧数≈线性（21/33/49/61 帧 =
+        3.4/4.5/6.7/8.8s/步），真正的墙是显存（~81 帧以上整段顶破 24G，超了用
+        window 分窗）；CFG 无意义（step-distilled 官方 guidance=1.0），动作幅度
+        靠提示词驱动；
       - wan：像素风保留更严格，慢，且长片会有闪烁/变形。
 
-    window：hy15 I2V 分窗阈值（0=关闭）。num_frames>window 时切成多个 ≤window 的
-    链式段（每段用上一段末帧做首帧条件），把峰值显存按在 ~16.6GB，用于生成整段会
-    OOM 的长视频（实测 ~81 帧以上整段顶破 24G）；单步耗时本就≈线性，分窗不提速、
-    反多几次固定开销，接缝质量是主要权衡点。
+    window：hy15 I2V 分窗阈值（0=关闭，默认 DEFAULT_HY15_WINDOW=41）。num_frames>window
+    时切成多个 ≤window 的链式段（每段用上一段末帧做首帧条件），把「随总长度线性增长」
+    的峰值显存按回单窗口水平，从而跑得完整段会 OOM 的长视频（实测 ~81 帧以上整段
+    顶破 24G）。单步耗时本就≈线性，**分窗不提速**（段多反而多几次固定开销），真正的
+    权衡是质量：每多一段多一次独立采样 + 重新 conditioning，角色漂移随段数累积，
+    所以默认取 41 而不是更小的 21（121 帧 6 段→3 段：instability 30.8%→23.4%、
+    颜色漂移 76.8→57.3、耗时 122.7s→104.3s，而 41 帧/段峰值 18.76GB 仍在安全区）。
 
     轻量控制闭环（不上更大模型也能治「没正常走」）：先按正常 CFG 生成，用
     motion_stats 量化「动没动」，分数低于阈值就升级 guidance_scale（并加重
@@ -540,7 +548,7 @@ async def run_walk(
     retries: int = 2,
     negative: str = "",
     engine: Optional[str] = None,
-    window: int = 0,
+    window: int = DEFAULT_HY15_WINDOW,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """跑完一个方向集合，返回每方向的帧序列。
 

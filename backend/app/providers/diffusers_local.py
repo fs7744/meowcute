@@ -1338,7 +1338,7 @@ class DiffusersProvider(BaseProvider):
         progress: Optional[Dict[str, Any]] = None,
         engine: Optional[str] = None,
         fit_aspect: bool = False,
-        window: int = 0,
+        window: int = hy15_mod.DEFAULT_WINDOW,
     ) -> ProviderResult:
         """视频生成：参考图（可选）+ 提示词 → 帧序列（ProviderResult.images = 帧）。
 
@@ -1350,8 +1350,10 @@ class DiffusersProvider(BaseProvider):
         engine：hy15（默认，HunyuanVideo-1.5）/ wan（Wan2.2 TI2V-5B）。两条路径的
         「帧数 / 步数 / CFG」语义不同，所以各自在自己的分支里收敛参数。
 
-        window：分窗阈值（0=关闭，仅 hy15 的 I2V 生效）。num_frames>window 时切成
-        多个 ≤window 的链式段，绕开整段长序列自注意力的超线性耗时塌方。
+        window：分窗阈值（0=关闭，默认 hy15.DEFAULT_WINDOW=41，仅 hy15 的 I2V 生效）。
+        num_frames>window 时切成多个 ≤window 的链式段，把峰值显存从「随总长度线性
+        增长」按回单窗口水平——这才是长视频能跑完的关键；单步耗时实测本就≈线性，
+        分窗**不提速**（段多反而更慢，且漂移随段数累积，所以默认取 41 而非更小值）。
         """
         _require_torch()
         _touch()
@@ -1432,7 +1434,7 @@ class DiffusersProvider(BaseProvider):
         self, prompt: str, ref, *, num_frames: int, steps: Optional[int],
         seed: Optional[int], task_id: Optional[str], negative: Optional[str],
         guidance_scale: Optional[float], progress: Optional[Dict[str, Any]],
-        window: int = 0, width: int = 0, height: int = 0,
+        window: int = hy15_mod.DEFAULT_WINDOW, width: int = 0, height: int = 0,
     ) -> ProviderResult:
         """HunyuanVideo-1.5 480p step-distilled：图生视频 / 纯文生视频。
 
@@ -1440,11 +1442,13 @@ class DiffusersProvider(BaseProvider):
         有 ref → 图生视频（I2V，参考图编码进首帧 latent + SigLIP image_embed）。
 
         流程：文本编码（Qwen2.5-VL-7B，首次约 2 分钟，之后走磁盘缓存）→
-        DiT+VAE 常驻推理（21 帧约 0.7-1 分钟）→ 帧序列。
+        DiT+VAE 推理（21 帧 / 12 步 / 384×512 约 16s；分辨率由用户选，暂在 interfaces 侧按环境调整）→ 帧序列。
 
-        参数收敛：帧数对齐 4k+1、下限 13（上限不卡，61 帧起单步 2.4s→47s 由用户
-        权衡，或用 window 分窗绕开）；步数夹到 [6,20]；guidance 默认 1.0（无 CFG）。
-        window>0 且 frames>window 时 I2V 走链式分窗（每段 ≤window，单步恒定）。
+        参数收敛：帧数对齐 4k+1、下限 13（上限放开给用户）；步数夹到 [6,20]；
+        guidance 默认 1.0（无 CFG）。
+        window>0 且 frames>window 时 I2V 走链式分窗（每段 ≤window，峰值显存封顶）。
+        默认取 hy15.DEFAULT_WINDOW=41：段数越少漂移越小——每多一段就多一次独立采样与
+        conditioning，漂移随之累积；而 41 帧/段峰值 18.76GB 仍在 24G 安全区内。
         """
         neg = negative if negative is not None else self.cfg.get("negativePrompt", "")
         label = str((progress or {}).get("label") or ("文生视频" if ref is None else "行走视频"))

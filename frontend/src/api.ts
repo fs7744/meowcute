@@ -318,8 +318,9 @@ export const api = {
     action?: string
     /** 视频引擎：hy15（HunyuanVideo-1.5，默认）/ wan（Wan2.2） */
     engine?: 'hy15' | 'wan'
-    /** hy15 分窗阈值（0=关闭）：numFrames 更大时链式分窗，把峰值显存按在
-     *  ~16.6GB，用于整段会 OOM 的长视频；仅 hy15 生效。 */
+    /** hy15 分窗阈值（0=关闭，默认 41）：numFrames 更大时链式分窗，把「随总长度
+     *  线性增长」的峰值显存按回单窗口水平，用于整段会 OOM 的长视频；不是提速，
+     *  段数越少漂移越小。仅 hy15 生效。 */
     window?: number
     styleId?: string | null
     steps?: number | null

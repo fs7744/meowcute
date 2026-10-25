@@ -1610,9 +1610,11 @@ class WalkVideoPayload(BaseModel):
     # 视频引擎：hy15（HunyuanVideo-1.5，默认优先）/ wan（Wan2.2 TI2V-5B）。
     # None 时按可用性自动选：hy15 权重就绪就用 hy15。
     engine: Optional[str] = None
-    # hy15 分窗阈值（0=关闭）：numFrames>window 时切成多个 ≤window 的链式 I2V 段，
-    # 把单步耗时从「帧数→token 超线性」拉回近似线性，用于更长视频。仅 hy15 生效。
-    window: int = 0
+    # hy15 分窗阈值：0=关闭（整段生成，长片会 OOM）；>0 且 numFrames 更大时链式
+    # 分窗。默认 41 —— 段数越少角色漂移越小（121 帧 6 段→3 段：instability
+    # 30.8%→23.4%、颜色漂移 76.8→57.3、耗时 122.7s→104.3s），而 41 帧/段峰值
+    # 18.76GB 仍在 24G 内；依据见 backend/app/providers/hy15.py 的 DEFAULT_WINDOW。
+    window: int = walkvideo_mod.DEFAULT_HY15_WINDOW
 
 
 @app.get("/api/walkvideo/defaults")
@@ -1637,7 +1639,8 @@ async def walkvideo_defaults() -> Dict[str, Any]:
              "available": True,
              "note": "像素风更保真，长片可能闪烁/变形"},
         ],
-        # 各引擎的帧数上限（4k+1）：hy15 超过 33 帧会因序列长度超线性退化
+        # 各引擎的帧数上限（4k+1）：hy15 单步耗时随帧数≈线性、上限只受显存限制
+        # （~81 帧以上整段顶破 24G，超了用 window 分窗），故放开到 257 由用户决定
         "frameHints": {"hy15": {"default": 21, "max": 257, "align": 4},
                        "wan": {"default": 81, "max": 193, "align": 4}},
     }
@@ -1761,7 +1764,7 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
                             else _clamp(payload.guidanceScale, 1.0, 9.0, 5.0)),
             motion_threshold=_clamp(payload.motionThreshold, 1.0, 30.0, 6.0),
             retries=_clamp(payload.retries, 0, 5, 2),
-            window=_clamp(payload.window, 0, 257, 0),
+            window=_clamp(payload.window, 0, 257, walkvideo_mod.DEFAULT_HY15_WINDOW),
             negative=(payload.negative or "").strip(),
             engine=payload.engine)
 

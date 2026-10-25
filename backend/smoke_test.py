@@ -473,6 +473,7 @@ def _run_checks(client) -> int:
     check("返回重试强调句", "绝不定格" in wd["emphasisTail"])
     check("返回默认动作提示词", len(wd["prompt"]) > 50)
     from backend.app.projects import _clean_walkvideo
+    from backend.app.providers.hy15 import DEFAULT_WINDOW as DEFAULT_HY15_WINDOW
     cw = _clean_walkvideo({"negative": "我的负面词"})
     check("行走负面词进存盘白名单", cw["negative"] == "我的负面词", cw["negative"])
 
@@ -492,9 +493,11 @@ def _run_checks(client) -> int:
           _clean_walkvideo({"engine": "wan", "numFrames": 999})["numFrames"] == 193)
     check("wan 帧数放到 121",
           _clean_walkvideo({"engine": "wan", "numFrames": 121})["numFrames"] == 121)
-    check("window 分窗阈值进存盘白名单（0=关，直通，超 257 才夹）",
+    check("window 分窗阈值进存盘白名单（默认 41、0=显式的关、超 257 才夹）",
           _clean_walkvideo({"window": 21})["window"] == 21
-          and _clean_walkvideo({})["window"] == 0
+          and _clean_walkvideo({"window": 0})["window"] == 0
+          # 缺省走后端单点常量 DEFAULT_WINDOW：段数越少漂移越小（见该常量注释）
+          and _clean_walkvideo({})["window"] == DEFAULT_HY15_WINDOW
           and _clean_walkvideo({"window": 999})["window"] == 257)
     check("行走视频默认引擎是 hy15",
           _clean_walkvideo({})["engine"] == "hy15",

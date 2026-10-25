@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, loadPromptLimits } from '../api'
 import AdvancedSection from './AdvancedSection'
+import { HY15_DEFAULT_WINDOW, HY15_WINDOW_RATIONALE } from '../lib/hy15Defaults'
 import type {
   PromptExample, PromptLimits, WalkVideoNode as WalkVideoNodeType, WalkDir,
   VideoAsset,
@@ -72,7 +73,7 @@ export default function WalkVideoNode({
     engine: 'hy15',
     steps: null, seed: null, width: 384, height: 512,
     numFrames: 21, fps: 12, maxSide: 512, maxSeqLen: null,
-    guidanceScale: null, motionThreshold: 5.5, retries: 1, window: 0,
+    guidanceScale: null, motionThreshold: 5.5, retries: 1, window: HY15_DEFAULT_WINDOW,
     sources: {},
   }
   const v = { ...DEFAULTS, ...node.walkvideo }
@@ -614,11 +615,12 @@ export default function WalkVideoNode({
             {isHy15 && (
               <label className="gen-field">
                 <span className="gen-field-label"
-                  title="hy15 分窗阈值（0=关闭）。帧数大于此值时，切成多个 ≤此值的 I2V 段链式生成，每段用上一段末帧做首帧条件——不是提速（单步本就≈线性），而是把峰值显存按在单窗口水平，让整段会 OOM 的长视频也能出。接缝质量是主要权衡点。">
+                  title={`hy15 分窗阈值（0=关闭，默认 ${HY15_DEFAULT_WINDOW}）。帧数大于此值时，切成多个 ≤此值的 I2V 段链式生成，每段用上一段末帧做首帧条件——不是提速（单步本就≈线性），而是把「随总长度线性增长」的峰值显存按回单窗口水平，让整段会 OOM 的长视频也能出。真正的权衡是质量：每多一段多一次独立采样+重新 conditioning，角色漂移随段数累积，所以要在显存安全区内尽量少分段。${HY15_WINDOW_RATIONALE}`}>
                   分窗阈值（0=关闭）
                 </span>
                 <input className="input" type="number" min={0} max={193} step={4}
                   value={v.window ?? 0}
+                  placeholder={String(HY15_DEFAULT_WINDOW)}
                   onChange={(e) => patch({
                     window: Math.max(0, Math.min(193, Number(e.target.value))),
                   })} />
@@ -630,6 +632,14 @@ export default function WalkVideoNode({
                 value={v.fps} onChange={(e) => patch({ fps: Number(e.target.value) })} />
             </label>
           </div>
+          {isHy15 ? (
+            <div className="hint" style={{ marginTop: -4, lineHeight: 1.6 }}>
+              帧数大于「分窗阈值」才分窗。默认 <b>{HY15_DEFAULT_WINDOW}</b>：
+              段数越少角色漂移越小（121 帧 6 段→3 段：instability 30.8%→23.4%、
+              颜色漂移 76.8→57.3，耗时反而 122.7s→104.3s）。显存吃紧可调小（如 21），
+              0 = 关闭（长片会 OOM）。
+            </div>
+          ) : null}
 
           <div className="param-grid">
             <label className="gen-field">

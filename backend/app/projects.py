@@ -29,6 +29,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .config import PROJECTS_DIR, ensure_dirs
+# hy15 分窗阈值默认值（41）：单点定义在 providers/hy15.py，这里只取别名，
+# 免得「存盘默认值」与「推理默认值」两处漂移。
+from .providers.hy15 import DEFAULT_WINDOW as DEFAULT_HY15_WINDOW
 from .jsonlimits import parse_bounded, dumps_bounded
 from .storage import project_dir, project_size_mb, new_asset_id, write_readme
 
@@ -1036,9 +1039,10 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
                           if w.get("guidanceScale") not in (None, "") else None),
         "motionThreshold": round(max(0.0, min(float(w.get("motionThreshold") or 6.0), 60.0)), 2),
         "retries": _i(w.get("retries"), 2, 0, 5),
-        # hy15 分窗阈值：0=关闭（整段生成）；>0 且 numFrames 更大时链式分窗。
+        # hy15 分窗阈值：0=关闭（整段生成，长片会 OOM）；>0 且 numFrames 更大时链式
+        # 分窗，默认 41（段数越少漂移越小，见 hy15.DEFAULT_WINDOW 的实测依据）。
         # 仅 hy15 生效；Wan 忽略。不进白名单 = 前端设了也存不下。
-        "window": _i(w.get("window"), 0, 0, 257),
+        "window": _i(w.get("window"), DEFAULT_HY15_WINDOW, 0, 257),
     }
 
 

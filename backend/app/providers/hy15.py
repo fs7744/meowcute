@@ -43,6 +43,18 @@ from .. import progress as progress_mod
 # 与项目其它模型一致：路径相对仓库根
 HY15_NAME = "hunyuanvideo-1.5"
 
+# 分窗阈值默认值（2026-10-26 定）：单位帧，仅 I2V 生效，frames>window 时才分窗。
+# 依据 tools/hy15_identity_drift.py 的 121 帧对照（同图/同提示词/同ksam/64→12 步）：
+#   win=21 → 6 段：instability 30.8%、颜色漂移 76.8、耗时 122.7s、峰值 18.31GB
+#   win=41 → 3 段：instability 23.4%（回到整段水平）、颜色漂移 57.3、
+#                  耗时 104.3s（更快）、峰值 18.76GB（24G 内安全）
+# 机理：漂移随**段数**累积——每段独立采样 + 重新 conditioning，段越多越容易「换人」；
+# 而瓶颈是显存（~81 帧顶破 24G），所以段数能省就省：41 帧单段实测 18.76GB 仍在安全区，
+# 再往上调只会把 6→3 段的收益换成 OOM 风险。0 = 显式关闭（整段生成）。
+# 另注：别改成「所有窗共用同一个 seed」——61 帧看着更好，121 帧直接崩坏
+# （instability 202.6%、漂移 153.4，第 90/120 帧背景出现大面积彩色杂块）。
+DEFAULT_WINDOW = 41
+
 _PIPE = None            # diffusers pipeline（常驻，跨方向复用）
 _PIPE_KEY: Optional[str] = None
 
@@ -383,8 +395,9 @@ def _chunked_i2v(pipe, embeds: Dict[str, Any], *, image, frames: int, steps: int
 
     根因（实验 A 实测，480x848 默认分辨率）：hy15 单步耗时随帧数≈线性
     （21/33/49/61 帧 = 3.4/4.5/6.7/8.8s/步），但峰值显存随 latent 序列线性增长
-    （16.6→20.4GB），外推 ~81 帧顶破 24G、121+ 帧整段必 OOM。分窗后每段 ≤window
-    （默认 21），峰值显存恒定 ~16.6GB，与总长度无关——于是任意长度都能在 24G 内跑完。
+    （16.6→20.4GB），外推 ~81 帧顶破 24G、121+ 帧整段必 OOM。分窗后每段 ≤window，
+    峰值显存与总长度无关（41 帧/段实测 18.76GB）——于是任意长度都能在 24G 内跑完。
+    window 取多少见 DEFAULT_WINDOW：段数越少漂移越小，故默认 41 而不是更小的 21。
     代价：不是提速（单步本就线性），反而多几次 VAE 解码/SigLIP/latent 准备的固定开销；
     换来的是「整段会 OOM 的长度也能生成」。
 
@@ -430,17 +443,18 @@ def _generate(
     seed: Optional[int] = None,
     task_id: Optional[str] = None,
     progress: Optional[Dict[str, Any]] = None,
-    window: int = 0,
+    window: int = DEFAULT_WINDOW,
     width: int = 0,
     height: int = 0,
 ) -> Tuple[List[Any], Dict[str, Any]]:
     """预计算 embeds → 帧序列（T2V/I2V 共用，image=None 即纯文本）。
 
     帧数：内部对齐到 4k+1，下限 13（模型要求的最小可用帧数），上限不限制。
-    window：分窗阈值（0=关闭）。仅 I2V 生效：frames>window 时切成多个 ≤window 的
-    链式段。实测单步耗时本就≈线性，分窗**不提速**；它的价值是把峰值显存按在
-    ~16.6GB，从而在 24G 内跑整段会 OOM 的长视频（见 _chunked_i2v）。T2V 无首帧
-    锚点、分窗无意义，自动忽略。
+    window：分窗阈值（0=关闭，默认 DEFAULT_WINDOW=41）。仅 I2V 生效：frames>window
+    时切成多个 ≤window 的链式段。实测单步耗时本就≈线性，分窗**不提速**；它的价值
+    是把峰值显存从「随总长度线性增长」变成「按单窗口封顶」——整段必 OOM 的长视频
+    才能在 24G 内跑完（详见 _chunked_i2v / DEFAULT_WINDOW 的取舍依据）。
+    T2V 无首帧锚点、分窗无意义，自动忽略。
     width/height：用户选的分辨率（0=沿用管线默认）。单步耗时∝tokens∝H×W，
     这是最直接、最可预期的提速杠杆（像素素材最终只缩到 64-256px 的格子）。
     """
@@ -524,7 +538,7 @@ def run_i2v(
     seed: Optional[int] = None,
     task_id: Optional[str] = None,
     progress: Optional[Dict[str, Any]] = None,
-    window: int = 0,
+    window: int = DEFAULT_WINDOW,
     width: int = 0,
     height: int = 0,
 ) -> Tuple[List[Any], Dict[str, Any]]:
@@ -543,7 +557,7 @@ def run_t2v(
     seed: Optional[int] = None,
     task_id: Optional[str] = None,
     progress: Optional[Dict[str, Any]] = None,
-    window: int = 0,
+    window: int = DEFAULT_WINDOW,
     width: int = 0,
     height: int = 0,
 ) -> Tuple[List[Any], Dict[str, Any]]:
