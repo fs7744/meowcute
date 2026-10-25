@@ -169,7 +169,10 @@ export default function GenNode({
           }} />
       </div>
 
-      <div className="node-body" style={{ maxHeight: 'min(70vh, 760px)', overflowY: 'auto' }}>
+      {/* maxHeight 太小会把「画风 / 像素精修」压到滚动区之外：这张卡有 6 个字段，
+          内容比任何别的节点都长，760px 在大屏上也只够看到「背景」。
+          放到 86vh / 1040px，常见 1080p 与 1440p 都能一屏看到画风与精修。 */}
+      <div className="node-body" style={{ maxHeight: 'min(86vh, 1040px)', overflowY: 'auto' }}>
         {/* 1. 提示词 */}
         <div className="gen-field">
           <div className="gen-field-head">
@@ -205,7 +208,7 @@ export default function GenNode({
                 </>
               ) : (
                 <>
-                  上限 = {seqLen} token 预算 − 画风「{style?.name || node.styleId || '默认'}」与像素契约
+                  上限 = {seqLen} token 预算 − 画风「{style?.name || node.styleId || '未选（不占预算）'}」与像素契约
                   占用的 {fixedChars} 字。改「提示词质量」或画风会改变这个数。
                 </>
               )}
@@ -336,21 +339,30 @@ export default function GenNode({
           <div className="chips">
             {backgrounds.map((b) => (
               <button key={b.id}
-                className={`chip ${node.params.background === b.id ? 'on' : ''}`}
+                // 空串与 'none' 是同一个意思（都是「不指定」）：后端两种都认，
+                // 这里归一成一个 id 判断高亮，否则老数据里的 "" 会没有任何选中项。
+                className={`chip ${(node.params.background || 'none') === b.id ? 'on' : ''}`}
                 title={b.hint}
                 onClick={() => patchParams({ background: b.id as any })}>
                 <i style={{
                   display: 'inline-block', width: 9, height: 9, marginRight: 5,
+                  // 三种色块必须一眼分得开：透明底 = 棋盘格，不指定 = 一道斜杠，
+                  // 其余 = 实色。以前「不指定」也用棋盘格，跟「透明」长得一样，
+                  // 选错了还会以为是抠图开关。
                   background: b.swatch === 'transparent'
                     ? 'repeating-conic-gradient(#999 0% 25%, #444 0% 50%) 0 0 / 6px 6px'
-                    : b.swatch,
+                    : b.swatch === 'auto'
+                      ? 'linear-gradient(135deg, transparent 42%, #8a8a96 42% 58%, transparent 58%)'
+                      : b.swatch,
                   boxShadow: '0 0 0 1px rgba(255,255,255,0.3)',
                 }} />
                 {b.label}
               </button>
             ))}
           </div>
-          <div className="hint">{backgrounds.find((b) => b.id === node.params.background)?.hint}</div>
+          <div className="hint">
+            {backgrounds.find((b) => b.id === (node.params.background || 'none'))?.hint}
+          </div>
           {boardMode ? (
             <div className="hint" style={{ marginTop: 2 }}>
               {boardTransparent
@@ -402,8 +414,20 @@ export default function GenNode({
           <div className="gen-field-head">
             <span className="gen-field-label"><span className="idx">05</span>游戏画风</span>
             {style?.pixelClass ? <span className="tag pink">像素类</span> : null}
+            {!node.styleId ? <span className="tag gray">未选</span> : null}
           </div>
           <div className="style-scroll">
+            {/* 不指定画风：提示词里已经写了画风（「赛博朋克霓虹」「吉卜力水彩」）
+                时选它——程序一个画风词都不拼，也不追加像素契约。
+                以前画风只能选不能取消，提示词自带的画风会被前面那段固定像素
+                风格词压掉，等于用户白写。 */}
+            <div className="style-none">
+              <button className={`style-chip ${!node.styleId ? 'on' : ''}`}
+                title="不追加任何画风词：提示词里已经写了画风，或想完全自己控制时选它"
+                onClick={() => onChange({ styleId: null })}>
+                不指定（跟随提示词）
+              </button>
+            </div>
             {Object.entries(grouped).map(([group, list]) => (
               <div key={group}>
                 <div className="style-group-name">{group}</div>
@@ -429,7 +453,11 @@ export default function GenNode({
               </div>
             ))}
           </div>
-          {style ? <div className="style-words-line">前置风格词：{style.words}</div> : null}
+          {style ? <div className="style-words-line">前置风格词：{style.words}</div> : (
+            <div className="hint" style={{ marginTop: 4 }}>
+              不追加画风词、也不追加像素契约：画风与质感完全由提示词决定。
+            </div>
+          )}
         </div>
 
         {/* 6. 像素精修（仅像素类画风可用） */}
@@ -447,8 +475,11 @@ export default function GenNode({
           </div>
           {!isPixel ? (
             <div className="hint">
-              像素精修只对像素类画风生效。当前{style ? `「${style.name}」` : '未选画风'}
-              不是像素画风，出图会保留原始细节与渐变。
+              {style
+                ? <>像素精修只对像素类画风生效。当前「{style.name}」不是像素画风，
+                    出图会保留原始细节与渐变。</>
+                : <>未选画风：不追加像素规格、也不做像素精修，画风与质感全部由提示词决定。
+                    出像素素材请选一个像素类画风。</>}
             </div>
           ) : node.pixel.enabled ? (
             <>

@@ -264,9 +264,12 @@ BACKGROUND_PRESETS: List[Dict[str, Any]] = [
         "hint": "适合色键抠图；但绿色会渗进轮廓，绿皮角色请改用中灰",
     },
     {
-        "id": "none", "label": "无", "swatch": "transparent",
+        # 空 phrase = 程序一句话都不加。这是「提示词自带背景」时该选的项：
+        # 用户写了「雨后石板路的小巷」，再追加「纯绿背景满铺」就是自相矛盾。
+        "id": "none", "label": "跟随提示词", "swatch": "auto",
         "phrase": "",
-        "hint": "不指定背景：模型可能自行补场景元素，出图更「好看」但不好抠",
+        "hint": "不追加任何背景要求：提示词里已经写了背景时选它；"
+                "完全没写背景时模型会自行补场景元素（好不好抠由你判断）",
     },
     {
         "id": "transparent", "label": "透明", "swatch": "transparent",

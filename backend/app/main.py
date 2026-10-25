@@ -1384,7 +1384,7 @@ async def threeview_instruction(payload: ViewInstructionPayload) -> Dict[str, An
     full = threeview_mod.apply_background(body, payload.background)
     neg_custom = (payload.negative or "").strip()
     # 与 derive_view 同一套回落：背景选「无」时不传负面词（禁「地面」和自由背景矛盾）
-    neg = (None if payload.background == "none"
+    neg = (None if payload.background in ("", "none")
            else (neg_custom or threeview_mod.VIEW_NEGATIVE))
     return {
         "view": payload.view,

@@ -457,6 +457,11 @@ button { cursor: pointer; }
 .node-x { background: transparent; border: 0; color: var(--muted); font-size: 14px; padding: 0 4px; }
 .node-x:hover { color: var(--pink); }
 .node-body { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+/* 内容区是「flex 纵向 + maxHeight 滚动」。子项默认 flex-shrink:1，一旦内容
+   超过 maxHeight，浏览器会先**压扁子项**而不是撑出滚动——生成卡上的「画风」
+   和「像素精修」因此在默认画布尺寸下直接被压没，用户滚到底也看不到。
+   钉住子项高度，超高才会真的变成滚动条。 */
+.node-body > * { flex: 0 0 auto; }
 .node-foot { padding: 10px 12px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
 
 .port {
@@ -1306,3 +1311,10 @@ video.clip-media { cursor: default; }
   background: rgba(255, 213, 0, .9); color: #1a1a1a; padding: 0 3px;
 }
 .ctx-dot.d-erase { background: #4fb6ff; }
+
+/* 画风列表顶部的「不指定」：和下面的画风分组之间要有分隔，
+   否则看起来像某个分组里的一项，用户不会意识到它是一个「取消选择」 */
+.style-none {
+  padding-bottom: 6px; margin-bottom: 4px;
+  border-bottom: 1px dashed var(--line);
+}

@@ -821,7 +821,8 @@ async def derive_view(
     # 背景选「无」时模型可以自由补场景，此时禁「地面」是自相矛盾的 → 不传，
     # 让 provider 回落到设置里的默认负面词。用户自定义的负面词优先。
     neg_custom = (negative or "").strip()
-    negative_prompt = (None if background == "none"
+    # '' 与 'none' 都是「不指定背景」（前者来自 API，后者来自界面）
+    negative_prompt = (None if background in ("", "none")
                        else (neg_custom or VIEW_NEGATIVE))
     label = (f"{_VIEW_META[view]['cn']} {batch_index + 1}/{batch_total}"
              if batch_total > 1 else _VIEW_META[view]['cn'])

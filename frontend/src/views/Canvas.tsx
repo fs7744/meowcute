@@ -411,11 +411,15 @@ export default function Canvas({ projectId, onBack }: Props) {
       x: 80,
       y: 120,
       prompt: '',
-      styleId: d.styleId || 'pixel_16bit',
+      // 模板显式给了 null = 这节点不要画风（提示词自己带），别用默认值盖掉
+      styleId: d.styleId === undefined ? 'pixel_16bit' : d.styleId,
       refs: [],
       params: {
         width: d.width || 512, height: d.height || 512, n: d.n || 1,
-        steps: null, seed: null, background: (d as any).background || 'gray',
+        steps: null, seed: null,
+        // 同上：'' 与 'none' 都是「不指定背景」，只有没设置过才回落中灰
+        background: (d as any).background === undefined
+          ? 'gray' : (d as any).background,
         maxSeqLen: (d as any).maxSeqLen ?? null,
       },
       pixel: {
@@ -601,12 +605,14 @@ export default function Canvas({ projectId, onBack }: Props) {
       x: Math.round(center.x - GEN_W / 2),
       y: Math.round(center.y - 160),
       prompt: '',
-      styleId: (d as any).styleId || 'pixel_16bit',
+      styleId: (d as any).styleId === undefined
+        ? 'pixel_16bit' : (d as any).styleId,
       refs: [],
       params: {
         width: (d as any).width || 512, height: (d as any).height || 512,
         n: (d as any).n || 1, steps: null, seed: null,
-        background: (d as any).background || 'gray',
+        background: (d as any).background === undefined
+          ? 'gray' : (d as any).background,
         maxSeqLen: (d as any).maxSeqLen ?? null,
       },
       pixel: {
@@ -3175,7 +3181,9 @@ export default function Canvas({ projectId, onBack }: Props) {
       if (src.type !== 'generate') return null
       const g = src as GenNodeType
       const st = styles.find((s) => s.id === g.styleId)
-      const bg = backgrounds.find((b) => b.id === g.params.background)
+      // 空串与 'none' 都是「跟随提示词」：归一成一个 id，否则标签会是空的
+      const bgId = g.params.background || 'none'
+      const bg = backgrounds.find((b) => b.id === bgId)
       return {
         styleName: st?.name ?? null,
         width: g.params.width, height: g.params.height,
@@ -3184,7 +3192,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         background: bg?.label ?? null,
         // 预览视角提示词要用：背景 id（label 是给眼睛看的）+ 上游那句角色描述
         // （视角指令把它当辨认清单拼进去，不传就和真实生成不一致）
-        backgroundId: g.params.background,
+        backgroundId: bgId,
         character: g.prompt?.trim() ?? '',
       }
     } catch { return null }

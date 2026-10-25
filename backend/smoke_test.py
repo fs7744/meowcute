@@ -296,6 +296,30 @@ def _run_checks(client) -> int:
         "pixel": {"enabled": True, "gridSnap": True, "colors": 16, "palette": "auto"}})
     check("提示词幂等", r2.json()["prompt"].count(pv["styleWords"].split("，")[0]) == 1)
 
+    # ---- 画风 / 背景都可以「不选」：用户提示词自己带了画风与场景 ----
+    r = client.post("/api/generate/preview", json={
+        "prompt": "赛博朋克霓虹雨夜小巷，湿滑石板路反光，赛博忍者",
+        "styleId": None, "background": "none", "width": 512, "height": 512,
+        "pixel": {"enabled": True, "gridSnap": True, "colors": 16, "palette": "auto"}})
+    npv = r.json()
+    check("不选画风：一个画风词都不拼",
+          npv["styleWords"] == "" and npv["prompt"].startswith("赛博朋克"), npv["prompt"][:50])
+    check("不选画风：不追加像素契约（没画风就没规格可依）",
+          npv["contract"] == "" and npv["useContract"] is False
+          and "像素网格" not in npv["prompt"], npv["prompt"][:60])
+    check("不选画风：分段说明标明未选",
+          npv["breakdown"][0]["text"] == "（未选画风）", npv["breakdown"][0]["text"])
+    check("不选背景：不写任何背景句",
+          npv["breakdown"][2]["text"] == "（未指定）"
+          and "#808080" not in npv["prompt"] and "#00FF00" not in npv["prompt"],
+          npv["breakdown"][2]["text"])
+    # 空串与 'none' 必须等价（前者来自 API / 老数据，后者来自界面）
+    r = client.post("/api/generate/preview", json={
+        "prompt": "一只猫", "styleId": None, "background": "",
+        "pixel": {"enabled": True}})
+    check("空串背景与 none 等价", r.json()["prompt"].rstrip("。") == "一只猫",
+          r.json()["prompt"])
+
     print("== 像素精修（合成图） ==")
     from backend.app.pipelines import refine as refine_mod
     fake = make_fake_pixel_art(512, 8)
@@ -2121,6 +2145,27 @@ def _run_checks(client) -> int:
         "edges": []}).json()["project"]["nodes"][0]
     check("精灵图节点的 indexUrl 存盘往返（刷新后下载按钮还在）",
           _ig.get("indexUrl") == "/api/projects/x/images/a.json", str(_ig)[:160])
+
+    # ---- 画风 / 背景「不选」要能存下来（空值不能被默认值吃掉）----
+    _ns = client.put(f"/api/projects/{cpid}", json={
+        "nodes": [{"id": "g9", "type": "generate", "x": 0, "y": 0, "prompt": "x",
+                   "styleId": None,
+                   "params": {"background": "", "width": 512, "height": 512, "n": 1}}],
+        "edges": []}).json()["project"]["nodes"][0]
+    check("不选画风的节点存盘往返（null 不被填回像素画风）",
+          _ns["styleId"] is None, repr(_ns["styleId"]))
+    check("不选背景的节点存盘往返（空串不被改回 gray）",
+          _ns["params"]["background"] == "", repr(_ns["params"]["background"]))
+    _ndef = client.put(f"/api/projects/{cpid}", json={
+        "nodes": [{"id": "g10", "type": "generate", "x": 0, "y": 0, "prompt": "x",
+                   "params": {}}], "edges": []}).json()["project"]["nodes"][0]
+    check("背景字段缺失时才回落中灰（老项目不受影响）",
+          _ndef["params"]["background"] == "gray", repr(_ndef["params"]["background"]))
+    # 视角生成：不指定背景时不能把「禁地面」的负面词挂上去（和自由背景自相矛盾）
+    _vi = client.post("/api/threeview/instruction", json={
+        "view": "side", "background": "", "character": "一只猫"}).json()
+    check("不指定背景的视角不传「禁地面」负面词", _vi["negative"] is None,
+          repr(_vi["negative"]))
 
     print("== 局部重绘（涂抹蒙版 + 提示词） ==")
     from backend.app.pipelines import inpaint as _ip

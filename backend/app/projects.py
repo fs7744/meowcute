@@ -423,7 +423,10 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
             if n["type"] == "generate":
                 n["refs"] = []
                 n["prompt"] = str(n.get("prompt") or "")
-                n["styleId"] = n.get("styleId") or base_gen["styleId"]
+                # 模板里显式写 "styleId": null 表示「这节点不要画风，提示词自己带」，
+                # 不能被默认值填回去；只有模板压根没写这个字段才用项目默认画风。
+                if "styleId" not in n:
+                    n["styleId"] = base_gen["styleId"]
                 n["params"] = {**base_gen["params"],
                                **(n.get("params") if isinstance(n.get("params"), dict) else {})}
                 n["pixel"] = {**base_gen["pixel"],
@@ -818,7 +821,12 @@ def _clean_params(p: Any) -> Dict[str, Any]:
         "n": _i(p.get("n"), 1, 1, 4),
         "steps": (_i(p.get("steps"), 0, 4, 50) or None) if p.get("steps") else None,
         "seed": (_i(p.get("seed"), 0, 0, 2**31 - 1)) if p.get("seed") not in (None, "") else None,
-        "background": str(p.get("background") or "gray")[:16],
+        # 背景：**显式空串 = 不指定**（提示词里已经写了背景，不要再追加一句）。
+        # 只有字段缺失（从没设置过 / 老项目）才回落中灰底。
+        # 以前这里是 `str(... or "gray")`，空串会被静默改回 gray —— 于是
+        # 「提示词自带背景」的人怎么都关不掉程序追加的那句纯色底约束。
+        "background": ("gray" if p.get("background") is None
+                       else str(p.get("background"))[:16]),
         # 提示词质量档位（文本序列长度）。白名单漏了它 → 用户在生成卡上选了
         # 「高质量」，保存刷新后静默回到「自动」，且没有任何提示。
         "maxSeqLen": (_i(p.get("maxSeqLen"), 0, 256, 1536) or None) if p.get("maxSeqLen") else None,
