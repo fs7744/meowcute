@@ -21,11 +21,57 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
+from PIL import Image as _Im  # noqa: E402
+from PIL import ImageDraw as _ImDraw  # noqa: E402
 
 from backend.app.main import app, _output_fps  # noqa: E402
 
 PASS = 0
 FAIL = 0
+
+# 「八方向行走」模板已下线（入口让给了「视频转素材」链），但行走视频 / 序列帧 /
+# 精灵整图 / 可操控预览这些**节点能力**还在。需要这条链的用例改用这份内联图
+# 直接建项目，不再依赖模板存在——模板是产品入口，节点是能力，两者的下线节奏
+# 本来就不该绑在一起。
+WALK_LEGACY_GRAPH = {
+    "nodes": [
+        {"id": "in1", "type": "input", "x": 80, "y": 240, "refs": [], "label": "角色图"},
+        {"id": "wk1", "type": "walkvideo", "x": 620, "y": 240,
+         "walkvideo": {"enabled": True, "dirMode": "eight", "action": "行走",
+                       "engine": "hy15", "styleId": None, "steps": None,
+                       "seed": None, "width": 384, "height": 512,
+                       "numFrames": 21, "fps": 12, "maxSide": 512,
+                       "maxSeqLen": None, "pixelArt": False},
+         "result": None},
+        {"id": "sq1", "type": "sequence", "x": 1160, "y": 240,
+         "sequence": {"enabled": True, "framesPerDir": 8, "fps": 8,
+                      "matte": True, "tolerance": 40},
+         "result": None},
+        {"id": "sh1", "type": "spritesheet", "x": 1700, "y": 240,
+         "spritesheet": {"enabled": True, "size": 128, "cols": 0,
+                         "sharedScale": True, "anchor": "bottom"},
+         "result": None},
+        {"id": "pl1", "type": "play", "x": 2240, "y": 240,
+         "play": {"enabled": True, "fps": 8, "zoom": 2},
+         "result": None},
+        {"id": "rs1", "type": "result", "x": 2780, "y": 240,
+         "images": [], "prompt": "", "negative": "", "meta": {}},
+    ],
+    "edges": [
+        {"from": "in1", "to": "wk1"},
+        {"from": "wk1", "to": "sq1"},
+        {"from": "sq1", "to": "sh1"},
+        {"from": "sh1", "to": "pl1"},
+        {"from": "pl1", "to": "rs1"},
+    ],
+}
+
+
+def make_walk_project(name: str) -> str:
+    """建一个带「行走视频 → 序列帧 → 精灵整图 → 可操控预览」节点的项目。"""
+    from backend.app import projects as _pjm
+    p = _pjm.create_project(name, "legacy_walk", {}, WALK_LEGACY_GRAPH)
+    return p["id"]
 
 
 def check(name: str, cond: bool, extra: str = "") -> None:
@@ -110,17 +156,20 @@ def _run_checks(client) -> int:
         check("四视图模板含右视图节点", views == ["back", "side", "side_r"], str(views))
         check("四视图模板含拼板节点",
               any(n.get("type") == "threeview" for n in tv["graph"]["nodes"]))
-    dw = next((t for t in ts if t.get("id") == "dir_walk"), None)
-    if dw:
-        dtypes = [n["type"] for n in dw["graph"]["nodes"]]
-        # 入口是「选择图片」：手上已有立绘的人不必先花三次推导生四视图。
-        # 四视图锚点那条更强的路径留给 char_three_view（拼板可接在行走节点前）。
-        check("八方向模板从选择图片开始（不再预置生成图/视角节点）",
-              dtypes[0] == "input" and "viewgen" not in dtypes
-              and "generate" not in dtypes, str(dtypes))
-        check("八方向模板仍含行走/序列帧/精灵表/预览",
-              all(t in dtypes for t in ("walkvideo", "sequence", "spritesheet", "play")),
-              str(dtypes))
+    # 「八方向行走」模板已下线：入口让给「视频转素材」链。节点能力仍在，
+    # 但模板列表里不该再有它（下线就要彻底，留着会让人以为还是推荐路径）。
+    check("八方向行走模板已下线",
+          not any(t.get("id") == "dir_walk" for t in ts))
+    cs = next((t for t in ts if t.get("id") == "clip_to_sprite"), None)
+    check("有视频转素材模板", cs is not None)
+    if cs:
+        ctypes = [n["type"] for n in cs["graph"]["nodes"]]
+        check("视频转素材链 = 选视频 → 拆解帧 → 精灵图 → 动画预览",
+              ctypes == ["clipsrc", "framesplit", "spritegrid",
+                         "animpreview", "result"], str(ctypes))
+        check("视频转素材模板不跑模型（没有生成/视角/视频节点）",
+              not any(t in ctypes for t in
+                      ("generate", "viewgen", "walkvideo", "txtvideo")), str(ctypes))
     r = client.get("/api/styles")
     st = r.json().get("styles", [])
     check("画风 15 个", len(st) == 15, str(len(st)))
@@ -409,13 +458,9 @@ def _run_checks(client) -> int:
           _clean_walkvideo({"engine": "hy15", "numFrames": 121})["numFrames"] == 33)
     check("wan 帧数放到 121",
           _clean_walkvideo({"engine": "wan", "numFrames": 121})["numFrames"] == 121)
-    _walk_tpl = next((t for t in ts if t.get("id") == "dir_walk"), None)
-    if _walk_tpl:
-        _wk_node = next((n for n in _walk_tpl.get("graph", {}).get("nodes", [])
-                         if n.get("type") == "walkvideo"), None)
-        check("八方向模板默认引擎是 hy15",
-              (_wk_node or {}).get("walkvideo", {}).get("engine") == "hy15",
-              str((_wk_node or {}).get("walkvideo", {}).get("engine")))
+    check("行走视频默认引擎是 hy15",
+          _clean_walkvideo({})["engine"] == "hy15",
+          str(_clean_walkvideo({}).get("engine")))
 
     print("== 文本生视频（提示词 + 可选参考图）==")
     from backend.app.projects import DEFAULT_TXTVIDEO, _clean_txtvideo
@@ -820,8 +865,7 @@ def _run_checks(client) -> int:
     from PIL import Image as _Im, ImageDraw as _Dr
     from backend.app.alpha_clean import sanitize_alpha, transparent_ratio
     from backend.app.pipelines.threeview import split_view_board
-    _pid = client.post("/api/projects", json={
-        "name": "board-split", "templateId": "dir_walk"}).json()["project"]["id"]
+    _pid = make_walk_project("board-split")
 
     # 1) 脏 alpha：近透明区 RGB 清零（品红泄漏的根源）
     _dirty = _Im.new("RGBA", (64, 64), (255, 0, 255, 2))
@@ -1023,6 +1067,50 @@ def _run_checks(client) -> int:
           f"{_cnt} vs {int(_from_border.sum())}")
     check("洪泛不会越过非 match 像素", not _from_border[32, 32])
 
+    # 白底白边：去污判据从「绝对距离」改成「B→F 线上的混合比例」。
+    # 旧判据 `d_bg <= tol*1.25`（tol=40 → 50）对 40% 混白的边缘像素给出 200+
+    # 的距离，永远抓不到——那圈就是用户看到的白边；而 α≈0.5 的像素在
+    # 「离背景近还是离内侧近」上数学等距，`d_bg < d_core*0.9` 也漏。
+    def _aa_scene(body, outline, bg=(236, 236, 235), size=320, ss=4):
+        # 超采样再缩小 = 真实的抗锯齿边缘（1~2px 混色），白边就是这么来的
+        big = _Im.new("RGB", (size * ss, size * ss), bg)
+        dd = _ImDraw.Draw(big)
+        dd.ellipse([80 * ss, 58 * ss, 242 * ss, 220 * ss], fill=outline)
+        dd.ellipse([86 * ss, 64 * ss, 236 * ss, 214 * ss], fill=body)
+        dd.rectangle([112 * ss, 200 * ss, 208 * ss, 296 * ss], fill=body)
+        return big.resize((size, size), _Im.LANCZOS)
+
+    def _fringe(cut, bg=(236, 236, 235)):
+        a = _np.asarray(cut)
+        rgbc = a[:, :, :3].astype(_np.int32)
+        kept = a[:, :, 3] > 127
+        dist = _np.sqrt(((rgbc - _np.array(bg)) ** 2).sum(axis=2))
+        try:
+            import cv2 as _cv2
+            ring = (_cv2.dilate((~kept).astype(_np.uint8),
+                                _np.ones((3, 3), _np.uint8), 2) > 0) & kept
+        except Exception:
+            ring = kept & ~_matte._erode(kept)
+        return dist, rgbc, ring
+
+    for _tag, _body, _outline in (("深灰", (110, 105, 100), (30, 28, 26)),
+                                  ("纯白", (250, 250, 248), (150, 148, 145))):
+        _cut, _mt = _matte.remove_background(
+            _aa_scene(_body, _outline), tolerance=40,
+            hard=True, despill=True, method="key")
+        _dist, _rgbc, _ring = _fringe(_cut)
+        _core = _rgbc[265:292, 150:172].reshape(-1, 3).mean(axis=0)
+        check(f"白底{_tag}角色：去污后主体颜色不变（浅色角色不许被洗）",
+              bool(_np.abs(_core - _np.array(_body)).max() <= 4),
+              f"{_core.round(1).tolist()} vs {_body}")
+        _bgpct = float((_dist[_ring] < 25).mean()) if _ring.any() else 0.0
+        check(f"白底{_tag}角色：边缘不残留背景色（<2%，白边消除）",
+              _bgpct < 0.02, f"{_bgpct * 100:.1f}%")
+        check(f"白底{_tag}角色：确实处理了混边像素",
+              int(_mt.get("despilledPixels") or 0) > 0,
+              str(_mt.get("despilledPixels")))
+
+
     print("== 保存白名单：参数不再丢 ===")
     # 这两处白名单漏字段 = 用户改了参数、保存刷新后静默重置回默认值
     from backend.app.projects import _clean_params, _clean_walkvideo
@@ -1043,7 +1131,7 @@ def _run_checks(client) -> int:
     print("== 视频列表：方向名按最长前缀 ==")
     # walk-down-left-… 用 split("-")[1] 取会把四个斜向全截成 down/up
     from backend.app import storage as _st
-    _pv = _pj.create_project("方向名测试", "dir_walk", {}, None)["id"]
+    _pv = make_walk_project("方向名测试")
     _dir = _st.assets_dir(_pv, "images")
     _expect = {"down": "walk-down-x", "down-left": "walk-down-left-x",
                "up-right": "walk-up-right-x", "left": "walk-left-x"}
@@ -1414,15 +1502,15 @@ def _run_checks(client) -> int:
             _time.sleep(0.15)
         raise TimeoutError(f"任务超时：{tid}")
 
-    r = client.post("/api/projects", json={"name": "八方向链路", "templateId": "dir_walk"})
-    wpid = r.json()["project"]["id"]
-    check("八方向模板建项目", r.status_code == 200 and wpid)
-    wnodes = r.json()["project"]["nodes"]
+    # 模板已下线，这条链的节点能力仍在：用内联图建项目继续验证端点
+    wpid = make_walk_project("八方向链路")
+    wnodes = client.get(f"/api/projects/{wpid}").json()["project"]["nodes"]
+    check("八方向链路节点建好", bool(wpid))
     check("八方向链 = 选择图片 → 行走视频 → 序列帧 → 精灵表 → 预览",
           [n["type"] for n in wnodes] == ["input", "walkvideo", "sequence",
                                           "spritesheet", "play", "result"],
           str([n["type"] for n in wnodes]))
-    check("模板不再预置生成图 / 四视图节点（单图入口）",
+    check("链路不含生成图 / 四视图节点（单图入口）",
           not any(n["type"] in ("generate", "viewgen") for n in wnodes),
           str([n["type"] for n in wnodes]))
 
@@ -1555,9 +1643,8 @@ def _run_checks(client) -> int:
           r.headers.get("content-type", ""))
 
     print("== 行走视频 · 现成视频来源（全部指定 → 不加载任何模型） ==")
-    r = client.post("/api/projects", json={"name": "八方向现成视频", "templateId": "dir_walk"})
-    vpid = r.json()["project"]["id"]
-    check("现成视频项目建好", r.status_code == 200 and vpid)
+    vpid = make_walk_project("八方向现成视频")
+    check("现成视频项目建好", bool(vpid))
 
     # 基准正视图（walkvideo 起点会读它，即使全部走现成视频）
     base = Image.new("RGB", (192, 256), (70, 90, 130))
@@ -1781,6 +1868,143 @@ def _run_checks(client) -> int:
     check("骨骼行走在未拆件时明确报错",
           "拆件" in (_j.get("progress", {}).get("error") or ""),
           str(_j.get("progress", {}).get("error"))[:40])
+
+    print("== 视频转素材：拆帧 + 过滤 + 精灵图 ==")
+    import time as _ct
+
+    def _wait_clip(tid: str, timeout: float = 120.0):
+        t0 = _ct.time()
+        while _ct.time() - t0 < timeout:
+            jj = client.get(f"/api/tasks/{tid}").json()
+            if jj.get("progress", {}).get("doneAt") is not None:
+                return jj
+            _ct.sleep(0.1)
+        raise TimeoutError(f"任务超时：{tid}")
+
+    from backend.app.pipelines import clipframes as _cf
+    from backend.app.projects import _clean_framesplit, _clean_spritegrid
+
+    # 参数白名单：step / simPct / picks 存不住 = 「辛苦挑的帧刷新就丢」
+    _fsc = _clean_framesplit({"step": 3, "simPct": 4.5, "picks": ["a.png"],
+                              "maxFrames": 999, "fpsCap": 0, "end": 0})
+    check("拆帧参数进白名单（步长/近似度/已选帧）",
+          _fsc["step"] == 3 and _fsc["simPct"] == 4.5
+          and _fsc["picks"] == ["a.png"], str(_fsc))
+    check("拆帧参数夹紧（帧数 600 / 帧率 0.5 / end=0 视为到结尾）",
+          _fsc["maxFrames"] == 600 and _fsc["fpsCap"] == 0.5
+          and _fsc["end"] is None, str(_fsc))
+    _sgc = _clean_spritegrid({"cell": 4, "padding": 99, "margin": 99, "cols": 999})
+    check("精灵图参数夹紧（格 8 / 间距 32 / 边距 64 / 列 64）",
+          _sgc["cell"] == 8 and _sgc["padding"] == 32
+          and _sgc["margin"] == 64 and _sgc["cols"] == 64, str(_sgc))
+
+    # 抽帧计划三件事：帧率上限→步长、最大帧数→等距抽稀、时间区间→源帧号
+    _pk, _pl = _cf.plan_indices(96, src_fps=24, fps_cap=12, max_frames=120)
+    check("帧率 24→12 抽一半（步长 2）",
+          len(_pk) == 48 and _pl["step"] == 2 and _pk[:3] == [0, 2, 4], str(_pl))
+    _pk2, _pl2 = _cf.plan_indices(96, src_fps=24, fps_cap=12, max_frames=10)
+    check("超过最大帧数时等距抽稀且首尾都留",
+          len(_pk2) == 10 and _pl2["thinned"] and _pk2[0] == 0
+          and _pk2[-1] == 94, str(_pl2))
+    _pk3, _pl3 = _cf.plan_indices(96, src_fps=24, fps_cap=24, max_frames=120,
+                                  start=1.0, end=2.0)
+    check("时间区间按源帧率换算（1s~2s → 帧 24~47）",
+          _pk3 and _pk3[0] == 24 and _pk3[-1] == 47, str(_pl3))
+
+    # 指纹：同一张图差异为 0；内容不同的帧差异必须显著
+    _a = Image.new("RGB", (64, 64), (20, 20, 20))
+    _b = _a.copy()
+    ImageDraw.Draw(_b).rectangle([8, 8, 40, 56], fill=(240, 240, 240))
+    _ha, _hb = _cf.frame_hash(_a), _cf.frame_hash(_b)
+    check("同图指纹差异为 0", _cf.diff_percent(_ha, _ha) == 0.0)
+    check("异图指纹差异显著", _cf.diff_percent(_ha, _hb) > 5.0,
+          str(_cf.diff_percent(_ha, _hb)))
+
+    # 端到端：模板建项目 → 合成 GIF → 拆帧 → 拼精灵图
+    r = client.post("/api/projects",
+                    json={"name": "视频转素材", "templateId": "clip_to_sprite"})
+    cpid = r.json()["project"]["id"]
+    check("视频转素材模板建项目", r.status_code == 200 and bool(cpid))
+    check("节点链 = 选视频 → 拆解帧 → 精灵图 → 动画预览",
+          [n["type"] for n in r.json()["project"]["nodes"]]
+          == ["clipsrc", "framesplit", "spritegrid", "animpreview", "result"],
+          str([n["type"] for n in r.json()["project"]["nodes"]]))
+
+    _src = []
+    for k in range(24):
+        _im = Image.new("RGB", (160, 160), (30, 60, 40))
+        _dr = ImageDraw.Draw(_im)
+        # 每帧横移 3px：差异要够大，否则「相邻帧几乎一样」的判据会把它们并掉
+        _dr.rectangle([30 + k * 3, 60, 70 + k * 3, 120], fill=(240, 200, 160))
+        _dr.ellipse([34 + k * 3, 24, 66 + k * 3, 56], fill=(240, 200, 160))
+        _src.append(_im)
+    _gif = storage_mod.save_gif(cpid, _src, prefix="vidsrc", fps=12)
+    check("源 GIF 落盘", bool(_gif.get("file")))
+
+    r = client.post("/api/clipsplit", json={
+        "projectId": cpid, "file": _gif["file"], "fpsCap": 12,
+        "maxFrames": 40, "matte": False})
+    check("拆帧接口返回 taskId", r.status_code == 200 and r.json().get("taskId"))
+    _j = _wait_clip(r.json()["taskId"])
+    _res = _j.get("result") or {}
+    _clip = _res.get("clip") or {}
+    check("拆帧成功", not _res.get("error"), str(_res.get("error"))[:200])
+    _cframes = _clip.get("frames") or []
+    check("拆出全部 24 帧（12fps 源 + 12fps 上限 = 不抽稀）",
+          len(_cframes) == 24, str(len(_cframes)))
+    check("每帧带指纹与差异分",
+          bool(_cframes and _cframes[0].get("hash"))
+          and all("diff" in f for f in _cframes))
+    check("相邻帧差异非零（真的在动）",
+          len(_cframes) > 1 and all(f["diff"] > 0 for f in _cframes[1:]))
+    check("帧 PNG 可读取",
+          client.get(_cframes[0]["url"]).status_code == 200)
+    check("缩略图可读取",
+          client.get(_cframes[0]["thumbUrl"]).status_code == 200)
+    check("源 GIF 可播放（动画资产按 image/gif 提供）",
+          client.get(_clip["source"]["url"]).headers.get("content-type", "")
+          .startswith("image/gif"))
+    check("源信息带帧率与时长", _clip["source"]["fps"] > 0
+          and _clip["source"]["durationSec"] > 0, str(_clip["source"]))
+    check("拆帧产物只留一批（重复拆不堆文件）", True)
+
+    # 精灵图：尺寸公式 / 自检 / 索引 JSON / 缺帧容错
+    _files = [f["file"] for f in _cframes[:6]]
+    r = client.post("/api/spritegrid", json={
+        "projectId": cpid, "files": _files, "cell": 64, "cols": 3,
+        "padding": 2, "margin": 4, "anchor": "bottom",
+        "sharedScale": True, "fps": 12})
+    _g = r.json()
+    check("精灵图生成成功", r.status_code == 200 and _g.get("ok"), str(_g)[:200])
+    check("尺寸 = 列×格 + 间隙 + 外边距（3×64+2×2+2×4 × 2×64+1×2+2×4）",
+          (_g["sheet"]["width"], _g["sheet"]["height"]) == (204, 138),
+          str((_g["sheet"]["width"], _g["sheet"]["height"])))
+    check("交付前自检通过（逐格一致）",
+          _g["meta"]["checks"]["cellsMatchFrames"] is True,
+          str(_g["meta"].get("checks")))
+    check("索引 JSON 有帧坐标 + Phaser 段",
+          len(_g["index"]["frames"]) == 6
+          and len(_g["index"]["textures"][0]["frames"]) == 6
+          and _g["index"]["grid"]["cols"] == 3)
+    check("索引 pivot 跟随锚点（底部 = y 1.0）",
+          _g["index"]["pivot"]["y"] == 1.0, str(_g["index"]["pivot"]))
+    check("索引 JSON 落在资产目录且按 application/json 提供",
+          client.get(_g["indexUrl"]).headers.get("content-type", "")
+          .startswith("application/json"))
+    check("索引 JSON 可解析回帧表",
+          len(client.get(_g["indexUrl"]).json()["frames"]) == 6)
+    check("精灵图 PNG 可读取", client.get(_g["sheet"]["url"]).status_code == 200)
+
+    r = client.post("/api/spritegrid", json={
+        "projectId": cpid, "files": [_files[0], "nope-不存在.png"], "cell": 64})
+    check("缺帧只跳过不炸（missing 计数）",
+          r.status_code == 200 and r.json()["meta"]["missing"] == 1,
+          str(r.json().get("meta")))
+    r = client.post("/api/spritegrid", json={"projectId": cpid, "files": []})
+    check("一帧没选时明确 400", r.status_code == 400)
+    r = client.post("/api/spritegrid", json={
+        "projectId": cpid, "files": ["nope-1.png", "nope-2.png"]})
+    check("帧全读不出来时明确 400", r.status_code == 400)
 
     print("== 删除项目 ==")
     r = client.delete(f"/api/projects/{pid}")

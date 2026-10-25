@@ -16,6 +16,8 @@
 - /api/txtvideo                                  文本生视频：提示词 + 可选参考图 → 视频（任务制）
 - /api/sequence                                  八方向行走：视频 → 抽帧去重抠图的序列帧（任务制）
 - /api/spritesheet                               八方向行走：序列帧 → 每方向精灵表 + 总览（任务制）
+- /api/clipsplit                                 视频转素材：视频/GIF → 拆帧 + 指纹 + 抠图（任务制）
+- /api/spritegrid                                视频转素材：选中帧 → 网格精灵图 + 索引 JSON（同步）
 
 生成是「任务制」：POST /api/generate 立即返回 taskId，前端订阅 SSE 看进度，
 完成事件里带结果（同时留档 10 分钟供 /api/tasks/{id} 兜底查询）。
@@ -53,6 +55,8 @@ from .config import DATA_DIR, ROOT, load_settings, save_settings, scan_models
 from .pipelines import matte as matte_mod
 from .pipelines import refine as refine_mod
 from .pipelines import sequence as sequence_mod
+from .pipelines import clipframes as clipframes_mod
+from .pipelines import spritegrid as spritegrid_mod
 from .pipelines import parts as parts_mod
 from .pipelines import rigwalk as rigwalk_mod
 from .pipelines import spritesheet as spritesheet_mod
@@ -552,6 +556,8 @@ async def project_asset(pid: str, kind: str, filename: str):
     low = filename.lower()
     if low.endswith(".gif"):
         media = "image/gif"
+    elif low.endswith(".json"):
+        media = "application/json"
     elif low.endswith(storage.VIDEO_EXTS):
         media = storage.VIDEO_MIME.get(Path(low).suffix, "application/octet-stream")
     else:
@@ -2177,6 +2183,198 @@ async def spritesheet_create(payload: SheetPayload) -> Dict[str, Any]:
     progress_mod.create(task_id, 0, "准备中…")
     asyncio.create_task(_run_sheets(task_id, payload))
     return {"taskId": task_id}
+
+
+# --------------------------------------------------------------------------- #
+# 视频 / GIF → 序列帧 → 精灵图（通用素材链，不绑方向）
+# --------------------------------------------------------------------------- #
+class ClipSplitPayload(BaseModel):
+    """拆帧入参。file 是项目 images/ 下的视频或 GIF 文件名。"""
+    projectId: str
+    file: str = ""
+    fpsCap: float = 12.0        # 抽稀后的帧率上限（播放节奏）
+    maxFrames: int = 120        # 单次最多拆多少帧（成本上限）
+    start: float = 0.0          # 起始秒
+    end: Optional[float] = None  # 结束秒（None=到结尾）
+    matte: bool = True          # 抠背景
+    tolerance: int = 40
+    maxSide: int = 384          # 解码时长边上限（精灵单元格一般 64~256）
+
+
+# 拆帧产物前缀：重复拆同一段视频时按前缀清理，避免 images/ 里越堆越多
+CLIP_FRAME_PREFIX = "clipframe"
+CLIP_THUMB_PREFIX = "clipthumb"
+
+
+def _purge_prefix(pid: str, prefix: str) -> int:
+    """删掉 images/ 下以 prefix 开头的旧产物（只删文件，不动目录）。"""
+    d = storage.assets_dir(pid, "images")
+    if not d.is_dir():
+        return 0
+    n = 0
+    for f in d.iterdir():
+        if f.is_file() and f.name.startswith(prefix) and f.suffix.lower() == ".png":
+            try:
+                f.unlink()
+                n += 1
+            except OSError:
+                pass
+    return n
+
+
+async def _run_clip_split(task_id: str, payload: ClipSplitPayload) -> None:
+    t0 = time.time()
+    try:
+        if projects_mod.load_project(payload.projectId) is None:
+            raise RuntimeError("项目不存在")
+        if not payload.file:
+            raise RuntimeError("没有指定视频文件：先在上一步选一段视频或 GIF")
+        frames, src_fps, src_meta = storage.load_video_frames(
+            payload.projectId, "images", payload.file,
+            max_frames=900, max_side=_clamp(payload.maxSide, 64, 1024, 384))
+        if not frames:
+            why = src_meta.get("error") or "文件不存在或格式不支持"
+            raise RuntimeError(f"视频读不出来（{why}）：{payload.file}")
+
+        progress_mod.report(task_id, 0, 1, "拆帧中…")
+        picked, meta = await asyncio.to_thread(
+            clipframes_mod.run_split,
+            frames,
+            fps=_clamp(int(src_fps * 1000), 1000, 240000, 24000) / 1000.0,
+            fps_cap=max(0.5, min(float(payload.fpsCap), 60.0)),
+            max_frames=_clamp(payload.maxFrames, 2, 600, 120),
+            start=max(0.0, float(payload.start)),
+            end=(None if payload.end is None else float(payload.end)),
+            matte=payload.matte,
+            tolerance=_clamp(payload.tolerance, 10, 120, 40),
+            task_id=task_id)
+
+        # 旧产物先清：只保留本次这一批，前端帧面板不需要历史批次
+        _purge_prefix(payload.projectId, CLIP_FRAME_PREFIX)
+        _purge_prefix(payload.projectId, CLIP_THUMB_PREFIX)
+
+        out_frames = []
+        for f in picked:
+            info = storage.save_image(payload.projectId, f["image"], kind="images",
+                                      prefix=CLIP_FRAME_PREFIX, seq=f["i"])
+            thumb = f["image"].copy()
+            thumb.thumbnail((96, 96), Image.LANCZOS)
+            tinfo = storage.save_image(payload.projectId, thumb, kind="images",
+                                       prefix=CLIP_THUMB_PREFIX, seq=f["i"])
+            out_frames.append({
+                "i": f["i"], "t": f["t"], "srcIndex": f["srcIndex"],
+                "file": info["file"], "url": info["url"],
+                "thumbFile": tinfo["file"], "thumbUrl": tinfo["url"],
+                "w": info["width"], "h": info["height"],
+                "diff": f["diff"], "sharp": f["sharp"], "hash": f["hash"],
+            })
+
+        first = out_frames[0] if out_frames else None
+        task_results[task_id] = {
+            "taskId": task_id,
+            "clip": {
+                "source": {
+                    "file": payload.file,
+                    "url": f"/api/projects/{payload.projectId}/images/{payload.file}",
+                    "fps": meta.get("srcFps"),
+                    "frames": meta.get("sourceFrames"),
+                    "width": first["w"] if first else None,
+                    "height": first["h"] if first else None,
+                    "durationSec": meta.get("durationSec"),
+                    "kind": "gif" if payload.file.lower().endswith(".gif") else "video",
+                    "preScaled": bool(src_meta.get("preScaled")),
+                },
+                "frames": out_frames,
+                "meta": {**meta, "seconds": round(time.time() - t0, 1)},
+            },
+        }
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/clipsplit")
+async def clip_split(payload: ClipSplitPayload) -> Dict[str, Any]:
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备中…")
+    asyncio.create_task(_run_clip_split(task_id, payload))
+    return {"taskId": task_id}
+
+
+class SpriteGridPayload(BaseModel):
+    projectId: str
+    files: List[str] = Field(default_factory=list)   # 按选中顺序
+    cell: int = 128
+    cols: int = 0
+    padding: int = 0
+    margin: int = 0
+    anchor: str = "bottom"
+    sharedScale: bool = True
+    fps: float = 12.0
+
+
+@app.post("/api/spritegrid")
+async def sprite_grid(payload: SpriteGridPayload) -> Dict[str, Any]:
+    """选中帧 → 精灵图 + 索引 JSON。
+
+    同步而不是任务制：规整 + 拼板是纯数组操作（120 帧 128px 约 200ms），
+    用户点「生成精灵图」要的是立刻看到，走任务制反而多一层轮询。
+    单帧文件缺失不致命（跳过并计数），但一帧都没有就报错——静默生成一张
+    空图比报错更难排查。
+    """
+    if projects_mod.load_project(payload.projectId) is None:
+        raise HTTPException(404, "项目不存在")
+    if not payload.files:
+        raise HTTPException(400, "没有选中任何帧")
+    if len(payload.files) > 400:
+        raise HTTPException(400, "一次最多 400 帧")
+
+    frames = []
+    missing = 0
+    for fn in payload.files:
+        img = storage.load_image(payload.projectId, "images", fn)
+        if img is None:
+            missing += 1
+            continue
+        frames.append(img)
+    if not frames:
+        raise HTTPException(400, "选中的帧都读不出来（可能已被清理）")
+
+    try:
+        sheet, index, meta = spritegrid_mod.run_grid(
+            frames,
+            cell=_clamp(payload.cell, 8, 512, 128),
+            cols=_clamp(payload.cols, 0, 64, 0),
+            padding=_clamp(payload.padding, 0, 32, 0),
+            margin=_clamp(payload.margin, 0, 64, 0),
+            anchor=payload.anchor if payload.anchor in spritegrid_mod.ANCHORS else "bottom",
+            shared_scale=bool(payload.sharedScale),
+            fps=max(0.5, min(float(payload.fps), 60.0)),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    info = storage.save_image(payload.projectId, sheet, kind="images",
+                              prefix="gridsheet")
+    index = {**index, "image": info["file"], "url": info["url"]}
+    index["textures"][0]["image"] = info["file"]
+    idx_path = storage.assets_dir(payload.projectId, "images") / (
+        info["file"].rsplit(".", 1)[0] + ".json")
+    idx_path.write_text(json.dumps(index, ensure_ascii=False, indent=1),
+                        encoding="utf-8")
+
+    return {
+        "ok": True,
+        "sheet": info,
+        "index": index,
+        "indexUrl": f"/api/projects/{payload.projectId}/images/{idx_path.name}",
+        "indexFile": idx_path.name,
+        "meta": {**meta, "missing": missing},
+    }
 
 
 # --------------------------------------------------------------------------- #

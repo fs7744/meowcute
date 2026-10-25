@@ -329,11 +329,15 @@ def list_videos(pid: str, kind: str = "images") -> List[Dict[str, Any]]:
 
 
 def asset_path(pid: str, kind: str, filename: str) -> Optional[Path]:
-    """解析资产文件路径（挡路径穿越）。"""
+    """解析资产文件路径（挡路径穿越）。
+
+    允许 .json：精灵图的引擎索引（坐标表 + Phaser atlas 段）和 PNG 放在同一
+    个 assets 目录、用同一套 URL 取——它是交付物的一部分，不是临时文件。
+    """
     if not filename or "/" in filename or "\\" in filename or ".." in filename:
         return None
     low = filename.lower()
-    if not (low.endswith(".png") or low.endswith(VIDEO_EXTS)):
+    if not (low.endswith(".png") or low.endswith(".json") or low.endswith(VIDEO_EXTS)):
         return None
     p = assets_dir(pid, kind) / filename
     return p if p.is_file() else None

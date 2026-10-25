@@ -1,0 +1,230 @@
+"""视频 / GIF → 序列帧：拆帧 + 指纹 + 可选抠图。
+
+与 `sequence.py` 的区别：那条是「八方向行走」专用的二级管线（输入已经是
+内存里的方向帧，按动作周期采样、按方向分组）。这里是**通用入口**，输入是
+项目里任意一段视频或 GIF，输出是「一摞帧 + 每帧的差异/锐度/指纹」，交给
+前端做交互式选帧——用户要自己看、自己挑，而不是让程序替他抽 8 帧。
+
+三件事：
+
+1. **两级抽稀**。视频动辄 24~30fps，3 秒就 90 帧，全丢给前端既慢也没必要。
+   先按「帧率上限」抽（每 round(src_fps / cap) 帧取 1），再按「最大帧数」
+   等距抽稀，首尾都取。两级分开是因为含义不同：前者是「这个动画我打算按
+   12fps 播」，后者是「别超过 120 帧」。抽完之后帧率已经变了，所以返回的
+   `fps` 是**抽稀后**的有效帧率，前端据此给动画预览的默认速度。
+2. **指纹而不是缩略图**。相似度过滤要在浏览器里实时算（拖一下滑杆就要看到
+   候选帧变），所以每帧带一份 16×16 灰度的 base64 指纹（256 字节）。120 帧
+   一共 30KB 左右，比让前端逐张读像素便宜得多，也比每次改参数都回后端算
+   快得多。
+3. **抠图默认开**。游戏素材要透明底，这一步跑不跑决定了后面精灵图能不能
+   直接用。但抠图是整条链路里唯一的重活（u2net 每帧几百毫秒），所以放在
+   任务制接口里跑，带进度和取消。
+"""
+from __future__ import annotations
+
+import base64
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+from PIL import Image
+
+from .. import progress as progress_mod
+from .sequence import prepare_frame, sharpness
+
+# 指纹边长。16×16 足够分辨「这一帧和上一帧是不是同一个姿势」，再大只是
+# 多传字节：相似度过滤关心的是整体轮廓变化，不是细节纹理。
+HASH_N = 16
+
+
+# --------------------------------------------------------------------------- #
+# 指纹与差异
+# --------------------------------------------------------------------------- #
+def frame_hash(img: Image.Image, n: int = HASH_N) -> str:
+    """16×16 灰度指纹（base64）。前端用它算两帧差异，不需要回后端。
+
+    用 LANCZOS 而不是 NEAREST：滤波后的缩略图对小位移更宽容，两帧差 1~2px
+    的抖动不会算成「不同姿势」——这正是去重要效果。
+    """
+    g = img.convert("L").resize((n, n), Image.LANCZOS)
+    return base64.b64encode(g.tobytes()).decode("ascii")
+
+
+def diff_percent(a: str, b: str) -> float:
+    """两个指纹的差异百分比（0~100）。供后端统计与测试用，前端有一份同构实现。"""
+    try:
+        ba = np.frombuffer(base64.b64decode(a), dtype=np.uint8)
+        bb = np.frombuffer(base64.b64decode(b), dtype=np.uint8)
+    except Exception:
+        return 0.0
+    if ba.size != bb.size or not ba.size:
+        return 0.0
+    return float(np.abs(ba.astype(np.int16) - bb.astype(np.int16)).mean() / 255.0 * 100.0)
+
+
+def _to_rgba_on_black(img: Image.Image) -> Image.Image:
+    """把带 alpha 的帧铺到黑底再算指纹。
+
+    透明区的 RGB 是不可信值（抠图后我们会清零），直接取灰度会让「同样透明
+    的两帧」因为残留 RGB 不同而算成不同。铺到黑底后，透明区恒为 0，差异
+    只来自真正可见的前景。
+    """
+    rgba = img.convert("RGBA")
+    if rgba.getchannel("A").getextrema() == (255, 255):
+        return rgba.convert("RGB")
+    bg = Image.new("RGB", rgba.size, (0, 0, 0))
+    bg.paste(rgba, mask=rgba.getchannel("A"))
+    return bg
+
+
+# --------------------------------------------------------------------------- #
+# 选帧计划
+# --------------------------------------------------------------------------- #
+def plan_indices(
+    total: int,
+    *,
+    src_fps: float = 24.0,
+    fps_cap: float = 12.0,
+    max_frames: int = 120,
+    start: float = 0.0,
+    end: Optional[float] = None,
+) -> Tuple[List[int], Dict[str, Any]]:
+    """源帧序号 → 要真正取出来的帧序号列表。
+
+    顺序是「先按时间裁、再按帧率抽、最后按帧数截」，因为每步的语义不同：
+    时间裁是用户明确要的片段，帧率是播放节奏，帧数是成本上限。反过来做会让
+    上限把用户选的区间截断。
+    """
+    total = max(0, int(total))
+    if not total:
+        return [], {"reason": "源里没有帧"}
+
+    # 1) 时间区间
+    fps_src = float(src_fps) if src_fps and src_fps == src_fps and src_fps > 0 else 24.0
+    i0 = max(0, min(int(round(max(0.0, start) * fps_src)), total - 1))
+    i1 = total - 1
+    if end is not None:
+        i1 = min(total - 1, max(i0, int(round(float(end) * fps_src)) - 1))
+    span = i1 - i0 + 1
+
+    # 2) 帧率上限 → 步长
+    cap = float(fps_cap) if fps_cap and fps_cap > 0 else fps_src
+    step = max(1, int(round(fps_src / cap))) if cap < fps_src else 1
+    picked = list(range(i0, i1 + 1, step))
+
+    # 3) 最大帧数：等距抽稀（首尾都留，循环时末帧接首帧）
+    thinned = False
+    if len(picked) > max_frames >= 2:
+        n = max_frames
+        idx = [round(i * (len(picked) - 1) / (n - 1)) for i in range(n)]
+        seen: set = set()
+        out: List[int] = []
+        for k in idx:
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(picked[k])
+        picked = out
+        thinned = True
+
+    eff_fps = round(fps_src / step, 3)
+    # 二次抽稀会再降有效帧率（等距丢帧），按实际保留比例折算
+    if thinned and len(picked) > 1:
+        ratio = len(picked) / max(1, len(range(i0, i1 + 1, step)))
+        eff_fps = round(eff_fps * ratio, 3)
+
+    meta = {
+        "sourceFrames": total,
+        "rangeFrames": span,
+        "step": step,
+        "picked": len(picked),
+        "thinned": thinned,
+        "srcFps": round(fps_src, 3),
+        "effFps": eff_fps,
+        "durationSec": round(span / fps_src, 3),
+        "start": round(i0 / fps_src, 3),
+        "end": round((i1 + 1) / fps_src, 3),
+    }
+    return picked, meta
+
+
+# --------------------------------------------------------------------------- #
+# 主流程
+# --------------------------------------------------------------------------- #
+def run_split(
+    frames: Sequence[Image.Image],
+    *,
+    fps: float = 24.0,
+    fps_cap: float = 12.0,
+    max_frames: int = 120,
+    start: float = 0.0,
+    end: Optional[float] = None,
+    matte: bool = True,
+    tolerance: int = 40,
+    task_id: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """源帧 → 选中的帧（可选抠图），每帧带指纹/差异/锐度。
+
+    返回 (frames, meta)。frames 元素：
+        {i, srcIndex, t, image, hash, diff, sharp, matte}
+    i 是**输出序号**（0 起），srcIndex 是源视频里的帧号，t 是源时间戳。
+    """
+    total = len(frames)
+    picks, plan = plan_indices(total, src_fps=fps, fps_cap=fps_cap,
+                               max_frames=max_frames, start=start, end=end)
+    if not picks:
+        raise RuntimeError("这一段里没有可用的帧：检查起始 / 结束时间是否超出视频长度")
+
+    out: List[Dict[str, Any]] = []
+    prev_hash: Optional[str] = None
+    matte_errors = 0
+    n = len(picks)
+    fps_src = plan["srcFps"]
+    for k, si in enumerate(picks):
+        progress_mod.check_cancel(task_id)
+        progress_mod.report(task_id, k, n,
+                            f"处理帧 {k + 1}/{n}"
+                            + ("（抠图中…）" if matte else ""))
+        img = frames[si]
+        work: Image.Image
+        mm: Dict[str, Any] = {"matte": False}
+        if matte:
+            try:
+                work, mm = prepare_frame(img, matte=True,
+                                         tolerance=int(tolerance))
+            except Exception:
+                # 单帧抠图失败不该让整批失败：留原帧并计数，前端会标出来
+                work = img.convert("RGBA")
+                matte_errors += 1
+        else:
+            work = img.convert("RGBA")
+
+        h = frame_hash(_to_rgba_on_black(work))
+        diff = 0.0 if prev_hash is None else diff_percent(prev_hash, h)
+        prev_hash = h
+        out.append({
+            "i": k,
+            "srcIndex": int(si),
+            "t": round(si / fps_src, 3),
+            "image": work,
+            "hash": h,
+            "diff": round(diff, 2),
+            "sharp": round(sharpness(work), 2),
+            "matte": bool(matte),
+        })
+    progress_mod.report(task_id, n, n, f"{n} 帧就绪")
+
+    meta = {
+        **plan,
+        "fpsCap": fps_cap,
+        "maxFrames": max_frames,
+        "matte": bool(matte),
+        "tolerance": int(tolerance),
+        "count": len(out),
+        "matteErrors": matte_errors,
+        # 各帧与前帧的差异中位数：前端拿它当「相似度阈值」滑杆的默认值，
+        # 比给个拍脑袋的常数靠谱（不同素材的运动幅度差一个数量级）
+        "diffMedian": round(float(np.median([f["diff"] for f in out[1:]]))
+                            if len(out) > 1 else 0.0, 2),
+        "diffMax": round(float(max((f["diff"] for f in out[1:]), default=0.0)), 2),
+    }
+    return out, meta

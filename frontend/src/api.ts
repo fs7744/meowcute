@@ -376,6 +376,41 @@ pixelArt?: boolean
       .then(j<{ ok: boolean; video: { id: string; file: string; url: string; bytes: number } }>)
   },
 
+  /** 视频转素材 · 拆帧：一段视频 / GIF → 帧列表 + 指纹（任务制）。 */
+  clipSplit: (payload: {
+    projectId: string
+    file: string
+    fpsCap?: number
+    maxFrames?: number
+    start?: number
+    end?: number | null
+    matte?: boolean
+    tolerance?: number
+    maxSide?: number
+  }) =>
+    fetch('/api/clipsplit', jsonInit(payload)).then(j<{ taskId: string }>),
+
+  /** 视频转素材 · 精灵图：选中帧 → 网格拼图 + 索引 JSON（同步）。 */
+  spriteGrid: (payload: {
+    projectId: string
+    files: string[]
+    cell?: number
+    cols?: number
+    padding?: number
+    margin?: number
+    anchor?: string
+    sharedScale?: boolean
+    fps?: number
+  }) =>
+    fetch('/api/spritegrid', jsonInit(payload)).then(j<{
+      ok: boolean
+      sheet: { id: string; file: string; url: string; width: number; height: number }
+      index: import('./types').SpriteGridIndex
+      indexUrl: string
+      indexFile: string
+      meta: import('./types').SpriteGridMeta
+    }>),
+
   /** 八方向 · 序列帧：每方向视频 → 抽帧/去重/抠图（任务制）。 */
   sequence: (payload: {
     projectId: string

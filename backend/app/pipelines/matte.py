@@ -188,13 +188,25 @@ def _hue_spill(rgb: np.ndarray, channel: int, hue_tol: int = 26,
 
 
 def _despill(arr: np.ndarray, kept: np.ndarray, palette: List[np.ndarray], tol: float) -> int:
-    """把「紧贴透明区、颜色仍接近背景」的轮廓像素改成内侧角色像素的颜色。
+    """把「紧贴透明区、颜色是被背景冲淡的」轮廓像素改成内侧角色像素的颜色。
 
-    判定要同时看两个距离，只看「到背景的距离」会误伤浅色角色（白发 / 白甲在
-    灰底上本来就离底色近）：
-    - ``d_bg``：到背景色板的距离，越小越像背景；
-    - ``d_core``：到内侧核心像素颜色的距离，越小越像角色本身。
-    只有 ``d_bg`` 明显小于 ``d_core`` 且确实贴着底色，才认定是混边。
+    判据是**混合比例**，不是绝对距离：
+
+        边缘像素 C ≈ α·F + (1-α)·B（F=内侧角色色，B=背景色）
+        ⇒ 它在 B→F 这条线上的位置 = |C-B| / |F-B|
+        比例 < 0.85 说明混了 15% 以上的背景，是混边；实心角色像素比例 ≈ 1。
+
+    为什么不能用绝对距离（以前是 `d_bg <= tol*1.25`）：白底 236、描边 40 时，
+    一个 40% 混白的边缘像素到背景的距离约 200，任何按「色键容差」量出来的阈值
+    （tol≈40 → 50）都抓不到它——用户看到的白边正是这一圈。而按比例判的话，
+    同一套阈值在深底、浅底、彩色底上统一成立，不必为每种底色调参。
+
+    也不能用「离背景更近还是离内侧更近」（以前是 `d_bg < d_core * 0.9`）：
+    α≈0.5 的混色像素在**数学上两边等距**，越接近纯混边越判不出来，正好漏掉
+    最该修的那部分。
+
+    安全性：角色本身就是浅色（白毛/白甲）时，|F-B| 极小，比例判据要求近乎
+    贴底的像素才会命中，不会把白毛洗成邻居色。只改 RGB 不动 alpha 形状。
     """
     rgb = arr[:, :, :3].astype(np.int32)
     core = _erode(kept)
@@ -207,7 +219,16 @@ def _despill(arr: np.ndarray, kept: np.ndarray, palette: List[np.ndarray], tol: 
     if not band.any():
         return 0
 
+    # 混边经常不是 1px：视频重采样会让抗锯齿糊成 2~3px（实测白底人物环宽 3px）。
+    # 只在主体够大时才多剥一圈，避免把小图标 / 1px 线条整个剥成「边缘」。
+    if int(kept.sum()) > 5000:
+        wider = _erode(core)
+        if wider.any() and int(wider.sum()) > int(kept.sum()) * 0.1:
+            core = wider
+            band = kept & ~core
+
     d_bg_all = _palette_dist(rgb, palette)
+    bgv = np.asarray(palette[0], dtype=np.float64)
     out = rgb.copy()
     changed = 0
 
@@ -227,7 +248,7 @@ def _despill(arr: np.ndarray, kept: np.ndarray, palette: List[np.ndarray], tol: 
     known = core.copy()
 
     # 由内向外一圈圈推进：内圈的判定结果会成为外圈的参考色
-    for _ in range(3):
+    for _ in range(4):
         acc = np.zeros((rgb.shape[0], rgb.shape[1], 3), dtype=np.float64)
         cnt = np.zeros(kept.shape, dtype=np.float64)
         for dy, dx in _NEIGHBOURS:
@@ -240,11 +261,12 @@ def _despill(arr: np.ndarray, kept: np.ndarray, palette: List[np.ndarray], tol: 
             break
         ys, xs = np.nonzero(cand)
         mean = acc[ys, xs] / cnt[ys, xs][:, None]
-        d_core = np.sqrt(((rgb[ys, xs] - mean) ** 2).sum(axis=1)).astype(np.float32)
         d_bg = d_bg_all[ys, xs]
-        # 0.9 的相对余量：两边距离相等时（浅色角色压在浅色底上）都是合法颜色，
-        # 不能因为浮点精度差就被判成污染。
-        dirty = (d_bg <= tol * 1.25) & (d_bg < d_core * 0.9)
+        # |F - B|：这条线有多长。≤6 说明内侧色与背景几乎同色，没法判断混没混，
+        # 此时按「贴底」处理（比例判据会自然放行）。
+        span = np.sqrt(((mean - bgv[None, :]) ** 2).sum(axis=1)).astype(np.float32)
+        ratio = d_bg / np.maximum(span, 6.0)
+        dirty = ratio < 0.85
         if hue_bad is not None:
             dirty = dirty | hue_bad[ys, xs]
         if dirty.any():
@@ -336,52 +358,29 @@ def drop_bg_islands(cut: Image.Image, tol: float = 70.0) -> Image.Image:
 
 
 def clean_edge_spill(cut: Image.Image, bg: Tuple[int, int, int], depth: int = 2) -> Tuple[Image.Image, int]:
-    """边缘溢色清洗：外圈 depth 像素里「比离自身内侧颜色更接近底色」的，取内侧色重绘。
+    """边缘溢色清洗（薄封装）：真正的算法在 `_despill`，这里只负责从 RGBA 反推
+    前景掩码再调一次。
 
-    为什么需要它：AI 出图的描边外圈常带一圈「黑 + 底色」的抗锯齿混色，
-    抠图后底色变透明，这圈混色就留在 alpha 边缘上——拼板时三张图底色不同，
-    接缝处会看到一圈异色描边（实测亮绿底 #24A455 的边缘环里 44% 像素偏绿）。
+    为什么改成薄封装：原实现自己算「最外 depth 圈」，但那个圈是用
+    `inner |= 平移(kept)`（膨胀）算的，`kept & ~膨胀` **恒为空**——整段是死代码，
+    永远不会命中（实测 `edgePixelsRecolored` 一直是 0）。就算修好环的计算，
+    它用「整个环的中位色」当替换色：红披风挨着灰毛时，中位色会把披风边缘涂成
+    灰色。`_despill` 是逐像素从最近的内侧邻居取色，既正确又已经在主线里，没
+    必要维护两套。
 
-    判据是「与内侧颜色比更接近底色」，不是「与底色距离小于阈值」：纯黑描边
-    离内侧颜色距离为 0，永远不会被洗掉；抗锯齿混色必然命中。细结构上残留的
-    偏底色像素再从最近的干净邻居取色。只改 RGB，不动 alpha 形状——所以不会
-    啃掉胡须、触角这类 1px 结构。
+    幂等：`remove_background` 内已经跑过一次，这里再跑只会命中「补洞之后新
+    暴露出来」的边界像素，不会反复涂抹同一圈。
     """
     arr = np.asarray(cut).copy()
     if arr.shape[2] < 4:
         return cut, 0
     kept = arr[:, :, 3] > 8
-    h, w = kept.shape
     if not kept.any():
         return cut, 0
-    bgv = np.array(bg, dtype=np.int32)
-
-    recolored = 0
-    # 由外向内逐层：每层只向内一层取色，避免把污染色传遍整个边缘带
-    for _ in range(max(0, int(depth))):
-        inner = np.zeros_like(kept)
-        for dy, dx in _NEIGHBOURS:
-            inner |= _neighbour_shift(kept, dy, dx)
-        ring = kept & ~inner          # 当前最外圈前景
-        if not ring.any():
-            break
-        # 内侧代表色：把内圈前景的中位色取出来（逐像素太重，取环内圈整体中位）
-        inner_px = arr[inner][:, :3].astype(np.int32)
-        if not len(inner_px):
-            break
-        rep = np.median(inner_px, axis=0)
-        d_bg = np.abs(arr[ring][:, :3].astype(np.int32) - bgv).sum(axis=1)
-        d_in = np.abs(arr[ring][:, :3].astype(np.int32) - rep).sum(axis=1)
-        hit = d_bg < d_in
-        if hit.any():
-            ys, xs = np.nonzero(ring)
-            idx = np.nonzero(hit)[0]
-            arr[ys[idx], xs[idx], :3] = rep.astype(np.uint8)
-            recolored += int(len(idx))
-        kept = inner                     # 下一轮处理内一圈
-    if not recolored:
+    n = _despill(arr, kept, [np.asarray(bg, dtype=np.int32)], 70.0)
+    if not n:
         return cut, 0
-    return Image.fromarray(arr, "RGBA"), recolored
+    return Image.fromarray(arr, "RGBA"), n
 
 
 # --------------------------------------------------------------------------- #

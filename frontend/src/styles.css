@@ -999,3 +999,133 @@ button { cursor: pointer; }
   0% { transform: translateX(-100%); }
   100% { transform: translateX(320%); }
 }
+
+/* ------------------------------------------------------------------ */
+/* 视频转素材链路：选择视频 → 拆解帧 → 精灵图 → 动画预览                */
+/* ------------------------------------------------------------------ */
+.row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+.node-error {
+  margin-top: 6px; padding: 5px 8px; font-size: 11px; line-height: 1.6;
+  color: #ff9bb4; border: 1px solid rgba(255, 51, 102, 0.45);
+  background: rgba(255, 51, 102, 0.08); word-break: break-word;
+}
+
+/* --- 选择视频节点 --- */
+.clip-videolist {
+  margin-top: 6px; max-height: 132px; overflow-y: auto;
+  border: 1px solid var(--line); background: var(--bg-2);
+}
+.clip-videoitem {
+  display: flex; justify-content: space-between; gap: 8px; width: 100%;
+  padding: 5px 8px; background: transparent; border: 0; cursor: pointer;
+  color: var(--muted); font-size: 11px; text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.clip-videoitem:hover { background: rgba(255, 255, 255, 0.05); color: var(--white); }
+.clip-videoitem.on { color: var(--green); background: rgba(0, 255, 136, 0.08); }
+.clip-videoitem .t {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px;
+}
+.clip-videoitem .meta { flex: none; opacity: 0.75; }
+
+.clip-preview { margin-top: 8px; }
+.clip-media {
+  display: block; width: 100%; max-height: 190px; object-fit: contain;
+  border: 1px solid var(--line); background: #0d0f16; padding: 0;
+  cursor: zoom-in;
+}
+video.clip-media { cursor: default; }
+.clip-info { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+
+/* --- 拆解帧节点 --- */
+.fs-filters { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.fs-slider { display: block; font-size: 11px; color: var(--muted); }
+.fs-slider > span {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+}
+.fs-slider b { color: var(--white); font-weight: 600; }
+.fs-slider em {
+  font-style: normal; opacity: 0.65; font-size: 10px;
+}
+.fs-slider input[type='range'] { width: 100%; margin: 3px 0 0; accent-color: var(--green); }
+
+.fs-toolbar {
+  display: flex; align-items: center; gap: 5px; margin-top: 8px; flex-wrap: wrap;
+}
+.fs-showall {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; color: var(--muted); cursor: pointer;
+}
+.fs-count {
+  margin-top: 6px; font-size: 11px; color: var(--muted);
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.fs-count b { color: var(--white); }
+.fs-stat {
+  font-size: 10px; padding: 0 5px; line-height: 15px;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.fs-stat.warn { color: #d98a2b; border-color: rgba(217, 138, 43, 0.5); }
+
+.fs-wall {
+  margin-top: 7px; display: grid; gap: 4px;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  max-height: 320px; overflow-y: auto; padding: 4px;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.28);
+}
+.fs-cell {
+  position: relative; padding: 0; border: 1px solid transparent;
+  background: #16181f; cursor: pointer; overflow: hidden; line-height: 0;
+}
+.fs-cell img {
+  width: 100%; aspect-ratio: 1 / 1; object-fit: contain;
+  image-rendering: pixelated; display: block;
+}
+.fs-cell:hover { border-color: var(--line); }
+.fs-cell.on { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
+.fs-cell.on img { opacity: 1; }
+.fs-cell:not(.on) img { opacity: 0.55; }
+.fs-idx {
+  position: absolute; left: 1px; bottom: 0; font-size: 9px; line-height: 12px;
+  padding: 0 3px; color: #cfd3e0; background: rgba(0, 0, 0, 0.62);
+}
+.fs-order {
+  position: absolute; right: 1px; top: 1px; font-size: 9px; line-height: 13px;
+  min-width: 13px; text-align: center; color: #04120a; background: var(--green);
+  font-weight: 700;
+}
+
+/* --- 精灵图节点 --- */
+.grid-preview {
+  margin-top: 8px; display: block; width: 100%; padding: 4px; cursor: zoom-in;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.35); line-height: 0;
+}
+.grid-preview img {
+  width: 100%; max-height: 260px; object-fit: contain; image-rendering: pixelated;
+}
+.grid-actions { display: flex; gap: 6px; margin-top: 6px; }
+.grid-actions a { text-decoration: none; display: inline-flex; align-items: center; }
+
+/* --- 动画预览节点 --- */
+.anim-stage {
+  margin-top: 8px; display: grid; place-items: center; padding: 6px;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.35);
+  min-height: 100px; overflow: auto;
+}
+.anim-canvas {
+  image-rendering: pixelated; display: block;
+  max-width: 100%; max-height: 260px;
+}
+.anim-controls {
+  display: flex; align-items: center; gap: 5px; margin-top: 7px;
+}
+.anim-counter {
+  margin-left: auto; font-size: 11px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.anim-scrub {
+  width: 100%; margin: 6px 0 2px; accent-color: var(--green);
+}
+.grid-layouts {
+  display: flex; align-items: center; gap: 5px; margin-top: 7px; flex-wrap: wrap;
+}

@@ -45,7 +45,8 @@ def _lock(pid: str) -> threading.Lock:
 
 ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen",
                  "parts", "rigwalk", "txtvideo",
-                 "threeview", "walkvideo", "sequence", "spritesheet", "play")
+                 "threeview", "walkvideo", "sequence", "spritesheet", "play",
+                 "clipsrc", "framesplit", "spritegrid", "animpreview")
 
 # 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
 # 默认关掉等于把开关藏起来。
@@ -229,6 +230,50 @@ DEFAULT_PLAY = {
     "zoom": 2,
 }
 
+# 视频转素材链的四个节点。默认值与 templates.clip_to_sprite 里的内置图一致：
+# 模板是「出厂示例」，这里是「用户在画布上新建节点时」的默认值，两处不同步
+# 会表现为「用模板建的项目」和「手动加的节点」参数不一样。
+DEFAULT_CLIPSRC = {
+    "file": "",
+    "kind": "video",
+    "durationSec": 0,
+    "fps": 0,
+    "width": 0,
+    "height": 0,
+}
+
+DEFAULT_FRAMESPLIT = {
+    "enabled": True,
+    "fpsCap": 12,
+    "maxFrames": 120,
+    "start": 0,
+    "end": None,
+    "matte": True,
+    "tolerance": 40,
+    "maxSide": 384,
+    "step": 1,
+    "simPct": 0,
+    "picks": [],
+}
+
+DEFAULT_SPRITEGRID = {
+    "enabled": True,
+    "cell": 128,
+    "cols": 0,
+    "padding": 0,
+    "margin": 0,
+    "anchor": "bottom",
+    "sharedScale": True,
+    "fps": 12,
+}
+
+DEFAULT_ANIMPREVIEW = {
+    "enabled": True,
+    "fps": 12,
+    "zoom": 4,
+    "loop": True,
+    "bg": "checker",
+}
 
 
 def _now() -> float:
@@ -348,6 +393,27 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                 n["result"] = None
                 n["play"] = {**DEFAULT_PLAY,
                              **(n.get("play") if isinstance(n.get("play"), dict) else {})}
+            elif n["type"] == "clipsrc":
+                # 素材入口：跨项目的文件没有意义，只留参数与默认值
+                n["clipsrc"] = {**DEFAULT_CLIPSRC,
+                                **(n.get("clipsrc") if isinstance(n.get("clipsrc"), dict) else {})}
+                n["clipsrc"]["file"] = ""
+            elif n["type"] == "framesplit":
+                n["result"] = None
+                n["frames"] = []
+                n["source"] = None
+                n["framesplit"] = {**DEFAULT_FRAMESPLIT,
+                                   **(n.get("framesplit") if isinstance(n.get("framesplit"), dict) else {})}
+                n["framesplit"]["picks"] = []
+            elif n["type"] == "spritegrid":
+                n["result"] = None
+                n["images"] = []
+                n["spritegrid"] = {**DEFAULT_SPRITEGRID,
+                                   **(n.get("spritegrid") if isinstance(n.get("spritegrid"), dict) else {})}
+            elif n["type"] == "animpreview":
+                n["meta"] = None
+                n["animpreview"] = {**DEFAULT_ANIMPREVIEW,
+                                    **(n.get("animpreview") if isinstance(n.get("animpreview"), dict) else {})}
             else:
                 n.update({"images": [], "prompt": "", "negative": "", "meta": {}, "genId": None})
             n["createdAt"] = _now()
@@ -529,6 +595,35 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             item.update({
                 "play": _clean_play(n.get("play")),
                 "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "clipsrc":
+            item.update({
+                "clipsrc": _clean_clipsrc(n.get("clipsrc")),
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "framesplit":
+            item.update({
+                "framesplit": _clean_framesplit(n.get("framesplit")),
+                "frames": [c for c in (_clean_split_frame(x)
+                                       for x in (n.get("frames") or [])[:600]) if c],
+                "source": (n.get("source") if isinstance(n.get("source"), dict) else None),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "spritegrid":
+            item.update({
+                "spritegrid": _clean_spritegrid(n.get("spritegrid")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:16],
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "animpreview":
+            item.update({
+                "animpreview": _clean_animpreview(n.get("animpreview")),
                 "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
@@ -939,8 +1034,120 @@ def _clean_play(p: Any) -> Dict[str, Any]:
     }
 
 
+def _cl(v: Any, d: float, lo: float, hi: float) -> float:
+    try:
+        f = float(v)
+        if f != f:          # NaN 是 truthy，min/max 拦不住
+            return d
+        return round(max(lo, min(f, hi)), 3)
+    except Exception:
+        return d
+
+
+def _ci(v: Any, d: int, lo: int, hi: int) -> int:
+    try:
+        return max(lo, min(int(v), hi))
+    except Exception:
+        return d
+
+
+def _clean_clipsrc(c: Any) -> Dict[str, Any]:
+    """视频 / GIF 源：只存文件名，其余是展示信息（不参与逻辑）。"""
+    c = c if isinstance(c, dict) else {}
+    return {
+        "file": str(c.get("file") or "")[:200],
+        "kind": "gif" if str(c.get("kind") or "") == "gif" else "video",
+        "durationSec": _cl(c.get("durationSec"), 0.0, 0.0, 3600.0),
+        "fps": _cl(c.get("fps"), 0.0, 0.0, 240.0),
+        "width": _ci(c.get("width"), 0, 0, 8192),
+        "height": _ci(c.get("height"), 0, 0, 8192),
+    }
+
+
+def _clean_split_frame(f: Any) -> Optional[Dict[str, Any]]:
+    """拆帧产物的一帧。hash 是前端实时过滤的唯一依据，不能丢。"""
+    if not isinstance(f, dict):
+        return None
+    fn = str(f.get("file") or "")[:200]
+    if not fn:
+        return None
+    return {
+        "i": _ci(f.get("i"), 0, 0, 10000),
+        "file": fn,
+        "url": str(f.get("url") or "")[:400],
+        "thumbFile": str(f.get("thumbFile") or "")[:200],
+        "thumbUrl": str(f.get("thumbUrl") or "")[:400],
+        "t": _cl(f.get("t"), 0.0, 0.0, 3600.0),
+        "w": _ci(f.get("w"), 0, 0, 8192),
+        "h": _ci(f.get("h"), 0, 0, 8192),
+        "diff": _cl(f.get("diff"), 0.0, 0.0, 100.0),
+        "sharp": _cl(f.get("sharp"), 0.0, 0.0, 1000.0),
+        "hash": str(f.get("hash") or "")[:400],
+    }
+
+
+def _clean_framesplit(f: Any) -> Dict[str, Any]:
+    """拆帧 + 选帧参数。step/simPct 是「用户挑帧」的口径，必须原样存。
+
+    这两个值决定「哪些帧进精灵图」，丢了的话刷新页面选帧全丢——用户看到的
+    是「我刚挑好的帧变成默认全选了」。
+    """
+    f = f if isinstance(f, dict) else {}
+    picks = [str(x)[:200] for x in (f.get("picks") or []) if isinstance(x, str)][:600]
+    return {
+        "enabled": bool(f.get("enabled", True)),
+        "fpsCap": _cl(f.get("fpsCap"), 12.0, 0.5, 60.0),
+        "maxFrames": _ci(f.get("maxFrames"), 120, 2, 600),
+        "start": _cl(f.get("start"), 0.0, 0.0, 3600.0),
+        "end": (None if f.get("end") in (None, "", 0, "0")
+                else _cl(f.get("end"), 0.0, 0.0, 3600.0)),
+        "matte": bool(f.get("matte", True)),
+        "tolerance": _ci(f.get("tolerance"), 40, 10, 120),
+        "maxSide": _ci(f.get("maxSide"), 384, 64, 1024),
+        # 跳帧步长：每 N 帧取 1 帧
+        "step": _ci(f.get("step"), 1, 1, 30),
+        # 近似度过滤阈值（%）：与上一张保留帧差异低于它就算重复
+        "simPct": _cl(f.get("simPct"), 0.0, 0.0, 40.0),
+        "picks": picks,
+    }
+
+
+def _clean_spritegrid(s: Any) -> Dict[str, Any]:
+    """精灵图参数：单元格 / 列数 / 帧间距 / 外边距 / 锚点 / 共享缩放。"""
+    s = s if isinstance(s, dict) else {}
+    anchor = str(s.get("anchor") or "bottom")[:8]
+    if anchor not in ("bottom", "center", "top"):
+        anchor = "bottom"
+    return {
+        "enabled": bool(s.get("enabled", True)),
+        "cell": _ci(s.get("cell"), 128, 8, 512),
+        "cols": _ci(s.get("cols"), 0, 0, 64),
+        "padding": _ci(s.get("padding"), 0, 0, 32),
+        "margin": _ci(s.get("margin"), 0, 0, 64),
+        "anchor": anchor,
+        "sharedScale": bool(s.get("sharedScale", True)),
+        "fps": _cl(s.get("fps"), 12.0, 0.5, 60.0),
+    }
+
+
+def _clean_animpreview(a: Any) -> Dict[str, Any]:
+    """动画预览：帧率、倍率、循环。bg 只影响预览底色（透明素材要能看出边界）。"""
+    a = a if isinstance(a, dict) else {}
+    bg = str(a.get("bg") or "checker")[:12]
+    if bg not in ("checker", "dark", "light", "green"):
+        bg = "checker"
+    return {
+        "enabled": bool(a.get("enabled", True)),
+        "fps": _cl(a.get("fps"), 12.0, 0.5, 60.0),
+        "zoom": _ci(a.get("zoom"), 3, 1, 12),
+        "loop": bool(a.get("loop", True)),
+        "bg": bg,
+    }
+
+
 def _clean_pixel(p: Any) -> Dict[str, Any]:
     p = p if isinstance(p, dict) else {}
+
     def _size(v):
         if isinstance(v, (list, tuple)) and len(v) == 2:
             try:

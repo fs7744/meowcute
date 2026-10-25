@@ -286,7 +286,9 @@ export type ThreeViewMeta = {
 }
 
 // --------------------------------------------------------------------------- #
-// 八方向行走（dir_walk 模板链：行走视频 → 序列帧 → 精灵整图 → 可操控预览）
+// 八方向行走（节点链：行走视频 → 序列帧 → 精灵整图 → 可操控预览）
+// 模板 dir_walk 已下线（入口让给「视频转素材」链），这四个节点仍可在画布上
+// 手动搭——八方向靠视频底座推理，属于「从零造素材」，与「视频转素材」互补。
 // --------------------------------------------------------------------------- #
 /** 方向 id：顺时针一圈，下 → 左下 → 左 → 左上 → 上 → 右上 → 右 → 右下。 */
 export type WalkDir =
@@ -811,10 +813,244 @@ export type ResultNode = {
   createdAt?: number
 }
 
+// --------------------------------------------------------------------------- #
+// 视频转素材（clip_to_sprite 模板链：选择视频 → 拆解帧 → 精灵图 → 动画预览）
+// --------------------------------------------------------------------------- #
+/** 视频 / GIF 源（第一步，对应后端 _clean_clipsrc）。 */
+export type ClipSrcOptions = {
+  /** images/ 下的文件名 */
+  file: string
+  kind: 'video' | 'gif'
+  /** 展示信息：时长 / 帧率 / 尺寸（不参与逻辑） */
+  durationSec: number
+  fps: number
+  width: number
+  height: number
+}
+
+/** 拆帧 + 挑帧参数（第二步，对应后端 _clean_framesplit）。 */
+export type FrameSplitOptions = {
+  enabled: boolean
+  /** 抽稀后的帧率上限（播放节奏） */
+  fpsCap: number
+  /** 单次最多拆多少帧（成本上限） */
+  maxFrames: number
+  /** 片段起止（秒）；end=null 表示到结尾 */
+  start: number
+  end: number | null
+  matte: boolean
+  tolerance: number
+  /** 解码时长边上限 */
+  maxSide: number
+  /** 跳帧步长：每 N 帧取 1 帧（1 = 全保留） */
+  step: number
+  /** 近似度过滤阈值（%）：与上一张保留帧差异低于它就算重复 */
+  simPct: number
+  /** 用户勾选的帧（按顺序，存 images/ 下的文件名） */
+  picks: string[]
+}
+
+/** 拆出来的一帧（后端返回，带指纹供前端实时过滤）。 */
+export type ClipFrame = {
+  i: number
+  t: number
+  srcIndex?: number
+  file: string
+  url: string
+  thumbFile: string
+  thumbUrl: string
+  w: number
+  h: number
+  /** 与前一帧的差异（0~100），后端算好的默认值 */
+  diff: number
+  /** 锐度：糊帧会明显偏低 */
+  sharp: number
+  /** 16×16 灰度指纹（base64）：前端算相似度用 */
+  hash: string
+}
+
+export type ClipSource = {
+  file: string
+  url: string
+  fps: number
+  frames: number
+  width: number | null
+  height: number | null
+  durationSec: number
+  kind: 'video' | 'gif'
+  preScaled?: boolean
+}
+
+/** 拆帧节点的产出元数据（对应后端 _run_clip_split 的 meta）。 */
+export type FrameSplitMeta = {
+  sourceFrames: number
+  rangeFrames: number
+  step: number
+  picked: number
+  thinned: boolean
+  srcFps: number
+  effFps: number
+  durationSec: number
+  start: number
+  end: number
+  fpsCap: number
+  maxFrames: number
+  matte: boolean
+  tolerance: number
+  count: number
+  matteErrors: number
+  /** 帧间差异的中位数 / 最大值：滑杆默认值照它调 */
+  diffMedian: number
+  diffMax: number
+  seconds: number
+}
+
+export type ClipSrcNode = {
+  id: string
+  type: 'clipsrc'
+  x: number
+  y: number
+  clipsrc: ClipSrcOptions
+  /** 这个节点本身不产图（只是素材入口）；留着字段是为了让「取上游图」的
+   *  通用逻辑能安全地把它当作「没有图」处理，而不是类型上被排除。 */
+  result?: ResultImage | null
+  createdAt?: number
+}
+
+export type FrameSplitNode = {
+  id: string
+  type: 'framesplit'
+  x: number
+  y: number
+  framesplit: FrameSplitOptions
+  /** 拆出来的全部帧（带指纹） */
+  frames?: ClipFrame[]
+  /** 源片段信息（预览播放用） */
+  source?: ClipSource | null
+  result?: ResultImage | null
+  meta?: FrameSplitMeta | null
+  createdAt?: number
+}
+
+/** 精灵图参数（第三步，对应后端 _clean_spritegrid）。 */
+export type SpriteGridOptions = {
+  enabled: boolean
+  /** 单元格边长 */
+  cell: number
+  /** 每行帧数，0 = 一行排完 */
+  cols: number
+  /** 相邻单元格之间的透明间隔（Unity 自动切片靠它认边界） */
+  padding: number
+  /** 整图四周外边距 */
+  margin: number
+  anchor: 'bottom' | 'center' | 'top'
+  /** 共享缩放：整段循环用同一系数，角色不忽大忽小 */
+  sharedScale: boolean
+  /** 动画帧率（写进索引 JSON，动画预览默认取它） */
+  fps: number
+}
+
+/** 精灵图节点的产出元数据。 */
+export type SpriteGridMeta = {
+  cell: number
+  cols: number
+  rows: number
+  count: number
+  padding: number
+  margin: number
+  anchor: string
+  sharedScale: boolean
+  scaleRange?: number[]
+  sheetSize: [number, number]
+  checks: { cellsMatchFrames: boolean; reason?: string; mismatchAt?: number; cells?: number }
+  warnings: string[]
+  fps: number
+  pivot: { x: number; y: number }
+  missing?: number
+}
+
+/** 精灵图索引 JSON（自带帧表 + Phaser 3 兼容段）。 */
+export type SpriteGridIndex = {
+  version: string
+  image: string
+  url?: string
+  sheetSize: { w: number; h: number }
+  frameSize: { w: number; h: number }
+  grid: { cols: number; rows: number; count: number; padding: number; margin: number }
+  anchor: string
+  pivot: { x: number; y: number }
+  fps: number
+  frames: { i: number; x: number; y: number; w: number; h: number }[]
+  textures?: {
+    image: string
+    format: string
+    size: { w: number; h: number }
+    scale: number
+    frames: {
+      filename: string
+      frame: { x: number; y: number; w: number; h: number }
+      rotated: boolean
+      trimmed: boolean
+      spriteSourceSize: { x: number; y: number; w: number; h: number }
+      sourceSize: { w: number; h: number }
+      pivot: { x: number; y: number }
+    }[]
+  }[]
+}
+
+export type SpriteGridNode = {
+  id: string
+  type: 'spritegrid'
+  x: number
+  y: number
+  spritegrid: SpriteGridOptions
+  result?: ResultImage | null
+  images?: ResultImage[]
+  meta?: SpriteGridMeta | null
+  /** 索引 JSON 的 URL（结果卡上提供下载） */
+  indexUrl?: string | null
+  createdAt?: number
+}
+
+/** 动画预览参数（第四步，纯前端渲染，对应后端 _clean_animpreview）。 */
+export type AnimPreviewOptions = {
+  enabled: boolean
+  fps: number
+  zoom: number
+  loop: boolean
+  bg: 'checker' | 'dark' | 'light' | 'green'
+}
+
+/** 动画预览节点的播放载荷（由上游精灵图的元数据组装）。 */
+export type AnimPreviewMeta = {
+  url: string
+  cols: number
+  rows: number
+  count: number
+  frameSize: { w: number; h: number }
+  frames: { i: number; x: number; y: number; w: number; h: number }[]
+  fps: number
+  pivot?: { x: number; y: number }
+  indexUrl?: string | null
+}
+
+export type AnimPreviewNode = {
+  id: string
+  type: 'animpreview'
+  x: number
+  y: number
+  animpreview: AnimPreviewOptions
+  /** 纯前端播放器，不产图；同 ClipSrcNode，保留字段让通用逻辑安全处理 */
+  result?: ResultImage | null
+  meta?: AnimPreviewMeta | null
+  createdAt?: number
+}
+
 export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode | MatteNode
   | ViewGenNode | ThreeViewNode
   | WalkVideoNode | SequenceNode | SpriteSheetNode | PlayNode
   | PartsNode | RigWalkNode | TxtVideoNode
+  | ClipSrcNode | FrameSplitNode | SpriteGridNode | AnimPreviewNode
 export type Edge = { from: string; to: string }
 
 export type Project = {

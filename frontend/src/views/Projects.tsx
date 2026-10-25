@@ -38,7 +38,12 @@ export default function Projects({ onOpenProject }: Props) {
 
   const tplName = useMemo(() => {
     const m = new Map(templates.map((t) => [t.id, t.name]))
-    return (id: string) => m.get(id) || id
+    // 已下线的模板：老项目还挂着这个 id，直接显示原始 id（dir_walk）会让人
+    // 以为是数据坏了。给个人话名字。
+    const retired: Record<string, string> = {
+      dir_walk: '八方向行走（模板已下线，可继续打开）',
+    }
+    return (id: string) => m.get(id) || retired[id] || id
   }, [templates])
 
   const shown = projects.filter((p) => !query || p.name.toLowerCase().includes(query.toLowerCase()))

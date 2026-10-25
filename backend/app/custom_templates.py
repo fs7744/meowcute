@@ -19,7 +19,8 @@ from .jsonlimits import dumps_bounded, parse_bounded
 _PATH = DATA_DIR / "custom_templates.json"
 _ALLOWED = ("generate", "result", "input", "refine", "matte", "viewgen",
             "threeview", "walkvideo", "sequence", "spritesheet", "play",
-            "txtvideo", "parts", "rigwalk")
+            "txtvideo", "parts", "rigwalk",
+            "clipsrc", "framesplit", "spritegrid", "animpreview")
 _ICON_COLORS = ["#FFB020", "#40E0D0", "#FF6B9D", "#8B7BFF", "#5B9DFF"]
 
 
@@ -120,6 +121,13 @@ def _clean_node(n: Any) -> Optional[Dict[str, Any]]:
     elif n["type"] == "rigwalk":
         item.update({
             "rigwalk": n.get("rigwalk") if isinstance(n.get("rigwalk"), dict) else {},
+            "result": None,
+        })
+    elif n["type"] in ("clipsrc", "framesplit", "spritegrid", "animpreview"):
+        # 这四个节点自己带一个同名字段存参数；拆帧产物（frames）跨项目无效，
+        # 模板里只保留参数与结构。
+        item.update({
+            n["type"]: n.get(n["type"]) if isinstance(n.get(n["type"]), dict) else {},
             "result": None,
         })
     else:

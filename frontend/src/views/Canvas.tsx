@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, loadPromptLimits, subscribeTask } from '../api'
 import { promptLimitFor } from '../lib/promptLimit'
+import AnimPreviewNode from '../components/AnimPreviewNode'
+import ClipSrcNode from '../components/ClipSrcNode'
+import FramesplitNode from '../components/FramesplitNode'
+import SpriteGridNode from '../components/SpriteGridNode'
 import GenNode from '../components/GenNode'
 import InputNode from '../components/InputNode'
 import MatteNode from '../components/MatteNode'
@@ -19,12 +23,16 @@ import ThreeViewNode from '../components/ThreeViewNode'
 import ViewGenNode from '../components/ViewGenNode'
 import WalkVideoNode from '../components/WalkVideoNode'
 import type {
-  BackgroundOption, CanvasNode, GenNode as GenNodeType, GenerateResult,
+  AnimPreviewNode as AnimPreviewNodeType,
+  BackgroundOption, CanvasNode, ClipSrcNode as ClipSrcNodeType, GenerateResult,
+  FrameSplitNode as FrameSplitNodeType, FrameSplitMeta,
+  GenNode as GenNodeType,
   InputNode as InputNodeType, MatteNode as MatteNodeType, PlayNode as PlayNodeType,
   Project, PromptExample, PromptLimits, PromptPreview, RefineNode as RefineNodeType,
   ResultImage,
   ResultMeta, ResultNode as ResultNodeType, SequenceNode as SequenceNodeType,
   PartsNode as PartsNodeType, RigWalkNode as RigWalkNodeType,
+  SpriteGridNode as SpriteGridNodeType, SpriteGridMeta,
   SpriteSheetNode as SpriteSheetNodeType, Style, TaskProgress, Template,
   ThreeViewNode as ThreeViewNodeType,
   TxtVideoNode as TxtVideoNodeType, TxtVideoMeta,
@@ -52,6 +60,10 @@ const SEQUENCE_W = 380
 const SPRITESHEET_W = 380
 const PLAY_W = 380
 const TXTVIDEO_W = 420
+const CLIPSRC_W = 360
+const FRAMESPLIT_W = 460
+const SPRITEGRID_W = 420
+const ANIMPREVIEW_W = 340
 const NODE_W: Record<string, number> = {
   generate: GEN_W, result: RES_W, input: INPUT_W, refine: REFINE_W, matte: MATTE_W,
   viewgen: VIEWGEN_W, threeview: THREEVIEW_W, walkvideo: WALKVIDEO_W,
@@ -158,6 +170,19 @@ const NODE_CATALOG: {
     ],
   },
   {
+    id: 'clip', label: '视频转素材', hint: '视频 / GIF → 挑帧 → 精灵图 → 动画预览',
+    items: [
+      { type: 'clipsrc', label: '选择视频 / GIF', dot: 'd-walk',
+        hint: '导入 mp4 / mov / webm / gif，先播一遍确认片段' },
+      { type: 'framesplit', label: '拆解帧', dot: 'd-sequence',
+        hint: '拆成一摞帧：跳帧步长 + 近似度过滤，再逐张勾选' },
+      { type: 'spritegrid', label: '精灵图', dot: 'd-sheet',
+        hint: '选中帧按网格拼图，导出帧索引 JSON（Phaser / Unity / Godot）' },
+      { type: 'animpreview', label: '动画预览', dot: 'd-play',
+        hint: '按设定帧率循环播放，可逐帧步进检查接缝' },
+    ],
+  },
+  {
     id: 'walk', label: '八方向行走', hint: '一张角色图 → 八方向行走精灵表',
     items: [
       { type: 'walkvideo', label: '行走视频', dot: 'd-walk',
@@ -195,6 +220,8 @@ const NODE_LABEL: Record<string, string> = {
   walkvideo: '行走视频', sequence: '序列帧',
   spritesheet: '精灵整图', play: '可操控预览',
   txtvideo: '文本生视频', parts: '拆件', rigwalk: '骨骼行走',
+  clipsrc: '选择视频', framesplit: '拆解帧', spritegrid: '精灵图',
+  animpreview: '动画预览',
 }
 const nodeLabel = (t: string) => NODE_LABEL[t] || t
 
@@ -618,6 +645,10 @@ export default function Canvas({ projectId, onBack }: Props) {
     else if (type === 'sequence') addSequenceNode(at)
     else if (type === 'spritesheet') addSpriteSheetNode(at)
     else if (type === 'play') addPlayNode(at)
+    else if (type === 'clipsrc') addClipSrcNode(at)
+    else if (type === 'framesplit') addFrameSplitNode(at)
+    else if (type === 'spritegrid') addSpriteGridNode(at)
+    else if (type === 'animpreview') addAnimPreviewNode(at)
     else addEmptyResultNode(at)
   }
 
@@ -745,6 +776,72 @@ export default function Canvas({ projectId, onBack }: Props) {
       id: newId('pl'), type: 'play', x: spot.x, y: spot.y,
       play: { enabled: true, fps: 8, zoom: 2 },
       result: null, meta: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addClipSrcNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(CLIPSRC_W, 420)
+    const node: ClipSrcNodeType = {
+      id: newId('cl'), type: 'clipsrc', x: spot.x, y: spot.y,
+      clipsrc: {
+        file: '', kind: 'video', durationSec: 0, fps: 0, width: 0, height: 0,
+      },
+      createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addFrameSplitNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(FRAMESPLIT_W, 520)
+    const node: FrameSplitNodeType = {
+      id: newId('fs'), type: 'framesplit', x: spot.x, y: spot.y,
+      framesplit: {
+        enabled: true, fpsCap: 12, maxFrames: 120, start: 0, end: null,
+        matte: true, tolerance: 40, maxSide: 384, step: 1, simPct: 0, picks: [],
+      },
+      frames: [], source: null, result: null, meta: null,
+      createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addSpriteGridNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(SPRITEGRID_W, 480)
+    const node: SpriteGridNodeType = {
+      id: newId('sg'), type: 'spritegrid', x: spot.x, y: spot.y,
+      spritegrid: {
+        enabled: true, cell: 128, cols: 0, padding: 0, margin: 0,
+        anchor: 'bottom', sharedScale: true, fps: 12,
+      },
+      result: null, images: [], meta: null, indexUrl: null,
+      createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addAnimPreviewNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(ANIMPREVIEW_W, 460)
+    const node: AnimPreviewNodeType = {
+      id: newId('ap'), type: 'animpreview', x: spot.x, y: spot.y,
+      animpreview: { enabled: true, fps: 12, zoom: 4, loop: true, bg: 'checker' },
+      meta: null, createdAt: Date.now() / 1000,
     }
     setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
     setSelected(node.id)
@@ -1583,6 +1680,170 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
   }
 
+
+  // ---------- 视频转素材：选择视频 → 拆帧选帧 → 精灵图 → 动画预览 ----------
+  /** 沿入边找上游「选择视频」节点的文件名。 */
+  const upstreamClipFile = (nodeId: string): string | null => {
+    const p = projectRef.current
+    const e = p?.edges.find((x) => x.to === nodeId)
+    const s = e ? p?.nodes.find((n) => n.id === e.from) : null
+    if (s && s.type === 'clipsrc') return (s as ClipSrcNodeType).clipsrc?.file || null
+    return null
+  }
+
+  const executeClipSplit = async (
+    node: FrameSplitNodeType,
+  ): Promise<{ frames: any[]; source: any; meta: FrameSplitMeta }> => {
+    if (!project) throw new Error('项目未加载')
+    const file = upstreamClipFile(node.id) || node.source?.file || ''
+    if (!file) {
+      throw new Error('没有视频源：先把「选择视频 / GIF」连到这个节点的左侧端口')
+    }
+    const fs = node.framesplit
+    const { taskId } = await api.clipSplit({
+      projectId: project.id,
+      file,
+      fpsCap: fs?.fpsCap ?? 12,
+      maxFrames: fs?.maxFrames ?? 120,
+      start: fs?.start ?? 0,
+      end: fs?.end ?? null,
+      matte: fs?.matte ?? true,
+      tolerance: fs?.tolerance ?? 40,
+      maxSide: fs?.maxSide ?? 384,
+    })
+    activeTaskRef.current = taskId
+    setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+    const r: any = await awaitTask<any>(taskId, node.id)
+    if (activeTaskRef.current === taskId) activeTaskRef.current = null
+    const clip: any = r.clip || {}
+    return {
+      frames: clip.frames || [],
+      source: clip.source ?? null,
+      meta: (clip.meta || {}) as FrameSplitMeta,
+    }
+  }
+
+  const runFrameSplit = async (node: FrameSplitNodeType) => {
+    if (!node.framesplit?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const { frames, source, meta } = await executeClipSplit(node)
+      setProject((p) => p ? {
+        ...p,
+        nodes: p.nodes.map((n) => n.id === node.id ? ({
+          ...n,
+          frames, source, meta,
+          // 重拆之后文件名全变了（旧产物被清理），旧的 picks 必然失效，
+          // 直接全选——比留一堆指向不存在文件的路径好排查
+          framesplit: { ...node.framesplit, picks: frames.map((f: any) => f.file) },
+        } as CanvasNode) : n),
+      } : p)
+    } catch (e: any) {
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
+  }
+
+  /** 上游拆帧节点里「已选」的帧文件，按帧序排列。 */
+  const upstreamPicks = (nodeId: string): { files: string[]; fps: number } | null => {
+    const p = projectRef.current
+    const e = p?.edges.find((x) => x.to === nodeId)
+    const s = e ? p?.nodes.find((n) => n.id === e.from) : null
+    if (!s || s.type !== 'framesplit') return null
+    const fs = s as FrameSplitNodeType
+    const frames = fs.frames || []
+    const picks = new Set(fs.framesplit?.picks || [])
+    // 只保留「既有勾选、又真的还在」的帧：用户换素材后旧的 picks 会指向
+    // 已删除的文件，直接下发会让后端整批读不出来
+    const files = frames.filter((f) => picks.has(f.file)).map((f) => f.file)
+    return { files, fps: fs.meta?.effFps || 12 }
+  }
+
+  const executeSpriteGrid = async (
+    node: SpriteGridNodeType,
+  ): Promise<{ sheet: ResultImage; index: any; meta: SpriteGridMeta; indexUrl: string }> => {
+    if (!project) throw new Error('项目未加载')
+    const up = upstreamPicks(node.id)
+    if (!up) throw new Error('上游没有「拆解帧」节点：先把挑好帧的节点连到左侧端口')
+    if (!up.files.length) throw new Error('上游还没有勾选任何帧：在「拆解帧」里选几张')
+    const sg = node.spritegrid
+    const r = await api.spriteGrid({
+      projectId: project.id,
+      files: up.files,
+      cell: sg?.cell ?? 128,
+      cols: sg?.cols ?? 0,
+      padding: sg?.padding ?? 0,
+      margin: sg?.margin ?? 0,
+      anchor: sg?.anchor ?? 'bottom',
+      sharedScale: sg?.sharedScale ?? true,
+      fps: sg?.fps ?? 12,
+    })
+    const sheet: ResultImage = {
+      assetId: r.sheet.id, url: r.sheet.url,
+      width: r.sheet.width, height: r.sheet.height,
+      origAssetId: r.sheet.id, origUrl: r.sheet.url,
+    }
+    return { sheet, index: r.index, meta: r.meta, indexUrl: r.indexUrl }
+  }
+
+  const runSpriteGrid = async (node: SpriteGridNodeType) => {
+    if (!node.spritegrid?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const { sheet, index, meta, indexUrl } = await executeSpriteGrid(node)
+      // 把精灵图的播放说明推给下游「动画预览」：那个节点是纯前端播放器，
+      // 自己不请求接口，全靠这里把 url + 帧坐标塞进去
+      const play = {
+        url: sheet.url,
+        cols: index.grid?.cols ?? meta.cols,
+        rows: index.grid?.rows ?? meta.rows,
+        count: meta.count,
+        frameSize: { w: meta.cell, h: meta.cell },
+        frames: index.frames || [],
+        fps: node.spritegrid?.fps ?? 12,
+        pivot: index.pivot || meta.pivot,
+        indexUrl,
+      }
+      setProject((p) => {
+        if (!p) return p
+        const nodes = p.nodes.map((n) => {
+          if (n.id === node.id) {
+            return {
+              ...n, result: sheet, images: [sheet], meta, indexUrl,
+            } as CanvasNode
+          }
+          // 直接下游的动画预览节点：写入播放载荷（帧率沿用它的设置，
+          // 但换了新精灵图时把帧数/坐标刷新掉）
+          if (n.type === 'animpreview'
+            && p.edges.some((e) => e.from === node.id && e.to === n.id)) {
+            return { ...n, meta: play } as CanvasNode
+          }
+          return n
+        })
+        return { ...p, nodes }
+      })
+      pushDownstreamResult(node.id, [sheet], {
+        spriteGrid: meta as any,
+        sheetUrl: sheet.url,
+        indexUrl,
+      } as any)
+    } catch (e: any) {
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
+  }
 
   // ---- 骨骼路线：拆件 → 骨骼行走（纯 CPU，确定性） ----
   const executeParts = async (
@@ -2606,6 +2867,22 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is PlayNodeType => n.type === 'play'),
     [project?.nodes],
   )
+  const clipSrcNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is ClipSrcNodeType => n.type === 'clipsrc'),
+    [project?.nodes],
+  )
+  const frameSplitNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is FrameSplitNodeType => n.type === 'framesplit'),
+    [project?.nodes],
+  )
+  const spriteGridNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is SpriteGridNodeType => n.type === 'spritegrid'),
+    [project?.nodes],
+  )
+  const animPreviewNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is AnimPreviewNodeType => n.type === 'animpreview'),
+    [project?.nodes],
+  )
 
   /** 某个节点的入边来自哪一类上游（节点卡上显示「输入：xxx」）。 */
   const upstreamLabel = useCallback((id: string): string | null => {
@@ -2959,6 +3236,77 @@ export default function Canvas({ projectId, onBack }: Props) {
               onStartLink={startLink}
               onFinishLink={finishLink}
               onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {clipSrcNodes.map((n, i) => (
+            <ClipSrcNode
+              key={n.id}
+              node={n}
+              index={i}
+              projectId={project.id}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {frameSplitNodes.map((n, i) => (
+            <FramesplitNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={isRunning(n.id)}
+              progress={tasks[n.id]?.progress?.label}
+              error={tasks[n.id]?.error ?? null}
+              upstreamFile={upstreamClipFile(n.id)}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runFrameSplit(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {spriteGridNodes.map((n, i) => (
+            <SpriteGridNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={isRunning(n.id)}
+              error={tasks[n.id]?.error ?? null}
+              upstreamPicked={upstreamPicks(n.id)?.files.length ?? null}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runSpriteGrid(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {animPreviewNodes.map((n, i) => (
+            <AnimPreviewNode
+              key={n.id}
+              node={n}
+              index={i}
+              upstreamCount={(() => {
+                const e = project.edges.find((x) => x.to === n.id)
+                const s = e ? project.nodes.find((x) => x.id === e.from) : null
+                return s && s.type === 'spritegrid'
+                  ? ((s as SpriteGridNodeType).meta?.count ?? 0) : null
+              })()}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
             />
           ))}
 
