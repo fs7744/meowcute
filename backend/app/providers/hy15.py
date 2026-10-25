@@ -16,11 +16,15 @@ T2V / I2V 双形态（2026-10-24 补 T2V）：
     同进程共存必 OOM（各约 16G）。transformer in_channels=65 = 33 噪声 + 32
     图像 latent，T2V 时图像 latent 通道由管线内部置零。
 
-显存边界（实测 4090 24G）：
-  - 必须 enable_model_cpu_offload：DiT 常驻 15.5G + VAE 解码峰值 12G 会超 24G，
+显存边界（实测 4090 24G，默认分辨率 target_size=640 → 480x848，tokens/帧≈1590）：
+  - 必须 enable_model_cpu_offload：DiT 常驻 15.5G + VAE 解码峰值会超 24G，
     Windows 上表现为卡死而不是 OOM；
   - VAE 必须开 tiling：3.6s vs 69s；
-  - 帧数超线性：21 帧 2.4s/步，33 帧约 5s/步，61 帧（25.6k tokens）47s/步。
+  - 单步耗时≈随帧数线性（非 O(N²) 灾难）：21/33/49/61 帧分别 3.4/4.5/6.7/8.8s/步，
+    峰值显存 16.6/17.4/18.9/20.4GB。真正的墙是**显存**：外推 ~81 帧顶破 24G，
+    121+ 帧整段必 OOM。故 window 分窗的价值是「把峰值显存按在 ~16.6GB →
+    任意长度可跑」，不是提速（见 _chunked_i2v）。
+    （旧注释「61 帧 47s/步」实测约高估 5 倍，已按 warmup+多次计时的稳态值更正。）
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -70,6 +75,29 @@ def resolve(explicit: Optional[str] = None) -> Optional[str]:
 
 def available(explicit: Optional[str] = None) -> bool:
     return resolve(explicit) is not None
+
+
+# 常驻模式的帧数安全线。实测（4090 24G）：21 帧峰值 16.6G 稳住，49 帧干净 OOM
+# （DiT 常驻 15.5G + 大激活超出余量）。超过这个帧数就退回 cpu_offload。
+RESIDENT_MAX_FRAMES = 25
+
+# 单进程显存上限比例。为什么要有：24G 卡上一旦真的超了，Windows 不会干净抛错，
+# 而是**静默卡死**（实测卡了 12 分钟才发现，只能 kill）。设了上限之后超行程会
+# 抛 OutOfMemoryError，能立刻被 caught 并降级，而不是让用户干等。
+# 取 0.97 而不是更保守（曾用 0.92，结果把 49 帧 / 512x704 这种本来放得下的
+# 配置误判成 OOM——上限只该拦「跑飞到系统内存」，不该误伤正常的接近满载）。
+GPU_FRACTION = 0.97
+
+
+def _cap_gpu_fraction() -> None:
+    """给单进程设显存上限：宁可干净抛 OOM，也不要静默卡死。"""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.set_per_process_memory_fraction(GPU_FRACTION)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- 文本编码
@@ -127,17 +155,29 @@ def encode_texts(prompt: str, negative: str = "", task_id: Optional[str] = None)
 
 
 # ---------------------------------------------------------------- 管线
-def get_pipeline(task_id: Optional[str] = None, t2v: bool = False):
+def get_pipeline(task_id: Optional[str] = None, t2v: bool = False, resident: bool = False):
     """加载（或复用）管线：DiT + VAE（I2V 另加 SigLIP）。
 
     t2v=False → I2V 管线（参考图进首帧 latent + SigLIP image_embed）；
     t2v=True → T2V 管线（纯文本，不需要 SigLIP，image_embeds 内部置零）。
     两条管线类不能互换，缓存键用 #t2v 后缀区分，切换时卸掉另一种
     （各约 16G，同进程共存必 OOM）。
+
+    resident=True → **常驻模式（实验性，实测对提速无效，别为加速开它）**。
+    初衷是怀疑「每步搬运 15.5G DiT」是瓶颈，早期测出 3.40s→1.81s/步（1.88x），
+    但那是**测量偏差**：每次 pipe() 都含固定开销（VAE 编码参考图 + SigLIP + latent
+    准备），摊进 4 步把基线虚高了。用 4 步/12 步解方程消掉开销后真实值为
+    **offload 1.69s/步 vs resident 1.81s/步 = 0.94x（略慢）**——
+    enable_model_cpu_offload 的层预取已经做得很好，去掉它并无收益，
+    且常驻会把显存顶到 18.7G，VAE 解码阶段直接 OOM（差约 250MB）。
+    见 tools/hy15_ab_solve_perstep.py。**结论：默认路径不要改。**
+    常驻必须**从构造起就不开 offload**：已加载的管线剥钩子会失败
+    （accelerate remove_hook ImportError），钩子会在每次前向后再把 DiT 搬回 CPU，
+    导致「看着常驻其实是假的」（这个坑已经踩过一次）。
     """
     global _PIPE, _PIPE_KEY
     base = Path(resolve() or model_dir())
-    key = f"{base}#t2v" if t2v else str(base)
+    key = f"{base}#{'t2v' if t2v else 'i2v'}{'#res' if resident else ''}"
     if _PIPE is not None and _PIPE_KEY == key:
         return _PIPE
 
@@ -181,8 +221,24 @@ def get_pipeline(task_id: Optional[str] = None, t2v: bool = False):
         kwargs["feature_extractor"] = SiglipImageProcessor.from_pretrained(pp)
 
     pipe = PipeCls(**kwargs)
-    pipe.enable_model_cpu_offload()
     pipe.vae.enable_tiling()
+    # 无论走哪条路都设显存上限：超限→干净抛 OOM，而不是 Windows 上静默卡死。
+    # （实测踩过：超限后不报错也不返回，干等 12 分钟只能 kill。）
+    _cap_gpu_fraction()
+    if resident:
+        # 常驻模式：**不要**再 enable_model_cpu_offload（否则钩子会把 DiT 搬回 CPU）。
+        # 没有 offload 钩子就没人再管设备搬运了，所以「谁该在 GPU 上」必须自己说清：
+        #   - transformer（15.5G）：常驻，去噪主力
+        #   - image_encoder（SigLIP，~0.4G）：I2V 每次前向都要用，必须一起上
+        #     （留 CPU 会直接设备不匹配报错）
+        #   - vae：I2V 还要用它**编码参考图**，所以也必须上 GPU
+        pipe.transformer.to("cuda")
+        if getattr(pipe, "image_encoder", None) is not None:
+            pipe.image_encoder.to("cuda")
+        if getattr(pipe, "vae", None) is not None:
+            pipe.vae.to("cuda")
+    else:
+        pipe.enable_model_cpu_offload()
     _PIPE, _PIPE_KEY = pipe, key
     return pipe
 
@@ -203,6 +259,167 @@ def release() -> None:
 
 
 # ---------------------------------------------------------------- 生成
+# 分辨率对齐：VAE 空间压缩 16x、transformer patch=(1,1,1)，所以宽高必须是 16 的倍数，
+# 否则管线内部 int(h)//16 会**静默向下取整**（尺寸变了却不报错，最难查的那种）。
+_RES_MULT = 16
+_RES_MIN, _RES_MAX = 128, 1280
+
+
+def _norm_res(width: int, height: int) -> Tuple[int, int]:
+    """把用户宽高规整到 16 的倍数并夹到安全区间；无效返回 (0, 0) 表示「用默认」。"""
+    try:
+        w, h = int(width), int(height)
+    except Exception:
+        return 0, 0
+    if w <= 0 or h <= 0:
+        return 0, 0
+    w = max(_RES_MIN, min(_RES_MAX, round(w / _RES_MULT) * _RES_MULT))
+    h = max(_RES_MIN, min(_RES_MAX, round(h / _RES_MULT) * _RES_MULT))
+    return w, h
+
+
+def _fit_image(image, width: int, height: int):
+    """把参考图居中裁到目标长宽比并缩放到 (width, height)。
+
+    I2V 管线自己会用「参考图长宽比 × target_size」反推输出尺寸（__call__ 没有
+    width/height 参数），所以想精确落到用户选的 W×H，必须先把图裁成 W:H，
+    再把 target_size 设成 sqrt(W*H)（候选尺寸面积都≈target_size²）。
+    """
+    from PIL import Image
+
+    resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", None)
+    try:
+        img = image if hasattr(image, "crop") else Image.open(image)
+    except Exception:
+        return image
+    sw, sh = img.size
+    tgt = width / float(height)
+    src = sw / float(sh)
+    if src > tgt:                      # 太宽 → 裁掉左右
+        nw = max(1, int(round(sh * tgt)))
+        x0 = (sw - nw) // 2
+        img = img.crop((x0, 0, x0 + nw, sh))
+    elif src < tgt:                    # 太高 → 裁掉上下
+        nh = max(1, int(round(sw / tgt)))
+        y0 = (sh - nh) // 2
+        img = img.crop((0, y0, sw, y0 + nh))
+    try:
+        return img.resize((width, height), resample) if resample else img.resize((width, height))
+    except Exception:
+        return img.resize((width, height))
+
+
+def _set_target_size(pipe, width: int, height: int) -> None:
+    """按用户宽高设置管线的 target_size（决定输出像素面积）；无效则回默认。
+
+    管线的候选尺寸表是「面积≈target_size² × 多种长宽比」的离散集合，直接取
+    sqrt(W*H) 只能近似（例如 384x512 会落到 384x496）。这里在附近微调
+    target_size，挑「实际产出最接近用户所选」的那个，让分辨率真正可控。
+    """
+    if width > 0 and height > 0:
+        area = math.sqrt(float(width) * float(height))
+        try:
+            vp = pipe.video_processor
+            best_d, best_ts = None, int(round(area))
+            lo = max(64, int(area) - 40)
+            for ts in range(lo, int(area) + 41):
+                h, w = vp.calculate_default_height_width(
+                    height=height, width=width, target_size=ts)
+                d = abs(w - width) + abs(h - height)
+                if best_d is None or d < best_d:
+                    best_d, best_ts = d, ts
+                if d == 0:
+                    break
+            pipe.target_size = best_ts
+        except Exception:
+            pipe.target_size = int(round(area))
+    else:
+        try:
+            pipe.target_size = pipe.transformer.config.target_size
+        except Exception:
+            pass
+
+
+def _denoise(pipe, embeds: Dict[str, Any], *, image, n_frames: int, steps: int,
+             guidance: float, gen, t2v: bool, width: int = 0, height: int = 0) -> List[Any]:
+    """跑一次完整去噪，返回 PIL 帧列表（T2V/I2V 共用，t2v 由 image is None 决定）。
+
+    width/height：用户选的分辨率（0=用管线默认）。T2V 直接传 height/width；
+    I2V 因为 __call__ 不接这两个参数，改为「预裁参考图到 W:H + 设 target_size」。
+    """
+    # 只有 >1 才真的开 CFG：官方 step-distilled 推荐 1.0（无 CFG，单次前向）
+    pipe.guider.guidance_scale = guidance
+    pipe.guider._enabled = guidance > 1.0 and pipe.guider.num_conditions > 1
+
+    (pe, pem, pe2, pem2) = embeds["pos"]
+    (ne, nem, ne2, nem2) = embeds["neg"]
+    call_kw: Dict[str, Any] = dict(
+        prompt=None,
+        prompt_embeds=pe, prompt_embeds_mask=pem,
+        prompt_embeds_2=pe2, prompt_embeds_mask_2=pem2,
+        negative_prompt_embeds=ne, negative_prompt_embeds_mask=nem,
+        negative_prompt_embeds_2=ne2, negative_prompt_embeds_mask_2=nem2,
+        num_frames=n_frames, num_inference_steps=steps,
+        generator=gen, output_type="pil",
+    )
+    if t2v:
+        _set_target_size(pipe, width, height)
+        if width > 0 and height > 0:
+            call_kw["height"] = height
+            call_kw["width"] = width
+    else:
+        if width > 0 and height > 0:
+            image = _fit_image(image, width, height)
+        _set_target_size(pipe, width, height)
+        call_kw["image"] = image
+    out = pipe(**call_kw)
+    return list(out.frames[0])
+
+
+def _chunked_i2v(pipe, embeds: Dict[str, Any], *, image, frames: int, steps: int,
+                 guidance: float, seed, window: int, task_id, progress,
+                 width: int = 0, height: int = 0) -> List[Any]:
+    """把长视频切成多个 ≤window 帧的 I2V 段链式生成，把峰值显存按在单段水平。
+
+    根因（实验 A 实测，480x848 默认分辨率）：hy15 单步耗时随帧数≈线性
+    （21/33/49/61 帧 = 3.4/4.5/6.7/8.8s/步），但峰值显存随 latent 序列线性增长
+    （16.6→20.4GB），外推 ~81 帧顶破 24G、121+ 帧整段必 OOM。分窗后每段 ≤window
+    （默认 21），峰值显存恒定 ~16.6GB，与总长度无关——于是任意长度都能在 24G 内跑完。
+    代价：不是提速（单步本就线性），反而多几次 VAE 解码/SigLIP/latent 准备的固定开销；
+    换来的是「整段会 OOM 的长度也能生成」。
+
+    连续性：clip 1 用原始参考图；clip k 用 clip k-1 的末帧做 I2V 首帧条件
+    （I2V 天然支持首帧条件），拼接时丢掉重复的边界帧。接缝质量取决于模型对
+    「首帧→后续」的保持能力，是链式方案的主要权衡点。
+    """
+    import math
+
+    # 首段 window 帧，之后每段新增 window-1 帧（丢 1 个重复边界帧）
+    # total = window + (k-1)*(window-1) >= frames
+    k = max(1, math.ceil((frames - window) / (window - 1)) + 1)
+    prog = progress or {}
+    grand = int(prog.get("grand") or (k * steps))
+    out_frames: List[Any] = []
+    cur = image
+    for i in range(k):
+        progress_mod.check_cancel(task_id)
+        clip_seed = None if seed is None else int(seed) + i * 100003
+        gen = None
+        if clip_seed is not None:
+            import torch
+            gen = torch.Generator("cuda" if torch.cuda.is_available() else "cpu").manual_seed(clip_seed)
+        progress_mod.report(
+            task_id, int(prog.get("base") or 0) + i * steps, grand,
+            f"{str(prog.get('label') or '')} 分窗 {i + 1}/{k}（每窗 {window} 帧）…".strip())
+        clip = _denoise(pipe, embeds, image=cur, n_frames=window, steps=steps,
+                        guidance=guidance, gen=gen, t2v=False,
+                        width=width, height=height)
+        # 首段全收，后续段丢掉与上一段重复的首帧
+        out_frames.extend(clip if i == 0 else clip[1:])
+        cur = clip[-1]
+    return out_frames[:frames]
+
+
 def _generate(
     embeds: Dict[str, Any],
     *,
@@ -213,11 +430,19 @@ def _generate(
     seed: Optional[int] = None,
     task_id: Optional[str] = None,
     progress: Optional[Dict[str, Any]] = None,
+    window: int = 0,
+    width: int = 0,
+    height: int = 0,
 ) -> Tuple[List[Any], Dict[str, Any]]:
     """预计算 embeds → 帧序列（T2V/I2V 共用，image=None 即纯文本）。
 
-    帧数：内部对齐到 4k+1，并限制在 [13, 33]。61 帧会因序列长度超线性退化
-    （25.6k tokens ≈ 47s/步）而失去可用性。
+    帧数：内部对齐到 4k+1，下限 13（模型要求的最小可用帧数），上限不限制。
+    window：分窗阈值（0=关闭）。仅 I2V 生效：frames>window 时切成多个 ≤window 的
+    链式段。实测单步耗时本就≈线性，分窗**不提速**；它的价值是把峰值显存按在
+    ~16.6GB，从而在 24G 内跑整段会 OOM 的长视频（见 _chunked_i2v）。T2V 无首帧
+    锚点、分窗无意义，自动忽略。
+    width/height：用户选的分辨率（0=沿用管线默认）。单步耗时∝tokens∝H×W，
+    这是最直接、最可预期的提速杠杆（像素素材最终只缩到 64-256px 的格子）。
     """
     import torch
 
@@ -225,19 +450,22 @@ def _generate(
     t2v = image is None
     pipe = get_pipeline(task_id, t2v=t2v)
 
-    n = max(13, min(33, (int(frames) - 1) // 4 * 4 + 1))
+    # 帧数不设上限：4k+1 对齐 + 下限 13 即可，具体多长由用户决定。
+    n = max(13, (int(frames) - 1) // 4 * 4 + 1)
     st = max(6, min(20, int(steps or 12)))
     use_guid = 1.0 if guidance is None else float(guidance)
-    # 只有 >1 才真的开 CFG：官方 step-distilled 推荐 1.0（无 CFG，单次前向）
-    pipe.guider.guidance_scale = use_guid
-    pipe.guider._enabled = use_guid > 1.0 and pipe.guider.num_conditions > 1
+
+    win = 0
+    if window and int(window) >= 13:
+        win = max(13, (int(window) - 1) // 4 * 4 + 1)
+    chunked = win >= 13 and n > win and image is not None
+
+    # 分辨率：规整到 16 的倍数；无效则 (0,0) → 各路径沿用管线默认
+    rw, rh = _norm_res(width, height)
 
     gen = None
-    if seed is not None:
+    if seed is not None and not chunked:
         gen = torch.Generator("cuda" if torch.cuda.is_available() else "cpu").manual_seed(int(seed))
-
-    (pe, pem, pe2, pem2) = embeds["pos"]
-    (ne, nem, ne2, nem2) = embeds["neg"]
 
     try:
         if torch.cuda.is_available():
@@ -245,25 +473,22 @@ def _generate(
     except Exception:
         pass
 
-    progress_mod.report(
-        task_id, int((progress or {}).get("base") or 0),
-        int((progress or {}).get("grand") or st),
-        f"{str((progress or {}).get('label') or '')} 去噪 {st} 步（{n} 帧）…".strip())
     t0 = time.time()
-    call_kw: Dict[str, Any] = dict(
-        prompt=None,
-        prompt_embeds=pe, prompt_embeds_mask=pem,
-        prompt_embeds_2=pe2, prompt_embeds_mask_2=pem2,
-        negative_prompt_embeds=ne, negative_prompt_embeds_mask=nem,
-        negative_prompt_embeds_2=ne2, negative_prompt_embeds_mask_2=nem2,
-        num_frames=n, num_inference_steps=st,
-        generator=gen, output_type="pil",
-    )
-    if not t2v:
-        call_kw["image"] = image
-    out = pipe(**call_kw)
+    if chunked:
+        imgs = _chunked_i2v(pipe, embeds, image=image, frames=n, steps=st,
+                            guidance=use_guid, seed=seed, window=win,
+                            task_id=task_id, progress=progress,
+                            width=rw, height=rh)
+    else:
+        progress_mod.report(
+            task_id, int((progress or {}).get("base") or 0),
+            int((progress or {}).get("grand") or st),
+            f"{str((progress or {}).get('label') or '')} 去噪 {st} 步（{n} 帧"
+            f"{f' / {rw}x{rh}' if rw else ''}）…".strip())
+        imgs = _denoise(pipe, embeds, image=image, n_frames=n, steps=st,
+                        guidance=use_guid, gen=gen, t2v=t2v,
+                        width=rw, height=rh)
     dt = time.time() - t0
-    imgs = list(out.frames[0])
 
     vram: Dict[str, Any] = {}
     try:
@@ -277,14 +502,16 @@ def _generate(
     except Exception:
         pass
 
-    return imgs, {
+    meta: Dict[str, Any] = {
         "engine": "hy15", "family": "hy15", "mode": "t2v" if t2v else "i2v",
         "model": "hunyuanvideo-1.5/480p_i2v_step_distilled",
         "steps": st, "cfg": use_guid, "frames": len(imgs),
         "seconds": round(dt, 1),
         "size": [imgs[0].width, imgs[0].height] if imgs else None,
-        **({"vram": vram} if vram else {}),
     }
+    if chunked:
+        meta["window"] = win
+    return imgs, {**meta, **({"vram": vram} if vram else {})}
 
 
 def run_i2v(
@@ -297,10 +524,14 @@ def run_i2v(
     seed: Optional[int] = None,
     task_id: Optional[str] = None,
     progress: Optional[Dict[str, Any]] = None,
+    window: int = 0,
+    width: int = 0,
+    height: int = 0,
 ) -> Tuple[List[Any], Dict[str, Any]]:
-    """首帧 + 预计算 embeds → 帧序列（图生视频）。"""
+    """首帧 + 预计算 embeds → 帧序列（图生视频）。window>0 且 frames>window 时分窗。"""
     return _generate(embeds, image=image, frames=frames, steps=steps,
-                     guidance=guidance, seed=seed, task_id=task_id, progress=progress)
+                     guidance=guidance, seed=seed, task_id=task_id, progress=progress,
+                     window=window, width=width, height=height)
 
 
 def run_t2v(
@@ -312,7 +543,11 @@ def run_t2v(
     seed: Optional[int] = None,
     task_id: Optional[str] = None,
     progress: Optional[Dict[str, Any]] = None,
+    window: int = 0,
+    width: int = 0,
+    height: int = 0,
 ) -> Tuple[List[Any], Dict[str, Any]]:
-    """纯文本 embeds → 帧序列（文生视频，无参考图）。"""
+    """纯文本 embeds → 帧序列（文生视频，无参考图）。window 对 T2V 无效（无首帧锚点）。"""
     return _generate(embeds, image=None, frames=frames, steps=steps,
-                     guidance=guidance, seed=seed, task_id=task_id, progress=progress)
+                     guidance=guidance, seed=seed, task_id=task_id, progress=progress,
+                     window=window, width=width, height=height)

@@ -480,15 +480,22 @@ def _run_checks(client) -> int:
     check("默认值接口带引擎选择", "engine" in wd and "engines" in wd, str(wd.get("engine")))
     check("引擎列表含 hy15 与 wan",
           {e["id"] for e in wd.get("engines", [])} == {"hy15", "wan"})
-    check("引擎帧数上限 hy15=33 / wan=193",
-          wd["frameHints"]["hy15"]["max"] == 33 and wd["frameHints"]["wan"]["max"] == 193,
+    check("引擎帧数上限 hy15=257 / wan=193",
+          wd["frameHints"]["hy15"]["max"] == 257 and wd["frameHints"]["wan"]["max"] == 193,
           str(wd.get("frameHints")))
     check("引擎进存盘白名单", _clean_walkvideo({"engine": "wan"})["engine"] == "wan")
     check("非法引擎回默认 hy15", _clean_walkvideo({"engine": "sora"})["engine"] == "hy15")
-    check("hy15 帧数夹到 33",
-          _clean_walkvideo({"engine": "hy15", "numFrames": 121})["numFrames"] == 33)
+    check("hy15 帧数不再夹到 33（121 直通，超 257 才夹）",
+          _clean_walkvideo({"engine": "hy15", "numFrames": 121})["numFrames"] == 121
+          and _clean_walkvideo({"engine": "hy15", "numFrames": 999})["numFrames"] == 257)
+    check("wan 帧数仍夹到 193",
+          _clean_walkvideo({"engine": "wan", "numFrames": 999})["numFrames"] == 193)
     check("wan 帧数放到 121",
           _clean_walkvideo({"engine": "wan", "numFrames": 121})["numFrames"] == 121)
+    check("window 分窗阈值进存盘白名单（0=关，直通，超 257 才夹）",
+          _clean_walkvideo({"window": 21})["window"] == 21
+          and _clean_walkvideo({})["window"] == 0
+          and _clean_walkvideo({"window": 999})["window"] == 257)
     check("行走视频默认引擎是 hy15",
           _clean_walkvideo({})["engine"] == "hy15",
           str(_clean_walkvideo({}).get("engine")))
@@ -552,7 +559,7 @@ def _run_checks(client) -> int:
           str(sorted(DEFAULT_TXTVIDEO)))
     ct = _clean_txtvideo({"numFrames": 999, "width": 77, "guidanceScale": 99,
                           "engine": "sora", "steps": "", "seed": None})
-    check("帧数夹到 193", ct["numFrames"] == 193, str(ct["numFrames"]))
+    check("帧数夹到 257", ct["numFrames"] == 257, str(ct["numFrames"]))
     check("宽度夹到 128", ct["width"] == 128, str(ct["width"]))
     check("引导强度夹到 9", ct["guidanceScale"] == 9.0, str(ct["guidanceScale"]))
     check("非法引擎回 None（自动）", ct["engine"] is None, str(ct["engine"]))

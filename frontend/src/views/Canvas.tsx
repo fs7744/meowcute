@@ -776,7 +776,7 @@ export default function Canvas({ projectId, onBack }: Props) {
         engine: 'hy15',
         steps: null, seed: null, width: 384, height: 512,
         numFrames: 21, fps: 12, maxSide: 512, maxSeqLen: null,
-        guidanceScale: null, motionThreshold: 6.0, retries: 2,
+        guidanceScale: null, motionThreshold: 6.0, retries: 2, window: 0,
       },
       result: null, images: [], meta: null, createdAt: Date.now() / 1000,
     }
@@ -1696,6 +1696,8 @@ export default function Canvas({ projectId, onBack }: Props) {
       styleId: w?.styleId ?? null,
       // 视频引擎：默认 hy15（HunyuanVideo-1.5），用户可在节点上切 wan
       engine: w?.engine ?? 'hy15',
+      // hy15 分窗阈值：0=关闭；>0 且帧数更大时链式分窗（仅 hy15 生效）
+      window: w?.window ?? 0,
       steps: w?.steps ?? null,
       seed: w?.seed ?? null,
       width: w?.width ?? 384,

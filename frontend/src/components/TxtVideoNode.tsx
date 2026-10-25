@@ -103,16 +103,16 @@ export default function TxtVideoNode({
   const effEngine = v.engine === 'wan' || v.engine === 'hy15' ? v.engine : 'hy15'
   const q = QUALITY_PRESETS[effEngine][v.quality]
 
-  // 帧数硬上限由模型定：hy15 是 480p 蒸馏模型，序列长度只到 33 帧；Wan 到 193。
+  // 帧数硬上限由模型定：hy15 是 480p 蒸馏模型，帧数可到 257（越长越慢）；Wan 到 193。
   // 超了后端会静默夹取，所以界面上必须提前说清楚「最长多少秒」。
-  const FRAME_CAP = { hy15: 33, wan: 193 } as const
+  const FRAME_CAP = { hy15: 257, wan: 193 } as const
   const frameCap = FRAME_CAP[effEngine]
   // 时长与帧数是同一个量的两种表达：时长 = 帧数 ÷ 帧率。
   // 存的是帧数（真值），时长输入只是换个更好懂的口径去写它。
   const duration = v.numFrames / Math.max(1, v.fps)
   const setDuration = (sec: number) => {
     const n = Math.round(Math.max(0.25, Math.min(60, sec)) * v.fps)
-    patch({ numFrames: Math.max(5, Math.min(193, n)) })
+    patch({ numFrames: Math.max(5, Math.min(frameCap, n)) })
   }
 
   /** 选档位：按引擎填步数+CFG（用户已手改过也照填——选档就是显式要这套）。 */
@@ -227,7 +227,7 @@ export default function TxtVideoNode({
         <div className="param-grid">
           <label className="gen-field">
             <span className="gen-field-label"
-              title={`时长就是帧数 ÷ 帧率。当前引擎 ${effEngine === 'hy15' ? 'Hunyuan（上限 33 帧）' : 'Wan（上限 193 帧）'}，` +
+              title={`时长就是帧数 ÷ 帧率。当前引擎 ${effEngine === 'hy15' ? 'Hunyuan（上限 257 帧）' : 'Wan（上限 193 帧）'}，` +
                 `按 ${v.fps}fps 最长 ${(frameCap / v.fps).toFixed(2)} 秒；要更长请切 Wan 或降帧率`}>
               时长（秒）
             </span>
@@ -243,7 +243,7 @@ export default function TxtVideoNode({
                 // 锁时长、换帧数：用户心里的量是「几秒」，不该因为调帧率变长变短
                 const nextFps = Math.max(1, Number(e.target.value))
                 const n = Math.round(duration * nextFps)
-                patch({ fps: nextFps, numFrames: Math.max(5, Math.min(193, n)) })
+                patch({ fps: nextFps, numFrames: Math.max(5, Math.min(frameCap, n)) })
               }} />
           </label>
         </div>
@@ -302,7 +302,7 @@ export default function TxtVideoNode({
           <div className="param-grid">
             <label className="gen-field">
               <span className="gen-field-label" title="时序 VAE 要求 4k+1，内部会自动向下取整；改这里等于改时长">帧数</span>
-              <input className="input" type="number" min={5} max={193} step={4}
+              <input className="input" type="number" min={5} max={frameCap} step={4}
                 value={v.numFrames} onChange={(e) => patch({ numFrames: Number(e.target.value) })} />
             </label>
             <label className="gen-field">
@@ -330,7 +330,7 @@ export default function TxtVideoNode({
           <ParamGroup label="引擎与输出">
 
           <label className="gen-field">
-            <span className="gen-field-label" title="两个引擎都支持纯文本；Hunyuan 一致性和细节更好（帧数上限 33），Wan 帧数可到 193、像素风保留更严格">引擎</span>
+            <span className="gen-field-label" title="两个引擎都支持纯文本；Hunyuan 一致性和细节更好（帧数可到 257，越长越慢），Wan 帧数可到 193、像素风保留更严格">引擎</span>
             <select className="input" value={v.engine ?? 'auto'}
               onChange={(e) => applyEngine(e.target.value === 'auto' ? null : e.target.value)}>
               {Object.entries(ENGINE_CN).map(([id, cn]) => (

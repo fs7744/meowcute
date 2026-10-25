@@ -1588,7 +1588,7 @@ class WalkVideoPayload(BaseModel):
     seed: Optional[int] = None
     width: int = 384
     height: int = 512
-    numFrames: int = 81                        # Wan 帧数（内部对齐 4k+1）
+    numFrames: int = 21                        # 默认引擎 hy15 帧数（4k+1；上限 257，越长越慢）
     fps: int = 24
     maxSide: int = 512
     maxSeqLen: Optional[int] = None
@@ -1610,6 +1610,9 @@ class WalkVideoPayload(BaseModel):
     # 视频引擎：hy15（HunyuanVideo-1.5，默认优先）/ wan（Wan2.2 TI2V-5B）。
     # None 时按可用性自动选：hy15 权重就绪就用 hy15。
     engine: Optional[str] = None
+    # hy15 分窗阈值（0=关闭）：numFrames>window 时切成多个 ≤window 的链式 I2V 段，
+    # 把单步耗时从「帧数→token 超线性」拉回近似线性，用于更长视频。仅 hy15 生效。
+    window: int = 0
 
 
 @app.get("/api/walkvideo/defaults")
@@ -1629,15 +1632,25 @@ async def walkvideo_defaults() -> Dict[str, Any]:
         "engines": [
             {"id": "hy15", "label": "HunyuanVideo-1.5",
              "available": _hy15_available(),
-             "note": "默认。不闪烁不变形，21~33 帧，约 1 分钟/方向"},
+             "note": "默认。不闪烁不变形，默认 21 帧；可加长（61 帧起每步 2.4s→47s，越长越慢）"},
             {"id": "wan", "label": "Wan2.2 TI2V-5B",
              "available": True,
              "note": "像素风更保真，长片可能闪烁/变形"},
         ],
         # 各引擎的帧数上限（4k+1）：hy15 超过 33 帧会因序列长度超线性退化
-        "frameHints": {"hy15": {"default": 21, "max": 33, "align": 4},
+        "frameHints": {"hy15": {"default": 21, "max": 257, "align": 4},
                        "wan": {"default": 81, "max": 193, "align": 4}},
     }
+
+
+def _resolve_video_engine(engine, cfg):
+    """视频引擎解析：与管线内部 resolve 一致，用于按引擎设帧数上下限。"""
+    from .providers.diffusers_local import resolve_video_engine
+
+    try:
+        return resolve_video_engine(engine, cfg or {})
+    except Exception:
+        return "hy15"
 
 
 def _hy15_available() -> bool:
@@ -1671,6 +1684,7 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
         board_cells = threeview_mod.split_view_board(base)
 
         provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
+        _weng = _resolve_video_engine(payload.engine, provider_cfg)
 
         # 现成视频来源：先把帧读出来（在跑任何模型之前，读不出来立刻报错，
         # 而不是等 Wan 加载完 17GB 显存才说文件坏了）
@@ -1732,7 +1746,8 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
             steps=(_clamp(payload.steps, 4, 60, 30) if payload.steps else None),
             seed=payload.seed,
             width=w_w, height=w_h,
-            num_frames=_clamp(payload.numFrames, 5, 193, 81),
+            num_frames=_clamp(payload.numFrames, 13 if _weng == "hy15" else 5,
+                              257 if _weng == "hy15" else 193, 21),
             fps=_clamp(payload.fps, 8, 30, 24),
             max_side=_clamp(payload.maxSide, 256, 1024, 512),
             max_seq_len=(_clamp(payload.maxSeqLen, 256, 1536, 512)
@@ -1746,6 +1761,7 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
                             else _clamp(payload.guidanceScale, 1.0, 9.0, 5.0)),
             motion_threshold=_clamp(payload.motionThreshold, 1.0, 30.0, 6.0),
             retries=_clamp(payload.retries, 0, 5, 2),
+            window=_clamp(payload.window, 0, 257, 0),
             negative=(payload.negative or "").strip(),
             engine=payload.engine)
 
@@ -1821,7 +1837,7 @@ class TxtVideoPayload(BaseModel):
     seed: Optional[int] = None
     width: int = 832
     height: int = 480
-    numFrames: int = 81                        # Wan 帧数（内部对齐 4k+1）
+    numFrames: int = 21                        # 默认引擎 hy15 帧数（4k+1；上限 257，越长越慢）
     fps: int = 24
     maxSide: int = 832
     maxSeqLen: Optional[int] = None
@@ -1872,6 +1888,7 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
         # （hy15 2026-10-24 起有 T2V 管线；Wan 一直文/图统一），自动模式
         # 默认 hy15（一致性和细节更好），权重不全时 resolve 回退 wan。
         engine = payload.engine
+        _teng = _resolve_video_engine(payload.engine, provider_cfg)
 
         result = await DiffusersProvider(provider_cfg).generate_video(
             prompt,
@@ -1880,7 +1897,8 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
             height=_clamp(payload.height, 128, 1280, 480),
             steps=(_clamp(payload.steps, 4, 60, 30) if payload.steps else None),
             seed=payload.seed,
-            num_frames=_clamp(payload.numFrames, 5, 193, 81),
+            num_frames=_clamp(payload.numFrames, 13 if _teng == "hy15" else 5,
+                              257 if _teng == "hy15" else 193, 21),
             fps=_clamp(payload.fps, 8, 30, 24),
             max_side=_clamp(payload.maxSide, 256, 1280, 832),
             max_seq_len=(_clamp(payload.maxSeqLen, 256, 1536, 512)

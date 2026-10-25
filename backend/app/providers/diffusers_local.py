@@ -1338,17 +1338,20 @@ class DiffusersProvider(BaseProvider):
         progress: Optional[Dict[str, Any]] = None,
         engine: Optional[str] = None,
         fit_aspect: bool = False,
+        window: int = 0,
     ) -> ProviderResult:
         """视频生成：参考图（可选）+ 提示词 → 帧序列（ProviderResult.images = 帧）。
 
         与 generate() 分开而不是加参数：视频的输入输出语义都不同（一张图进、
         几十帧出、按时长而非张数描述），塞进同一个方法只会让调用方猜。
 
-        ref=None = 纯文本生视频（T2V）：只有 Wan2.2 TI2V-5B 支持（统一权重，
-        另一条管线类），hy15 会直接报错指路。
+        ref=None = 纯文本生视频（T2V）：hy15 / Wan 都支持。
 
         engine：hy15（默认，HunyuanVideo-1.5）/ wan（Wan2.2 TI2V-5B）。两条路径的
         「帧数 / 步数 / CFG」语义不同，所以各自在自己的分支里收敛参数。
+
+        window：分窗阈值（0=关闭，仅 hy15 的 I2V 生效）。num_frames>window 时切成
+        多个 ≤window 的链式段，绕开整段长序列自注意力的超线性耗时塌方。
         """
         _require_torch()
         _touch()
@@ -1363,7 +1366,7 @@ class DiffusersProvider(BaseProvider):
             return await self._generate_video_hy15(
                 prompt, ref, num_frames=num_frames, steps=steps, seed=seed,
                 task_id=task_id, negative=negative, guidance_scale=guidance_scale,
-                progress=progress)
+                progress=progress, window=window, width=width, height=height)
 
         # 视频底座自己解析：以前读 self._resolve_model()（那是**图片**底座），
         # 全靠 walkvideo 事先把 cfg["model"] 改写成 wan 路径才不出错——别的
@@ -1429,6 +1432,7 @@ class DiffusersProvider(BaseProvider):
         self, prompt: str, ref, *, num_frames: int, steps: Optional[int],
         seed: Optional[int], task_id: Optional[str], negative: Optional[str],
         guidance_scale: Optional[float], progress: Optional[Dict[str, Any]],
+        window: int = 0, width: int = 0, height: int = 0,
     ) -> ProviderResult:
         """HunyuanVideo-1.5 480p step-distilled：图生视频 / 纯文生视频。
 
@@ -1438,8 +1442,9 @@ class DiffusersProvider(BaseProvider):
         流程：文本编码（Qwen2.5-VL-7B，首次约 2 分钟，之后走磁盘缓存）→
         DiT+VAE 常驻推理（21 帧约 0.7-1 分钟）→ 帧序列。
 
-        参数收敛：帧数对齐 4k+1 并夹到 [13,33]（61 帧会因 25.6k tokens 退化成
-        47s/步）；步数夹到 [6,20]（官方 8-12）；guidance 默认 1.0（无 CFG）。
+        参数收敛：帧数对齐 4k+1、下限 13（上限不卡，61 帧起单步 2.4s→47s 由用户
+        权衡，或用 window 分窗绕开）；步数夹到 [6,20]；guidance 默认 1.0（无 CFG）。
+        window>0 且 frames>window 时 I2V 走链式分窗（每段 ≤window，单步恒定）。
         """
         neg = negative if negative is not None else self.cfg.get("negativePrompt", "")
         label = str((progress or {}).get("label") or ("文生视频" if ref is None else "行走视频"))
@@ -1459,7 +1464,8 @@ class DiffusersProvider(BaseProvider):
                         frames=int(num_frames or 21),
                         steps=int(steps) if steps else 12,
                         guidance=guidance_scale, seed=seed,
-                        task_id=task_id, progress=progress)
+                        task_id=task_id, progress=progress, window=window,
+                        width=width, height=height)
                 else:
                     img = self._hy15_prep(ref)
                     images, meta = await asyncio.to_thread(
@@ -1467,7 +1473,8 @@ class DiffusersProvider(BaseProvider):
                         frames=int(num_frames or 21),
                         steps=int(steps) if steps else 12,
                         guidance=guidance_scale, seed=seed,
-                        task_id=task_id, progress=progress)
+                        task_id=task_id, progress=progress, window=window,
+                        width=width, height=height)
             finally:
                 stop.set()
         st = _torch_status()

@@ -129,7 +129,7 @@ DEFAULT_WALKVIDEO = {
     # 负面词：空 = 用 walkvideo.DEFAULT_WALK_NEGATIVE。以前这段写死在管线里，
     # 卡片上看不到也改不了，和正面提示词的处理不一致。
     "negative": "",
-    "numFrames": 21,                        # 默认引擎 hy15 的帧数（4k+1，上限 33）
+    "numFrames": 21,                        # 默认引擎 hy15 的帧数（4k+1，上限 257；再长仅变慢、不报错）
     "fps": 12,
     "maxSide": 512,
     "maxSeqLen": None,
@@ -1024,7 +1024,7 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
         "width": _i(w.get("width"), 384, 128, 1024),
         "height": _i(w.get("height"), 512, 128, 1024),
         "numFrames": _i(w.get("numFrames"), 21 if eng == "hy15" else 81, 5,
-                        33 if eng == "hy15" else 193),
+                        257 if eng == "hy15" else 193),
         "fps": _i(w.get("fps"), 24, 8, 30),
         "maxSide": _i(w.get("maxSide"), 512, 256, 1024),
         "maxSeqLen": (_i(w.get("maxSeqLen"), 0, 256, 1536) or None) if w.get("maxSeqLen") else None,
@@ -1036,6 +1036,9 @@ def _clean_walkvideo(w: Any) -> Dict[str, Any]:
                           if w.get("guidanceScale") not in (None, "") else None),
         "motionThreshold": round(max(0.0, min(float(w.get("motionThreshold") or 6.0), 60.0)), 2),
         "retries": _i(w.get("retries"), 2, 0, 5),
+        # hy15 分窗阈值：0=关闭（整段生成）；>0 且 numFrames 更大时链式分窗。
+        # 仅 hy15 生效；Wan 忽略。不进白名单 = 前端设了也存不下。
+        "window": _i(w.get("window"), 0, 0, 257),
     }
 
 
@@ -1122,7 +1125,7 @@ def _clean_txtvideo(t: Any) -> Dict[str, Any]:
         "seed": _opt_i(t.get("seed"), 0, 2 ** 31),
         "width": _i(t.get("width"), 832, 128, 1280),
         "height": _i(t.get("height"), 480, 128, 1280),
-        "numFrames": _i(t.get("numFrames"), 21, 5, 193),
+        "numFrames": _i(t.get("numFrames"), 21, 5, 257),
         "fps": _i(t.get("fps"), 12, 8, 30),
         "maxSide": _i(t.get("maxSide"), 832, 256, 1280),
         "maxSeqLen": _opt_i(t.get("maxSeqLen"), 256, 1536),

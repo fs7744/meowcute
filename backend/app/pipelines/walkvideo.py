@@ -392,13 +392,19 @@ async def generate_walk(
     retries: int = 2,
     negative: str = "",
     engine: Optional[str] = None,
+    window: int = 0,
 ) -> Tuple[List[Image.Image], Dict[str, Any]]:
     """方向立绘 + 动作提示词 → 行走视频帧序列。
 
     引擎（2026-10-24 起默认 HunyuanVideo-1.5，可切 Wan2.2）：
-      - hy15：一致性好、不闪烁不变形，但帧数上限低（13~33）、CFG 无意义
-        （step-distilled 官方 guidance=1.0），动作幅度靠提示词驱动；
+      - hy15：一致性好、不闪烁不变形，但帧数越多越慢（61 帧起每步 2.4s→47s）、
+        CFG 无意义（step-distilled 官方 guidance=1.0），动作幅度靠提示词驱动；
       - wan：像素风保留更严格，慢，且长片会有闪烁/变形。
+
+    window：hy15 I2V 分窗阈值（0=关闭）。num_frames>window 时切成多个 ≤window 的
+    链式段（每段用上一段末帧做首帧条件），把峰值显存按在 ~16.6GB，用于生成整段会
+    OOM 的长视频（实测 ~81 帧以上整段顶破 24G）；单步耗时本就≈线性，分窗不提速、
+    反多几次固定开销，接缝质量是主要权衡点。
 
     轻量控制闭环（不上更大模型也能治「没正常走」）：先按正常 CFG 生成，用
     motion_stats 量化「动没动」，分数低于阈值就升级 guidance_scale（并加重
@@ -431,10 +437,12 @@ async def generate_walk(
 
     t = time.time()
     if eng == "hy15":
-        # step-distilled 官方值：guidance 1.0（无 CFG）。帧数必须 4k+1 且不超过 33
-        # ——61 帧会从 2.4s/步退化到 47s/步；步数 12 是甜点，8 更快、16 略稳。
+        # step-distilled 官方值：guidance 1.0（无 CFG）。帧数必须 4k+1 即可，
+        # 上限不再卡死。实测单步耗时≈线性（21/33/49/61 帧 = 3.4/4.5/6.7/8.8s/步），
+        # 真正的墙是显存：~81 帧顶破 24G、更长整段 OOM——用 window 分窗绕开
+        # （把峰值显存按在 ~16.6GB，任意长度可跑）。步数 12 是甜点，8 更快、16 略稳。
         base_gs = 1.0
-        num_frames = max(13, min(33, (int(num_frames) - 1) // 4 * 4 + 1))
+        num_frames = max(13, (int(num_frames) - 1) // 4 * 4 + 1)
         steps = int(steps) if steps else 12
     else:
         base_gs = 5.0 if guidance_scale is None else float(guidance_scale)
@@ -477,6 +485,7 @@ async def generate_walk(
             max_seq_len=fit_seq_len(prompt, max_seq_len, limit=512),
             progress=progress,
             engine=eng,
+            window=window,
         )
         frames = list(result.images)
         stats = motion_stats(frames)
@@ -531,6 +540,7 @@ async def run_walk(
     retries: int = 2,
     negative: str = "",
     engine: Optional[str] = None,
+    window: int = 0,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """跑完一个方向集合，返回每方向的帧序列。
 
@@ -676,6 +686,7 @@ async def run_walk(
                 max_seq_len=max_seq_len,
                 negative=negative,
                 engine=engine,
+                window=window,
                 progress={"label": f"{DIR_LABELS[d]}行走视频",
                           "base": done, "grand": total_steps, "hold": True})
         except progress_mod.CancelledError:

@@ -321,9 +321,12 @@ export type WalkVideoOptions = {
   /** 像素保真：像素素材用最近邻缩放，别被视频底座的重采样糊掉 */
   pixelArt?: boolean
   /** 视频引擎：hy15（HunyuanVideo-1.5，默认优先）/ wan（Wan2.2 TI2V-5B）。
-   *  hy15 一致性更好（不闪烁不变形）、约 1 分钟/方向，但帧数上限 33；
+   *  hy15 一致性更好（不闪烁不变形）、约 1 分钟/方向，但帧数上限 257（越长越慢）；
    *  wan 像素风更保真但长片会闪烁。 */
   engine?: WalkEngine
+  /** hy15 分窗阈值（0=关闭）：numFrames 更大时切成多个 ≤window 的链式 I2V 段，
+   *  把峰值显存按在单窗口水平，让整段会 OOM 的长视频也能出（不是提速）；仅 hy15 生效。 */
+  window?: number
   styleId: string | null
   steps: number | null
   seed: number | null

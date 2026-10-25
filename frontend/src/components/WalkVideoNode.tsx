@@ -72,7 +72,7 @@ export default function WalkVideoNode({
     engine: 'hy15',
     steps: null, seed: null, width: 384, height: 512,
     numFrames: 21, fps: 12, maxSide: 512, maxSeqLen: null,
-    guidanceScale: null, motionThreshold: 5.5, retries: 1,
+    guidanceScale: null, motionThreshold: 5.5, retries: 1, window: 0,
     sources: {},
   }
   const v = { ...DEFAULTS, ...node.walkvideo }
@@ -114,9 +114,10 @@ export default function WalkVideoNode({
   // 本机实测拟合（4090 / fp8 / 384×512）：单方向视频 ≈ 31 + 0.0183 × 帧数 × 步数 秒。
   // 81 帧/30 步实测 75.7s、49 帧/24 步 52.7s，两点拟合误差 < 1s。
   // 再加上每方向一次立绘推导（28 步约 18s）与序列帧/拼表（约 25s）。
-  // 引擎：hy15 默认；帧数上限 33（超过会因序列长度超线性退化），步数 6~20
+  // 引擎：hy15 默认；帧数上限 257，步数 6~20。实测单步耗时≈随帧数线性（61 帧约 9s/步@640²），
+  // 真正的墙是显存：~81 帧以上整段易 OOM，长片用下面的「分窗阈值」
   const isHy15 = (v.engine ?? 'hy15') === 'hy15'
-  const frameMax = isHy15 ? 33 : 193
+  const frameMax = isHy15 ? 257 : 193
   const vidSteps = v.steps ?? (isHy15 ? 12 : 30)
   // 成本估算：hy15 实测 21f→42.8s、33f→63.3s（斜率 1.71s/帧）；
   // Wan 按像素量缩放（本机 512×704 实测约 100s）
@@ -282,7 +283,7 @@ export default function WalkVideoNode({
           立绘 18s + 后处理约 25s；{isHy15 ? 'HunyuanVideo' : 'Wan'} {v.numFrames} 帧 /
           {vidSteps} 步，本机实测拟合）
           {v.dirMode === 'eight' ? '。选「四方向」可少跑 2 次视频（约省 40%）' : ''}
-          {v.numFrames > 49 || (v.steps ?? 30) > 30 ? (
+          {v.numFrames > 61 || (v.steps ?? 30) > 30 ? (
             <button className="btn btn-sm" style={{ marginLeft: 6, height: 22 }}
               onClick={() => patch({
                 numFrames: isHy15 ? 21 : 49, fps: isHy15 ? 12 : 16,
@@ -534,7 +535,7 @@ export default function WalkVideoNode({
           <div className="param-grid">
             <label className="gen-field">
               <span className="gen-field-label"
-                title="hy15 = HunyuanVideo-1.5 480p I2V 步数蒸馏：不闪烁、不肢体变形，约 1 分钟/方向，帧数上限 33。wan = Wan2.2 TI2V-5B：像素风更保真，但长片会闪烁、肢体变形">
+                title="hy15 = HunyuanVideo-1.5 480p I2V 步数蒸馏：不闪烁、不肢体变形；384×512/49 帧约 33s/方向，帧数上限 257（单步≈随帧数线性，真正的墙是显存，长片用分窗）。wan = Wan2.2 TI2V-5B：像素风更保真，但长片会闪烁、肢体变形">
                 视频引擎
               </span>
               <select className="input" value={v.engine ?? 'hy15'}
@@ -583,8 +584,9 @@ export default function WalkVideoNode({
             </label>
           </div>
           <div className="hint" style={{ marginTop: -4, lineHeight: 1.6 }}>
-            本机实测（4090 / 同图同种子 / 49 帧）：<b>384×512 最稳</b>（剪影波动 3.4，约 55s/方向）；
-            512×704 动作最多、细节最锐，但波动大（36.4，约 100s/方向）；480×640 两头不占（波动 60）。
+            本机实测（4090 / hy15 / 49 帧 / 12 步）：<b>384×512 最快</b>（约 33s/方向，动作幅度最大 6.1）；
+            480×640 最稳（约 57s，动作 4.8）；512×704 细节最锐、最慢（约 69s）。
+            三者剪影波动 18~28%，都在可用区间。
             <button className="btn btn-sm" style={{ marginLeft: 6, height: 22 }}
               onClick={() => patch({ width: 512, height: 704, maxSide: 704, steps: 40 })}>
               画质优先
@@ -599,9 +601,9 @@ export default function WalkVideoNode({
             <label className="gen-field">
               <span className="gen-field-label"
                 title={isHy15
-                  ? 'HunyuanVideo 帧数（4k+1）。上限 33：61 帧会让序列长度涨到 25.6k tokens，单步从 2.4s 退化到 47s'
+                  ? 'HunyuanVideo 帧数（4k+1）。上限 257。实测单步≈随帧数线性（61 帧约 9s/步@640²），真正的限制是显存：~81 帧以上整段易 OOM，长片请调大「分窗阈值」'
                   : 'Wan 帧数（后端对齐 4k+1）'}>
-                {isHy15 ? '帧数（上限 33）' : 'Wan 帧数'}
+                {isHy15 ? '帧数（上限 257）' : 'Wan 帧数'}
               </span>
               <input className="input" type="number" min={isHy15 ? 13 : 5} max={frameMax} step={4}
                 value={v.numFrames}
@@ -609,6 +611,19 @@ export default function WalkVideoNode({
                   numFrames: Math.max(isHy15 ? 13 : 5, Math.min(frameMax, Number(e.target.value))),
                 })} />
             </label>
+            {isHy15 && (
+              <label className="gen-field">
+                <span className="gen-field-label"
+                  title="hy15 分窗阈值（0=关闭）。帧数大于此值时，切成多个 ≤此值的 I2V 段链式生成，每段用上一段末帧做首帧条件——不是提速（单步本就≈线性），而是把峰值显存按在单窗口水平，让整段会 OOM 的长视频也能出。接缝质量是主要权衡点。">
+                  分窗阈值（0=关闭）
+                </span>
+                <input className="input" type="number" min={0} max={193} step={4}
+                  value={v.window ?? 0}
+                  onChange={(e) => patch({
+                    window: Math.max(0, Math.min(193, Number(e.target.value))),
+                  })} />
+              </label>
+            )}
             <label className="gen-field">
               <span className="gen-field-label">视频帧率</span>
               <input className="input" type="number" min={8} max={30}
