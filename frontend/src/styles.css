@@ -1199,3 +1199,88 @@ video.clip-media { cursor: default; }
   color: var(--muted); opacity: 0.75; padding-bottom: 2px;
   border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
 }
+
+/* --- 局部重绘：涂抹蒙版编辑器（全屏弹层） ---
+   三层画布叠在一起（图 / 蒙版 / 覆盖），所以容器必须是 position:relative 且
+   各层 position:absolute inset:0；transform 只加在外层 wrap 上，指针坐标
+   用 getBoundingClientRect 反算即可自动跟随缩放。 */
+.me-mask {
+  position: fixed; inset: 0; z-index: 320; display: flex; flex-direction: column;
+  background: rgba(6, 6, 8, 0.97); user-select: none;
+}
+.me-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 14px; border-bottom: 1px solid #1c1c22; background: #0e0e12;
+  flex: 0 0 auto;
+}
+.me-name { font-family: var(--mono); font-size: 13px; color: var(--green); }
+.me-tools { display: flex; gap: 4px; }
+.me-tools .btn.on { border-color: var(--green); color: var(--green); background: rgba(0, 255, 136, .1); }
+.me-size { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.me-size input[type="range"] { width: 110px; accent-color: var(--green); }
+.me-size span { font-family: var(--mono); min-width: 42px; }
+.me-stage {
+  flex: 1; overflow: hidden; display: grid; place-items: center;
+  touch-action: none; position: relative;
+}
+.me-wrap { position: relative; image-rendering: pixelated; }
+.me-canvas {
+  position: absolute; inset: 0; display: block;
+  image-rendering: pixelated; pointer-events: none;
+}
+.me-canvas:first-child { position: relative; }
+.me-ring {
+  position: absolute; border: 1px solid rgba(255, 255, 255, .9);
+  border-radius: 50%; pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .8) inset;
+}
+.me-tip {
+  flex: 0 0 auto; text-align: center; padding: 8px; font-size: 11px;
+  color: var(--muted); letter-spacing: .3px;
+}
+
+/* --- 局部重绘节点卡片 --- */
+.ip-src {
+  display: block; width: 100%; margin-top: 6px; padding: 4; line-height: 0;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, .35); cursor: zoom-in;
+}
+.ip-src img { width: 100%; max-height: 220px; object-fit: contain; image-rendering: pixelated; }
+.ip-mask-row { display: flex; align-items: center; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+.ip-prompt-in {
+  width: 100%; resize: vertical; font-family: inherit; line-height: 1.5;
+  min-height: 56px;
+}
+.ip-refs { margin-top: 8px; }
+.ip-refs .ref-strip { margin-top: 5px; }
+.ip-prompt-actions { display: flex; gap: 6px; margin-top: 6px; }
+.ip-prompt-view {
+  margin-top: 6px; padding: 7px 8px; border: 1px solid var(--line);
+  background: rgba(0, 0, 0, .35); display: grid; gap: 5px;
+  max-height: 220px; overflow: auto;
+}
+.ip-prompt-sec { font-size: 11px; line-height: 1.5; color: var(--text-dim, #c8c8d0); }
+.ip-prompt-sec b { color: var(--muted); font-weight: 600; display: block; font-size: 10px; }
+.ip-compare { display: flex; gap: 6px; margin-top: 8px; }
+.ip-thumb {
+  flex: 1; position: relative; padding: 0; border: 1px solid var(--line);
+  background: rgba(0, 0, 0, .35); cursor: zoom-in; line-height: 0;
+}
+.ip-thumb img { width: 100%; height: 92px; object-fit: contain; image-rendering: pixelated; }
+.ip-thumb span {
+  position: absolute; left: 4px; bottom: 2px; font-size: 10px;
+  color: var(--muted); background: rgba(0, 0, 0, .55); padding: 0 4px; line-height: 1.4;
+}
+.ctx-dot.d-inpaint { background: #e86af0; }
+.me-canvas-hidden { display: none; }
+.me-color {
+  display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted);
+}
+.me-sw {
+  width: 14px; height: 14px; padding: 0; border: 1px solid rgba(255, 255, 255, .35);
+  cursor: pointer; line-height: 0;
+}
+.me-sw.on { outline: 1px solid #fff; outline-offset: 1px; }
+.me-color-input {
+  width: 22px; height: 18px; padding: 0; border: 1px solid var(--line);
+  background: transparent; cursor: pointer;
+}

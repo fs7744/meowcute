@@ -47,7 +47,7 @@ ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen",
                  "parts", "rigwalk", "txtvideo",
                  "threeview", "walkvideo", "sequence", "spritesheet", "play",
                  "clipsrc", "framesplit", "spritegrid", "animpreview",
-                 "godot2d")
+                 "godot2d", "inpaint")
 
 # 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
 # 默认关掉等于把开关藏起来。
@@ -297,9 +297,45 @@ DEFAULT_GODOT2D = {
 }
 
 
+# 局部重绘节点：上游图 + 涂抹蒙版 + 提示词 → 只重画选区。
+# 参数全是「怎么重画 / 怎么贴回」的选择；提示词正文与约束条款都可覆盖，
+# 程序只提供默认值（约束条款默认值见 pipelines/inpaint.DEFAULT_CONSTRAINT）。
+DEFAULT_INPAINT = {
+    "enabled": True,
+    "instruction": "",
+    # "" = 用程序默认的约束条款（「只重画标记区域」那段），非空整段替换
+    "constraint": "",
+    # "" = 用程序默认负面词（接缝 / 亮边 / 拼接感…）
+    "negative": "",
+    # 可选参考图（0-2 张，来自项目 refs/）：只是「参考造型/材质」，不参与构图
+    "refs": [],
+    # crop = 只送「选区 + 上下文」（细节更好）/ full = 整图重画（改全局光照）
+    "mode": "crop",
+    # 选区向外带的上下文比例：0.35 表示再各方向外扩 35% 的选区边长
+    "context": 0.35,
+    # 羽化（只向内，保证选区外像素一个都不变）
+    "feather": 4,
+    # 蒙版外扩：给模型留出「往哪长」的余地
+    "expand": 8,
+    # 硬边：像素素材用，不做羽化也不做色彩校正
+    "hard": False,
+    # 接缝带色彩校正（只修边界，不动区域中心）
+    "matchColor": True,
+    "matchStrength": 0.45,
+    # none | source：把重绘区里「接近源色」的杂色吸回源图色板
+    "palette": "none",
+    "paletteColors": 48,
+    "steps": None,
+    "seed": None,
+    "maxSeqLen": None,
+    # 涂抹蒙版（masks/<mask-...>.png）+ 它的元信息（覆盖率 / 包围盒）
+    "maskFile": "",
+    "mask": None,
+}
+
+
 def _now() -> float:
     return round(time.time(), 3)
-
 
 def _project_json(pid: str) -> Path:
     return project_dir(pid) / "project.json"
@@ -439,6 +475,17 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                 n["meta"] = None
                 n["godot2d"] = {**DEFAULT_GODOT2D,
                                 **(n.get("godot2d") if isinstance(n.get("godot2d"), dict) else {})}
+            elif n["type"] == "inpaint":
+                # 蒙版与产出图跨项目无效：结构留下，运行时数据清空
+                n["result"] = None
+                n["images"] = []
+                n["meta"] = None
+                opts = {**DEFAULT_INPAINT,
+                        **(n.get("inpaint") if isinstance(n.get("inpaint"), dict) else {})}
+                opts["maskFile"] = ""
+                opts["mask"] = None
+                opts["refs"] = []
+                n["inpaint"] = opts
             else:
                 n.update({"images": [], "prompt": "", "negative": "", "meta": {}, "genId": None})
             n["createdAt"] = _now()
@@ -658,6 +705,14 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         elif n["type"] == "godot2d":
             item.update({
                 "godot2d": _clean_godot2d(n.get("godot2d")),
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "inpaint":
+            item.update({
+                "inpaint": _clean_inpaint(n.get("inpaint")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:8],
                 "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
@@ -1210,6 +1265,53 @@ def _clean_godot2d(g: Any) -> Dict[str, Any]:
         "folder": "/".join(segs[:4]) or "sprites",
         "origin": origin,
         "textureFilter": filt,
+    }
+
+
+def _clean_inpaint(g: Any) -> Dict[str, Any]:
+    """局部重绘参数：白名单 + 夹紧。
+
+    这里最大的坑是「前端能改、存不下」：`constraint` / `refs` / `maskFile`
+    任何一项漏进白名单，表现都是「改了刷新就回默认」或者「涂了蒙版重开就没了」。
+    """
+    g = g if isinstance(g, dict) else {}
+    mode = "full" if str(g.get("mode") or "") == "full" else "crop"
+    pal = "source" if str(g.get("palette") or "") == "source" else "none"
+    refs = [r for r in (g.get("refs") or []) if isinstance(r, dict)][:2]
+    mask = g.get("mask") if isinstance(g.get("mask"), dict) else None
+    mask_info = None
+    if mask:
+        box = mask.get("box") if isinstance(mask.get("box"), list) else []
+        mask_info = {
+            "file": str(mask.get("file") or "")[:200],
+            "url": str(mask.get("url") or "")[:400],
+            "width": _ci(mask.get("width"), 0, 0, 8192),
+            "height": _ci(mask.get("height"), 0, 0, 8192),
+            "coverage": _cl(mask.get("coverage"), 0.0, 0.0, 1.0),
+            "box": [_ci(v, 0, 0, 8192) for v in box][:4],
+        }
+    return {
+        "enabled": bool(g.get("enabled", True)),
+        "instruction": str(g.get("instruction") or "")[:4000],
+        "constraint": str(g.get("constraint") or "")[:4000],
+        "negative": str(g.get("negative") or "")[:600],
+        "refs": refs,
+        "mode": mode,
+        "context": _cl(g.get("context"), 0.35, 0.0, 2.0),
+        "feather": _ci(g.get("feather"), 4, 0, 64),
+        "expand": _ci(g.get("expand"), 8, 0, 64),
+        "hard": bool(g.get("hard")),
+        "matchColor": bool(g.get("matchColor", True)),
+        "matchStrength": _cl(g.get("matchStrength"), 0.45, 0.0, 1.0),
+        "palette": pal,
+        "paletteColors": _ci(g.get("paletteColors"), 48, 8, 256),
+        "steps": (_ci(g.get("steps"), 0, 4, 60) or None) if g.get("steps") else None,
+        "seed": (_ci(g.get("seed"), 0, 0, 2**31 - 1))
+        if g.get("seed") not in (None, "") else None,
+        "maxSeqLen": (_ci(g.get("maxSeqLen"), 0, 256, 1536) or None)
+        if g.get("maxSeqLen") else None,
+        "maskFile": str(g.get("maskFile") or "")[:200],
+        "mask": mask_info,
     }
 
 

@@ -798,6 +798,8 @@ export type ResultMeta = {
   sheet?: SheetMeta
   /** 可操控预览节点的播放载荷（八方向链） */
   play?: PlayMeta
+  /** 局部重绘节点的产出（选区覆盖率 / 送模型尺寸 / 提示词全文） */
+  inpaint?: InpaintMeta
 }
 
 export type ResultNode = {
@@ -1115,12 +1117,102 @@ export type Godot2DNode = {
   createdAt?: number
 }
 
+/** 涂抹蒙版的落盘信息（masks/<mask-*.png>）。 */
+export type InpaintMaskInfo = {
+  file: string
+  url: string
+  width: number
+  height: number
+  /** 涂抹面积占整图的比例（0~1） */
+  coverage: number
+  /** 涂抹包围盒 [x0, y0, x1, y1] */
+  box: number[]
+  id?: string
+}
+
+/** 局部重绘参数（对应后端 _clean_inpaint）。 */
+export type InpaintOptions = {
+  enabled: boolean
+  /** 这块要变成什么（必填） */
+  instruction: string
+  /** "" = 用程序默认约束条款；非空整段替换 */
+  constraint: string
+  /** "" = 用程序默认负面词 */
+  negative: string
+  /** 可选参考图（0-2 张，来自项目 refs/） */
+  refs: RefAsset[]
+  /** crop = 只送选区+上下文 / full = 整图重画 */
+  mode: 'crop' | 'full'
+  /** 选区外扩的上下文比例 */
+  context: number
+  /** 羽化像素（只向内，保证选区外不动） */
+  feather: number
+  /** 蒙版外扩像素 */
+  expand: number
+  /** 硬边（像素风：不羽化、不做色彩校正） */
+  hard: boolean
+  matchColor: boolean
+  matchStrength: number
+  /** none | source：把接近源色的杂色吸回源图色板 */
+  palette: 'none' | 'source'
+  paletteColors: number
+  steps: number | null
+  seed: number | null
+  maxSeqLen: number | null
+  maskFile: string
+  mask: InpaintMaskInfo | null
+}
+
+/** 局部重绘的产出元数据。 */
+export type InpaintMeta = {
+  mode: 'crop' | 'full'
+  box: number[]
+  cropSize: [number, number]
+  targetSize: [number, number]
+  coverage: number
+  context: number
+  expand: number
+  feather: number
+  hard: boolean
+  matchColor: boolean
+  matchStrength: number
+  palette: string
+  paletteColors: number
+  paletteSnapped: number
+  prompt: string
+  promptBody: string
+  constraint: string
+  constraintCustom: boolean
+  refCount: number
+  negative: string
+  seqLen: number
+  steps?: number | null
+  seed?: number | null
+  model?: string
+  seconds: number
+  warnings: string[]
+  vram?: ResultMeta['vram']
+}
+
+export type InpaintNode = {
+  id: string
+  type: 'inpaint'
+  x: number
+  y: number
+  inpaint: InpaintOptions
+  /** 最近一次重绘结果（下游结果卡取它） */
+  result?: ResultImage | null
+  images?: ResultImage[]
+  meta?: InpaintMeta | null
+  createdAt?: number
+}
+
 export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode | MatteNode
   | ViewGenNode | ThreeViewNode
   | WalkVideoNode | SequenceNode | SpriteSheetNode | PlayNode
   | PartsNode | RigWalkNode | TxtVideoNode
   | ClipSrcNode | FrameSplitNode | SpriteGridNode | AnimPreviewNode
-  | Godot2DNode
+  | Godot2DNode | InpaintNode
 export type Edge = { from: string; to: string }
 
 export type Project = {

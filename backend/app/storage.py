@@ -26,7 +26,7 @@ from PIL import Image
 from .config import PROJECTS_DIR, ensure_dirs
 from .pipelines.walkvideo import DIR_LABELS as _WALK_DIR_LABELS
 
-ALLOWED_KINDS = {"images", "refs", "thumbs"}
+ALLOWED_KINDS = {"images", "refs", "thumbs", "masks"}
 
 # 文件名前缀：out=生成原图，px=像素精修，ref=参考图输入
 SAFE_PREFIX = re.compile(r"[^a-z0-9_-]")
@@ -423,6 +423,8 @@ _README = """\
   images/        产出。模型生成的原图（out-*.png）、像素精修后的成品
                  （px-*.png）、扣掉背景的素材（bg-*.png）。
                  同名不同序号对应同一次生成的多张。
+  masks/         局部重绘的涂抹蒙版（mask-*.png）。白色=要重画的区域，
+                 和源图同尺寸；换源图后要重新涂抹。
   exports/       引擎导出包（Godot 的 .tres / .tscn / zip）。可整目录删除，
                  不影响画布——回节点上重新导出即可。
 

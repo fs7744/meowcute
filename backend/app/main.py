@@ -19,6 +19,9 @@
 - /api/clipsplit                                 视频转素材：视频/GIF → 拆帧 + 指纹 + 抠图（任务制）
 - /api/spritegrid                                视频转素材：选中帧 → 网格精灵图 + 索引 JSON（同步）
 - /api/godot2d                                   精灵图 → Godot 4 工程包（tres/tscn/zip，同步）
+- /api/inpaint                                   局部重绘：涂抹蒙版 + 提示词 → 只重画这一块（任务制）
+- /api/inpaint/instruction                       局部重绘：提示词拼装预览（我写的 / 程序加的 / 参考图声明）
+- /api/projects/{pid}/mask                       上传涂抹蒙版（白色=重绘区）
 - /api/projects/{pid}/export/{path}               导出包文件下载（tres / tscn / zip / 逐帧 PNG）
 
 生成是「任务制」：POST /api/generate 立即返回 taskId，前端订阅 SSE 看进度，
@@ -60,6 +63,7 @@ from .pipelines import sequence as sequence_mod
 from .pipelines import clipframes as clipframes_mod
 from .pipelines import spritegrid as spritegrid_mod
 from .pipelines import godot2d as godot2d_mod
+from .pipelines import inpaint as inpaint_mod
 from .pipelines import parts as parts_mod
 from .pipelines import rigwalk as rigwalk_mod
 from .pipelines import spritesheet as spritesheet_mod
@@ -2462,6 +2466,203 @@ async def godot2d_export(payload: GodotExportPayload) -> Dict[str, Any]:
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# --------------------------------------------------------------------------- #
+# 图片局部重绘：涂抹蒙版 + 提示词 → 只重画这一块
+# --------------------------------------------------------------------------- #
+class InpaintPayload(BaseModel):
+    projectId: str
+    sourceKind: str = "images"          # images | refs（上游图在哪个目录）
+    sourceFile: str
+    maskFile: str = ""                  # masks/ 下的蒙版文件名（笔刷导出）
+    instruction: str = ""
+    constraint: str = ""                # "" = 用程序里的默认约束条款
+    negative: str = ""                  # "" = 用程序里的默认负面词
+    refs: List[str] = Field(default_factory=list)   # 可选参考图（最多 2 张）
+    mode: str = "crop"                  # crop（只送选区+上下文）/ full（整图重画）
+    context: float = 0.35               # crop 模式向外带的上下文比例
+    feather: int = 4                    # 羽化像素（只向内）
+    expand: int = 8                     # 蒙版外扩像素（给模型留余地）
+    hard: bool = False                  # 硬边（像素风）
+    matchColor: bool = True             # 接缝带色彩校正
+    matchStrength: float = 0.45
+    palette: str = "none"               # none | source（把接近源色的杂色吸回色板）
+    paletteColors: int = 48
+    steps: Optional[int] = None
+    seed: Optional[int] = None
+    maxSeqLen: Optional[int] = None
+
+
+class InpaintInstructionPayload(BaseModel):
+    instruction: str = ""
+    constraint: str = ""
+    negative: str = ""
+    refCount: int = 0
+
+
+@app.post("/api/inpaint/instruction")
+async def inpaint_instruction(payload: InpaintInstructionPayload) -> Dict[str, Any]:
+    """提示词拼装预览：把「我写的 / 程序加的 / 参考图声明」三段摊开给界面看。
+
+    提示词不允许有用户看不见的部分——约束条款是程序加的，就必须显示出来、
+    并且可改（`/api/inpaint` 里 constraint 非空时整段替换默认值）。
+    """
+    info = inpaint_mod.build_prompt(payload.instruction, payload.constraint,
+                                    max(0, min(int(payload.refCount), 4)))
+    return {
+        **info,
+        "negative": (payload.negative or "").strip() or inpaint_mod.INPAINT_NEGATIVE,
+        "defaultNegative": inpaint_mod.INPAINT_NEGATIVE,
+        "chars": len(info["full"]),
+        "maxChars": limits_mod.chars_for_tokens(limits_mod.SEQ_LEN_MAX),
+    }
+
+
+@app.post("/api/projects/{pid}/mask")
+async def upload_inpaint_mask(pid: str, file: UploadFile = File(...)) -> Dict[str, Any]:
+    """上传涂抹蒙版（前端笔刷导出的 PNG，白色=重绘区）。
+
+    单独一个入口而不是塞进 /refs：蒙版是「过程数据」，混进参考图目录会让
+    「选择参考图」的列表里冒出几百张黑底白块的图。存进 masks/ 后按 PNG 提供，
+    界面可以直接回显上次涂的区域。
+    """
+    if projects_mod.load_project(pid) is None:
+        raise HTTPException(404, "项目不存在")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "蒙版是空的")
+    if len(raw) > 16 * 1024 * 1024:
+        raise HTTPException(400, "蒙版不能超过 16MB")
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except Exception:
+        raise HTTPException(400, "无法识别的蒙版图片")
+    mask = inpaint_mod.load_mask(img)
+    box = inpaint_mod.mask_bbox(mask)
+    if box is None:
+        raise HTTPException(400, "蒙版里没有任何涂抹：先涂出一块区域")
+    # 存成「白 + alpha」而不是灰阶不透明：alpha 蒙版是通行做法，浏览器能直接
+    # 当遮罩用；灰阶不透明 PNG 在任何 alpha 语义的地方都会被当成实心块。
+    rgba = Image.merge("RGBA", [Image.new("L", mask.size, 255)] * 3 + [mask])
+    info = storage.save_image(pid, rgba, kind="masks", prefix="mask")
+    return {
+        "ok": True,
+        "mask": {
+            **info,
+            "coverage": inpaint_mod.mask_coverage(mask),
+            "box": list(box),
+        },
+    }
+
+
+@app.post("/api/inpaint")
+async def inpaint(payload: InpaintPayload) -> Dict[str, Any]:
+    """局部重绘（任务制）。
+
+    校验全部放在建任务之前：源图/蒙版不存在、蒙版和源图尺寸不一致、提示词为空
+    这类错误必须当场 400，让用户看到具体哪里要改；进了任务再报错就只剩
+    进度条上一行字。
+    """
+    if projects_mod.load_project(payload.projectId) is None:
+        raise HTTPException(404, "项目不存在")
+    if not (payload.instruction or "").strip():
+        raise HTTPException(400, "提示词是空的：先写一句要重绘成什么")
+    src = _load_source(payload.projectId, ThreeViewSource(
+        kind=("refs" if payload.sourceKind == "refs" else "images"),
+        file=payload.sourceFile))
+    if src is None:
+        raise HTTPException(404, "源图不存在：先把上游的图接过来（或重跑上游节点）")
+    mask_name = (payload.maskFile or "").strip()
+    if not mask_name:
+        raise HTTPException(400, "还没有涂抹蒙版：先点「涂抹区域」圈出要重画的地方")
+    mask_img = storage.load_image(payload.projectId, "masks", mask_name)
+    if mask_img is None:
+        raise HTTPException(404, "蒙版文件不存在：重新涂抹一次")
+    m = inpaint_mod.load_mask(mask_img)
+    if m.size != src.size:
+        raise HTTPException(
+            400, f"蒙版尺寸 {m.size[0]}×{m.size[1]} 与源图 {src.width}×{src.height} "
+                 f"不一致：换图之后要重新涂抹")
+    if inpaint_mod.mask_bbox(m) is None:
+        raise HTTPException(400, "蒙版是空的：先用笔刷涂出要重画的区域")
+
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备中…")
+    asyncio.create_task(_run_inpaint(task_id, payload))
+    return {"taskId": task_id}
+
+
+async def _run_inpaint(task_id: str, payload: InpaintPayload) -> None:
+    t0 = time.time()
+    try:
+        src = _load_source(payload.projectId, ThreeViewSource(
+            kind=("refs" if payload.sourceKind == "refs" else "images"),
+            file=payload.sourceFile))
+        if src is None:
+            raise RuntimeError("源图不存在")
+        mask_img = storage.load_image(payload.projectId, "masks", payload.maskFile)
+        if mask_img is None:
+            raise RuntimeError("蒙版文件不存在")
+
+        refs: List[Image.Image] = []
+        ref_missing = 0
+        for name in (payload.refs or [])[:2]:
+            im = _load_source(payload.projectId, ThreeViewSource(
+                kind="refs", file=str(name)))
+            if im is None:
+                ref_missing += 1
+                continue
+            refs.append(im)
+
+        provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
+        out, meta = await inpaint_mod.run_inpaint(
+            src, inpaint_mod.load_mask(mask_img),
+            instruction=payload.instruction,
+            constraint=payload.constraint,
+            negative=payload.negative,
+            refs=refs,
+            mode=payload.mode,
+            context=max(0.0, min(float(payload.context), 2.0)),
+            feather_px=_clamp(payload.feather, 0, 64, 4),
+            expand=_clamp(payload.expand, 0, 64, 8),
+            hard=bool(payload.hard),
+            match_color=bool(payload.matchColor),
+            match_strength=max(0.0, min(float(payload.matchStrength), 1.0)),
+            palette="source" if payload.palette == "source" else "none",
+            palette_colors=_clamp(payload.paletteColors, 8, 256, 48),
+            steps=payload.steps,
+            seed=payload.seed,
+            max_seq_len=payload.maxSeqLen,
+            provider_cfg=provider_cfg,
+            task_id=task_id,
+        )
+        info = storage.save_image(payload.projectId, out, kind="images", prefix="ip")
+        if ref_missing:
+            meta.setdefault("warnings", []).append(
+                f"{ref_missing} 张参考图读不出来（可能已被清理），本次未使用")
+        orig_url = (f"/api/projects/{payload.projectId}/"
+                    f"{'refs' if payload.sourceKind == 'refs' else 'images'}"
+                    f"/{payload.sourceFile}")
+        image = {
+            "assetId": info["id"], "url": info["url"],
+            "width": info["width"], "height": info["height"],
+            "origAssetId": payload.sourceFile, "origUrl": orig_url,
+        }
+        task_results[task_id] = {
+            "taskId": task_id,
+            "image": image,
+            "images": [image],
+            "meta": {**meta, "seconds": round(time.time() - t0, 1)},
+        }
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
 
 
 # --------------------------------------------------------------------------- #

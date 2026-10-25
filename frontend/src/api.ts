@@ -440,6 +440,62 @@ pixelArt?: boolean
       meta: import('./types').Godot2DMeta
     }>),
 
+  /** 局部重绘：提示词拼装预览（我写的 / 程序加的 / 参考图声明）。 */
+  inpaintInstruction: (payload: {
+    instruction?: string
+    constraint?: string
+    negative?: string
+    refCount?: number
+  }) =>
+    fetch('/api/inpaint/instruction', jsonInit(payload)).then(j<{
+      body: string
+      constraint: string
+      defaultConstraint: string
+      constraintCustom: boolean
+      refClause: string
+      refCount: number
+      full: string
+      negative: string
+      defaultNegative: string
+      chars: number
+      maxChars: number
+    }>),
+
+  /** 上传涂抹蒙版（笔刷导出的 PNG，白色=重绘区）。 */
+  uploadMask: (pid: string, blob: Blob) => {
+    const fd = new FormData()
+    fd.append('file', blob, 'mask.png')
+    return fetch(`/api/projects/${pid}/mask`, { method: 'POST', body: fd })
+      .then((r) => (r.ok ? r.json() : r.json().then((e: any) => Promise.reject(
+        new Error(String(e?.detail || `上传蒙版失败（HTTP ${r.status}）`))))))
+      .then((d: any) => d as { ok: boolean; mask: import('./types').InpaintMaskInfo })
+  },
+
+  /** 局部重绘（任务制）。 */
+  inpaint: (payload: {
+    projectId: string
+    sourceKind?: 'images' | 'refs'
+    sourceFile: string
+    maskFile: string
+    instruction: string
+    constraint?: string
+    negative?: string
+    refs?: string[]
+    mode?: 'crop' | 'full'
+    context?: number
+    feather?: number
+    expand?: number
+    hard?: boolean
+    matchColor?: boolean
+    matchStrength?: number
+    palette?: 'none' | 'source'
+    paletteColors?: number
+    steps?: number | null
+    seed?: number | null
+    maxSeqLen?: number | null
+  }) =>
+    fetch('/api/inpaint', jsonInit(payload)).then(j<{ taskId: string }>),
+
   /** 八方向 · 序列帧：每方向视频 → 抽帧/去重/抠图（任务制）。 */
   sequence: (payload: {
     projectId: string

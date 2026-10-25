@@ -7,6 +7,8 @@ import ClipSrcNode from '../components/ClipSrcNode'
 import FramesplitNode from '../components/FramesplitNode'
 import SpriteGridNode from '../components/SpriteGridNode'
 import GodotExportNode from '../components/GodotExportNode'
+import InpaintNode from '../components/InpaintNode'
+import MaskEditor from '../components/MaskEditor'
 import GenNode from '../components/GenNode'
 import InputNode from '../components/InputNode'
 import MatteNode from '../components/MatteNode'
@@ -30,6 +32,7 @@ import type {
   FrameSplitNode as FrameSplitNodeType, FrameSplitMeta,
   GenNode as GenNodeType,
   Godot2DNode as Godot2DNodeType, Godot2DMeta,
+  InpaintNode as InpaintNodeType,
   InputNode as InputNodeType, MatteNode as MatteNodeType, PlayNode as PlayNodeType,
   Project, PromptExample, PromptLimits, PromptPreview, RefineNode as RefineNodeType,
   ResultImage,
@@ -68,13 +71,14 @@ const FRAMESPLIT_W = 460
 const SPRITEGRID_W = 420
 const ANIMPREVIEW_W = 340
 const GODOT_W = 380
+const INPAINT_W = 400
 const NODE_W: Record<string, number> = {
   generate: GEN_W, result: RES_W, input: INPUT_W, refine: REFINE_W, matte: MATTE_W,
   viewgen: VIEWGEN_W, threeview: THREEVIEW_W, walkvideo: WALKVIDEO_W,
   sequence: SEQUENCE_W, spritesheet: SPRITESHEET_W, play: PLAY_W,
   txtvideo: TXTVIDEO_W,
   clipsrc: CLIPSRC_W, framesplit: FRAMESPLIT_W, spritegrid: SPRITEGRID_W,
-  animpreview: ANIMPREVIEW_W, godot2d: GODOT_W,
+  animpreview: ANIMPREVIEW_W, godot2d: GODOT_W, inpaint: INPAINT_W,
 }
 
 /** 哪些类型的节点可以作为某个节点的上游（决定自定义工作流是否合法）。 */
@@ -98,9 +102,11 @@ const UPSTREAM_RULES: Record<string, string[]> = {
   // 常把它排在精灵图和导出之间（模板就是这条直线），所以两种上游都放行——
   // 解析时会穿过播放器找到最近的精灵图
   godot2d: ['spritegrid', 'animpreview'],
+  // 局部重绘要一张「可以改的图」：自己上传的、生成的、精修/抠过的、结果卡里的都行
+  inpaint: ['input', 'generate', 'matte', 'refine', 'result'],
   result: ['generate', 'refine', 'matte', 'viewgen', 'threeview',
            'walkvideo', 'sequence', 'spritesheet', 'play', 'txtvideo',
-           'parts', 'rigwalk'],
+           'parts', 'rigwalk', 'inpaint'],
 }
 
 const UPSTREAM_HINT: Record<string, string> = {
@@ -115,7 +121,8 @@ const UPSTREAM_HINT: Record<string, string> = {
   spritesheet: '序列帧',
   play: '精灵整图',
   godot2d: '精灵图（可隔着「动画预览」）',
-  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 四视图拼板 / 行走链',
+  inpaint: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
+  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 四视图拼板 / 行走链 / 局部重绘',
 }
 
 function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): boolean {
@@ -128,7 +135,7 @@ function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): b
  *  四视图拼板不在列：它要收正/侧/背/右四路。 */
 const SINGLE_INPUT = new Set(['refine', 'matte', 'result', 'viewgen',
                               'walkvideo', 'sequence', 'spritesheet', 'play',
-                              'godot2d'])
+                              'godot2d', 'inpaint'])
 
 /** 右键「添加节点」的目录：分类 → 具体节点。
  *  节点类型只会越来越多，平铺成一条长列表很快就用不了了。 */
@@ -172,6 +179,13 @@ const NODE_CATALOG: {
         hint: 'u2net / GrabCut 抠图，输出透明底 PNG' },
       { type: 'threeview', label: '四视图拼板', dot: 'd-threeview',
         hint: '正/侧/背三张按共同基线拼成横向板' },
+    ],
+  },
+  {
+    id: 'edit', label: '局部编辑', hint: '只改一块，其余像素不动',
+    items: [
+      { type: 'inpaint', label: '局部重绘', dot: 'd-inpaint',
+        hint: '笔刷涂出要改的地方 + 一句话，只重画这一块' },
     ],
   },
   {
@@ -235,7 +249,7 @@ const NODE_LABEL: Record<string, string> = {
   spritesheet: '精灵整图', play: '可操控预览',
   txtvideo: '文本生视频', parts: '拆件', rigwalk: '骨骼行走',
   clipsrc: '选择视频', framesplit: '拆解帧', spritegrid: '精灵图',
-  animpreview: '动画预览', godot2d: 'Godot 导出',
+  animpreview: '动画预览', godot2d: 'Godot 导出', inpaint: '局部重绘',
 }
 const nodeLabel = (t: string) => NODE_LABEL[t] || t
 
@@ -312,6 +326,11 @@ export default function Canvas({ projectId, onBack }: Props) {
   const [promptModal, setPromptModal] = useState<{ open: boolean; loading: boolean; error: string | null; data: PromptPreview | null }>(
     { open: false, loading: false, error: null, data: null },
   )
+  /** 涂抹蒙版编辑器（全屏弹层）：必须挂在画布根节点，不能挂进带 transform
+   *  的世界层——position:fixed 会相对那个变换后的容器定位。 */
+  const [maskEdit, setMaskEdit] = useState<{
+    nodeId: string; srcUrl: string; w: number; h: number; maskUrl: string | null
+  } | null>(null)
 
   const viewportRef = useRef<HTMLDivElement>(null)
   const worldRef = useRef<HTMLDivElement>(null)
@@ -666,6 +685,7 @@ export default function Canvas({ projectId, onBack }: Props) {
     else if (type === 'spritegrid') addSpriteGridNode(at)
     else if (type === 'animpreview') addAnimPreviewNode(at)
     else if (type === 'godot2d') addGodotNode(at)
+    else if (type === 'inpaint') addInpaintNode(at)
     else addEmptyResultNode(at)
   }
 
@@ -877,6 +897,27 @@ export default function Canvas({ projectId, onBack }: Props) {
         textureFilter: 'nearest',
       },
       meta: null, createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addInpaintNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(INPAINT_W, 560)
+    const node: InpaintNodeType = {
+      id: newId('ip'), type: 'inpaint', x: spot.x, y: spot.y,
+      inpaint: {
+        enabled: true, instruction: '', constraint: '', negative: '', refs: [],
+        mode: 'crop', context: 0.35, feather: 4, expand: 8, hard: false,
+        matchColor: true, matchStrength: 0.45, palette: 'none',
+        paletteColors: 48, steps: null, seed: null, maxSeqLen: null,
+        maskFile: '', mask: null,
+      },
+      result: null, images: [], meta: null,
+      createdAt: Date.now() / 1000,
     }
     setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
     setSelected(node.id)
@@ -1961,6 +2002,100 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
   }
 
+  // ---- 局部重绘：涂抹蒙版 + 提示词 → 只重画选区（任务制） ----
+  /** 上游源图：比 resolveUpstreamSource 多带一个「能显示/能涂抹的 url」。 */
+  const upstreamImage = (node: CanvasNode) => {
+    const inEdge = project?.edges.find((e) => e.to === node.id)
+    const up = inEdge ? project?.nodes.find((n) => n.id === inEdge.from) : null
+    try {
+      const src = resolveUpstreamSource(node)
+      return {
+        url: src.url, width: src.w || 0, height: src.h || 0,
+        // kind/file 是给后端定位文件的：images 目录里文件名 = assetId.png，
+        // 所以 assetId 也能被 _load_source 认出来（它会补 .png 再试一次）
+        kind: src.kind, file: src.file || src.assetId,
+        label: up ? nodeLabel(up.type) : '上游',
+      }
+    } catch {
+      return null
+    }
+  }
+
+  const runInpaint = async (node: InpaintNodeType) => {
+    if (!node.inpaint?.enabled) return
+    if (isRunning(node.id)) return
+    const up = upstreamImage(node)
+    if (!up) {
+      alert('没有可用的源图：把「选择图片 / 生成图 / 像素精修 / 扣除背景」连到它的输入端口')
+      return
+    }
+    if (!node.inpaint.maskFile) {
+      alert('还没有涂抹区域：先点「涂抹区域」把要改的地方圈出来')
+      return
+    }
+    if (!node.inpaint.instruction.trim()) {
+      alert('提示词是空的：先写一句「这块要变成什么」')
+      return
+    }
+    markBusy(node.id, true)
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const o = node.inpaint
+      const { taskId } = await api.inpaint({
+        projectId: project!.id,
+        sourceKind: up.kind,
+        sourceFile: up.file,
+        maskFile: o.maskFile,
+        instruction: o.instruction,
+        constraint: o.constraint,
+        negative: o.negative,
+        refs: (o.refs || []).map((r) => r.file || r.id),
+        mode: o.mode, context: o.context, feather: o.feather, expand: o.expand,
+        hard: o.hard, matchColor: o.matchColor, matchStrength: o.matchStrength,
+        palette: o.palette, paletteColors: o.paletteColors,
+        steps: o.steps, seed: o.seed, maxSeqLen: o.maxSeqLen,
+      })
+      activeTaskRef.current = taskId
+      setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+      const r: any = await awaitTask<any>(taskId, node.id)
+      if (activeTaskRef.current === taskId) activeTaskRef.current = null
+      const im = r.image || {}
+      const result: ResultImage = {
+        assetId: im.assetId, url: im.url, width: im.width, height: im.height,
+        origAssetId: im.origAssetId || up.file,
+        origUrl: im.origUrl || up.url,
+        origSize: [up.width, up.height],
+      }
+      setProject((p) => p ? {
+        ...p,
+        nodes: p.nodes.map((n) => n.id === node.id
+          ? ({ ...n, result, images: [result], meta: r.meta } as CanvasNode) : n),
+      } : p)
+      pushDownstreamResult(node.id, [result], { inpaint: r.meta })
+    } catch (e: any) {
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
+  }
+
+  const applyMask = (nodeId: string, mask: NonNullable<InpaintNodeType['inpaint']['mask']>) => {
+    setProject((p) => p ? {
+      ...p,
+      nodes: p.nodes.map((n) => {
+        if (n.id !== nodeId || n.type !== 'inpaint') return n
+        const nd = n as InpaintNodeType
+        return {
+          ...nd,
+          inpaint: { ...nd.inpaint, maskFile: mask.file, mask },
+        } as CanvasNode
+      }),
+    } : p)
+  }
+
   // ---- 骨骼路线：拆件 → 骨骼行走（纯 CPU，确定性） ----
   const executeParts = async (
     node: PartsNodeType, runtime?: Map<string, ResultImage[]>,
@@ -3003,6 +3138,10 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is Godot2DNodeType => n.type === 'godot2d'),
     [project?.nodes],
   )
+  const inpaintNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is InpaintNodeType => n.type === 'inpaint'),
+    [project?.nodes],
+  )
 
   /** 某个节点的入边来自哪一类上游（节点卡上显示「输入：xxx」）。 */
   const upstreamLabel = useCallback((id: string): string | null => {
@@ -3451,6 +3590,36 @@ export default function Canvas({ projectId, onBack }: Props) {
             )
           })}
 
+          {inpaintNodes.map((n, i) => {
+            const up = upstreamImage(n)
+            return (
+              <InpaintNode
+                key={n.id}
+                node={n}
+                index={i}
+                running={isRunning(n.id)}
+                progress={tasks[n.id]?.progress?.label}
+                error={tasks[n.id]?.error ?? null}
+                projectId={project.id}
+                upstream={up}
+                onChange={(patch) => patchNode(n.id, patch)}
+                onDelete={() => deleteNode(n.id)}
+                onDragStart={startDragNode(n.id)}
+                onRun={() => runInpaint(n)}
+                onOpenMask={() => {
+                  if (!up) { alert('先接一张源图，再涂抹'); return }
+                  setMaskEdit({
+                    nodeId: n.id, srcUrl: up.url, w: up.width, h: up.height,
+                    maskUrl: n.inpaint?.mask?.url || null,
+                  })
+                }}
+                onStartLink={startLink}
+                onFinishLink={finishLink}
+                onPreview={(url, title, orig) => setPreview({ src: url, origSrc: orig, title })}
+              />
+            )
+          })}
+
           {sequenceNodes.map((n, i) => (
             <SequenceNode
               key={n.id}
@@ -3665,6 +3834,20 @@ export default function Canvas({ projectId, onBack }: Props) {
         title={preview?.title}
         pixelSize={preview?.pixelSize}
         onClose={() => setPreview(null)}
+      />
+
+      <MaskEditor
+        open={!!maskEdit}
+        projectId={projectId}
+        srcUrl={maskEdit?.srcUrl || ''}
+        srcW={maskEdit?.w || 1}
+        srcH={maskEdit?.h || 1}
+        initialMaskUrl={maskEdit?.maskUrl || null}
+        title="涂抹要重绘的区域"
+        onSaved={(mask) => {
+          if (maskEdit) applyMask(maskEdit.nodeId, mask)
+        }}
+        onClose={() => setMaskEdit(null)}
       />
 
       <PromptModal

@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import sys
@@ -23,6 +24,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 from PIL import Image as _Im  # noqa: E402
 from PIL import ImageDraw as _ImDraw  # noqa: E402
+import numpy as np  # noqa: E402
 
 from backend.app.main import app, _output_fps  # noqa: E402
 
@@ -600,11 +602,12 @@ def _run_checks(client) -> int:
                   "palette": "auto", "gridSize": None, "targetSize": None},
     })
     pv = r.json()
-    np = pv.get("negativeParts") or {}
-    check("预览返回负面词来源", "base" in np and "contract" in np, str(list(np)))
-    check("像素契约那半被单独标出", "抗锯齿" in (np.get("contract") or ""),
-          str(np.get("contract"))[:30])
-    check("默认未覆盖", np.get("overridden") is False)
+    _negparts = pv.get("negativeParts") or {}
+    check("预览返回负面词来源", "base" in _negparts and "contract" in _negparts,
+          str(list(_negparts)))
+    check("像素契约那半被单独标出", "抗锯齿" in (_negparts.get("contract") or ""),
+          str(_negparts.get("contract"))[:30])
+    check("默认未覆盖", _negparts.get("overridden") is False)
     r2 = client.post("/api/generate/preview", json={
         "prompt": "一只猫", "styleId": "pixel_16bit", "width": 512, "height": 512,
         "background": "gray",
@@ -2118,6 +2121,183 @@ def _run_checks(client) -> int:
         "edges": []}).json()["project"]["nodes"][0]
     check("精灵图节点的 indexUrl 存盘往返（刷新后下载按钮还在）",
           _ig.get("indexUrl") == "/api/projects/x/images/a.json", str(_ig)[:160])
+
+    print("== 局部重绘（涂抹蒙版 + 提示词） ==")
+    from backend.app.pipelines import inpaint as _ip
+    _ts2 = client.get("/api/templates").json()["templates"]
+    check("有局部重绘模板",
+          any(t.get("id") == "image_inpaint" for t in _ts2))
+    _tpl = next(t for t in _ts2 if t.get("id") == "image_inpaint")
+    check("局部重绘模板 = 选图 → 局部重绘 → 结果卡",
+          [n["type"] for n in _tpl["graph"]["nodes"]]
+          == ["input", "inpaint", "result"],
+          str([n["type"] for n in _tpl["graph"]["nodes"]]))
+
+    # 提示词拼装：三段都要在，且都可覆盖
+    _pi = client.post("/api/inpaint/instruction",
+                      json={"instruction": "换成铁皮护胸", "refCount": 1}).json()
+    check("提示词 = 用户正文 + 约束条款 + 参考图声明，三段齐全",
+          "铁皮护胸" in _pi["full"] and _pi["constraint"] in _pi["full"]
+          and _pi["refClause"] and _pi["refClause"] in _pi["full"],
+          _pi["full"][:80])
+    check("约束条款默认值来自程序且可识别为默认",
+          _pi["constraint"] == _pi["defaultConstraint"]
+          and _pi["constraintCustom"] is False)
+    _pi2 = client.post("/api/inpaint/instruction",
+                       json={"instruction": "x", "constraint": "我的约束"}).json()
+    check("自定义约束整段替换默认条款",
+          _pi2["constraint"] == "我的约束" and _pi2["constraintCustom"] is True
+          and "我的约束" in _pi2["full"] and _pi["defaultConstraint"] not in _pi2["full"])
+    check("负面词默认给出（接缝/亮边等重绘专有毛病）",
+          "接缝" in _pi["negative"] and _pi["negative"] == _pi["defaultNegative"])
+
+    # 蒙版运算：包围盒 / 覆盖率 / 外扩 / 尺寸规整
+    _msk = Image.new("L", (400, 300), 0)
+    ImageDraw.Draw(_msk).ellipse([150, 100, 250, 200], fill=255)
+    _bb = _ip.mask_bbox(_msk)
+    check("蒙版包围盒正确", _bb == (150, 100, 251, 201), str(_bb))
+    check("蒙版覆盖率 ≈ 椭圆面积比", 0.05 < _ip.mask_coverage(_msk) < 0.08,
+          str(_ip.mask_coverage(_msk)))
+    _dil = _ip.mask_bbox(_ip.dilate(_msk, 8))
+    check("蒙版外扩真的变大了", _dil[0] < _bb[0] and _dil[2] > _bb[2], str(_dil))
+    # 32 的倍数：管线对 16 倍数会打印 "have to be divisible by 32" 并静默改尺寸
+    check("裁剪框按 32 对齐（管线硬约束，不对齐会被静默改尺寸）",
+          all(v % 32 == 0 for v in _ip.expand_box(_bb, 40, (400, 300))),
+          str(_ip.expand_box(_bb, 40, (400, 300))))
+    check("送模型尺寸是 32 的倍数且长边落在 [320,1024]",
+          all(v % 32 == 0 for v in _ip.fit_size((200, 150)))
+          and all(v % 32 == 0 for v in _ip.fit_size((2600, 1200)))
+          and max(_ip.fit_size((2600, 1200))) <= 1024,
+          f"{_ip.fit_size((200, 150))} / {_ip.fit_size((2600, 1200))}")
+
+    # 合成：选区外必须逐位不变（这是「只改这块」的硬承诺）
+    _isrc = Image.new("RGBA", (400, 300), (60, 60, 70, 255))
+    ImageDraw.Draw(_isrc).rectangle([120, 90, 280, 220], fill=(40, 90, 220, 255))
+
+    async def _fake_gen(img, prompt, neg, refs, *, steps, seed, max_seq_len,
+                        provider_cfg, task_id, progress=None):
+        return Image.new("RGBA", img.size, (220, 40, 40, 255)), {"steps": 40, "model": "fake"}
+
+    for _mode in ("crop", "full"):
+        _o, _om = asyncio.run(_ip.run_inpaint(
+            _isrc, _msk, instruction="改成红色布片", generate=_fake_gen,
+            mode=_mode, feather_px=4, expand=8, match_color=True))
+        _arr_o = np.asarray(_o).astype(int)
+        _arr_s = np.asarray(_isrc).astype(int)
+        _outside = np.asarray(_msk) <= 127
+        _delta = int(np.abs(_arr_o[_outside] - _arr_s[_outside]).max())
+        check(f"{'局部' if _mode == 'crop' else '整图'}重绘：选区外像素逐位不变",
+              _delta == 0, f"最大差 {_delta}")
+        _inside_mean = _arr_o[np.asarray(_msk) > 127][:, :3].mean(axis=0)
+        check(f"{'局部' if _mode == 'crop' else '整图'}重绘：选区内变成提示词要的颜色",
+              _inside_mean[0] > 150 and _inside_mean[1] < 90, str(_inside_mean.round(1)))
+
+    _oh, _ = asyncio.run(_ip.run_inpaint(
+        _isrc, _msk, instruction="改成红色", generate=_fake_gen, hard=True))
+    check("硬边模式不做色彩校正（像素素材保持模型原色）",
+          int(np.asarray(_oh)[np.asarray(_msk) > 127][:, 0].mean()) >= 215)
+
+    async def _near_gen(img, prompt, neg, refs, *, steps, seed, max_seq_len,
+                        provider_cfg, task_id, progress=None):
+        # 模拟「模型给的是接近源图蓝的颜色，但每一块都不完全一样」
+        a = np.zeros((img.height, img.width, 4), np.uint8)
+        a[..., 0] = 45; a[..., 1] = 95; a[..., 2] = 215; a[..., 3] = 255
+        a[::3, ::3] = (50, 100, 210, 255)
+        return Image.fromarray(a, "RGBA"), {"steps": 40, "model": "fake"}
+
+    _op, _opm = asyncio.run(_ip.run_inpaint(
+        _isrc, _msk, instruction="加深这块蓝色", generate=_near_gen,
+        palette="source"))
+    check("色板吸附：接近源色的杂色被吸回色板",
+          _opm["paletteSnapped"] > 0.5 and _opm["paletteColors"] > 2,
+          f"{_opm['paletteSnapped']} / {_opm['paletteColors']}")
+
+    async def _far_gen(img, prompt, neg, refs, *, steps, seed, max_seq_len,
+                       provider_cfg, task_id, progress=None):
+        return Image.new("RGBA", img.size, (220, 40, 40, 255)), {"steps": 40}
+
+    _of, _ofm = asyncio.run(_ip.run_inpaint(
+        _isrc, _msk, instruction="改成红色", generate=_far_gen, palette="source"))
+    check("色板吸附不吃掉「源图没有的新颜色」（红不会被吸成灰）",
+          int(np.asarray(_of)[np.asarray(_msk) > 127][:, 0].mean()) > 150
+          and _ofm["paletteSnapped"] < 0.05
+          and any("色板对齐" in w for w in _ofm["warnings"]),
+          f"{_ofm['paletteSnapped']} / {_ofm['warnings'][:1]}")
+
+    for _bad, _label in [
+        (dict(instruction=""), "空提示词"),
+        (dict(instruction="x", mask=Image.new("L", (400, 300), 0)), "空蒙版"),
+    ]:
+        try:
+            _kw = {k: v for k, v in _bad.items() if k != "mask"}
+            asyncio.run(_ip.run_inpaint(
+                _isrc, _bad.get("mask", _msk), generate=_fake_gen, **_kw))
+            check(f"重绘错误分支：{_label}", False, "没有报错")
+        except ValueError as e:
+            check(f"重绘错误分支：{_label}", True, str(e)[:60])
+
+    # 蒙版上传 + 校验
+    _mpid = client.post("/api/projects",
+                        json={"name": "ip", "templateId": "image_inpaint"}
+                        ).json()["project"]["id"]
+    _srcimg = Image.new("RGBA", (400, 300), (30, 30, 40, 255))
+    ImageDraw.Draw(_srcimg).rectangle([100, 80, 260, 220], fill=(50, 120, 240, 255))
+    _sbuf = io.BytesIO(); _srcimg.save(_sbuf, "PNG"); _sbuf.seek(0)
+    _srcid = client.post(f"/api/projects/{_mpid}/refs",
+                         files={"file": ("src.png", _sbuf, "image/png")}).json()["ref"]["id"]
+    _mbuf = io.BytesIO(); _msk.save(_mbuf, "PNG"); _mbuf.seek(0)
+    _mr = client.post(f"/api/projects/{_mpid}/mask",
+                      files={"file": ("m.png", _mbuf, "image/png")})
+    check("蒙版上传成功并回报覆盖率/包围盒",
+          _mr.status_code == 200 and _mr.json()["mask"]["coverage"] > 0
+          and len(_mr.json()["mask"]["box"]) == 4, _mr.text[:120])
+    _maskfile = _mr.json()["mask"]["file"]
+    check("蒙版按 PNG 提供（界面可回显）",
+          client.get(f"/api/projects/{_mpid}/masks/{_maskfile}").status_code == 200)
+    _blank = Image.new("L", (400, 300), 0)
+    _bb2 = io.BytesIO(); _blank.save(_bb2, "PNG"); _bb2.seek(0)
+    check("空蒙版上传 400",
+          client.post(f"/api/projects/{_mpid}/mask",
+                      files={"file": ("b.png", _bb2, "image/png")}).status_code == 400)
+    check("重绘：没有源图时 404",
+          client.post("/api/inpaint", json={
+              "projectId": _mpid, "sourceFile": "nope.png",
+              "maskFile": _maskfile, "instruction": "x"}).status_code == 404)
+    check("重绘：空提示词 400",
+          client.post("/api/inpaint", json={
+              "projectId": _mpid, "sourceKind": "refs", "sourceFile": _srcid,
+              "maskFile": _maskfile, "instruction": "   "}).status_code == 400)
+    _small = Image.new("L", (100, 100), 255)
+    _sb = io.BytesIO(); _small.save(_sb, "PNG"); _sb.seek(0)
+    _smf = client.post(f"/api/projects/{_mpid}/mask",
+                       files={"file": ("s.png", _sb, "image/png")}).json()["mask"]["file"]
+    _mm = client.post("/api/inpaint", json={
+        "projectId": _mpid, "sourceKind": "refs", "sourceFile": _srcid,
+        "maskFile": _smf, "instruction": "x"})
+    check("重绘：蒙版与源图尺寸不符 400（换图后必须重涂）",
+          _mm.status_code == 400 and "不一致" in _mm.text, _mm.text[:120])
+
+    _ipsaved = client.put(f"/api/projects/{_mpid}", json={
+        "nodes": [{"id": "ip1", "type": "inpaint", "x": 0, "y": 0, "inpaint": {
+            "instruction": "换铁皮", "constraint": "我的约束", "mode": "full",
+            "feather": 999, "context": 9, "palette": "source",
+            "refs": [{"id": "r1", "file": "r1.png", "url": "/u", "name": "参考"}],
+            "maskFile": _maskfile,
+            "mask": {"file": _maskfile, "url": "/m.png", "width": 400,
+                     "height": 300, "coverage": 0.066, "box": [150, 100, 251, 201]},
+        }}], "edges": []}).json()["project"]["nodes"][0]["inpaint"]
+    check("inpaint 参数存盘往返（含蒙版/参考图/约束条款）",
+          _ipsaved["instruction"] == "换铁皮"
+          and _ipsaved["constraint"] == "我的约束"
+          and _ipsaved["mode"] == "full"
+          and _ipsaved["maskFile"] == _maskfile
+          and _ipsaved["mask"]["coverage"] == 0.066
+          and len(_ipsaved["refs"]) == 1,
+          str(_ipsaved)[:200])
+    check("inpaint 参数夹紧（羽化 64 / 上下文 2 / 色板 source）",
+          _ipsaved["feather"] == 64 and _ipsaved["context"] == 2.0
+          and _ipsaved["palette"] == "source", str(_ipsaved)[:120])
+    client.delete(f"/api/projects/{_mpid}")
 
     print("== 删除项目 ==")
     r = client.delete(f"/api/projects/{pid}")
