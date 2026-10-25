@@ -2521,6 +2521,52 @@ def _run_checks(client) -> int:
           }).json()["project"]["nodes"][0]["erase"]["method"] == "telea")
     client.delete(f"/api/projects/{_epid}")
 
+    print("== 2.5D 分层模型（See-Through） ==")
+    from backend.app.pipelines import layer25d as _l2d
+    _ts4 = client.get("/api/templates").json()["templates"]
+    check("有 2.5D 分层模板", any(t.get("id") == "layer25d_model" for t in _ts4))
+    _ltpl = next(t for t in _ts4 if t.get("id") == "layer25d_model")
+    check("2.5D 模板 = 选图 → 2.5D 分层 → 结果卡",
+          [n["type"] for n in _ltpl["graph"]["nodes"]] == ["input", "layer25d", "result"],
+          str([n["type"] for n in _ltpl["graph"]["nodes"]]))
+
+    # 环境体检：不管 see-through 装没装，接口都得给出明确结论
+    _st = client.get("/api/layer25d/status").json()
+    check("环境体检返回可用与否 + 缺什么清单",
+          isinstance(_st.get("ok"), bool) and isinstance(_st.get("missing"), list),
+          str(_st)[:120])
+    if not _st["ok"]:
+        check("不可用时给出具体缺什么（不让用户跑 3 分钟才报错）",
+              len(_st["missing"]) > 0, str(_st["missing"]))
+        r = client.post("/api/layer25d", json={
+            "projectId": "x", "sourceFile": "a.png"})
+        check("环境不可用时接口直接 503",
+              r.status_code in (404, 503), str(r.status_code))
+
+    # 摆动建议：头发/五官该晃，身体大块面不该晃
+    check("头发层的摆动建议明显大于上衣",
+          _l2d._swing_for("front hair") > _l2d._swing_for("topwear"),
+          f"{_l2d._swing_for('front hair')} vs {_l2d._swing_for('topwear')}")
+    check("眼睛层也比上衣晃得多",
+          _l2d._swing_for("irides-l") > _l2d._swing_for("bottomwear"),
+          f"{_l2d._swing_for('irides-l')} vs {_l2d._swing_for('bottomwear')}")
+    check("未知层名也有兜底幅度", 0 < _l2d._swing_for("某没见过的层") <= 1)
+
+    # 节点参数：白名单 + 夹紧
+    _lpid = client.post("/api/projects",
+                         json={"name": "l25d", "templateId": "layer25d_model"}
+                         ).json()["project"]["id"]
+    _lsaved = client.put(f"/api/projects/{_lpid}", json={
+        "nodes": [{"id": "l2d", "type": "layer25d", "x": 0, "y": 0,
+                   "layer25d": {"resolution": 9999, "steps": 999,
+                                "seed": -5, "lrsplit": False}}],
+        "edges": []}).json()["project"]["nodes"][0]["layer25d"]
+    check("2.5D 参数存盘往返 + 夹紧（分辨率 2048 / 步数 60）",
+          _lsaved["resolution"] == 2048 and _lsaved["steps"] == 60
+          and _lsaved["seed"] == 0 and _lsaved["lrsplit"] is False,
+          str(_lsaved))
+    client.delete(f"/api/projects/{_lpid}")
+
     print("== 删除项目 ==")
     r = client.delete(f"/api/projects/{pid}")
     check("删除项目", r.status_code == 200, f"{r.status_code} {r.text[:200]}")

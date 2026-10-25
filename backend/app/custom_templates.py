@@ -21,7 +21,7 @@ _ALLOWED = ("generate", "result", "input", "refine", "matte", "viewgen",
             "threeview", "walkvideo", "sequence", "spritesheet", "play",
             "txtvideo", "parts", "rigwalk",
             "clipsrc", "framesplit", "spritegrid", "animpreview", "godot2d",
-            "inpaint", "erase")
+            "inpaint", "erase", "layer25d")
 _ICON_COLORS = ["#FFB020", "#40E0D0", "#FF6B9D", "#8B7BFF", "#5B9DFF"]
 
 
@@ -125,7 +125,7 @@ def _clean_node(n: Any) -> Optional[Dict[str, Any]]:
             "result": None,
         })
     elif n["type"] in ("clipsrc", "framesplit", "spritegrid", "animpreview",
-                       "godot2d", "inpaint", "erase"):
+                       "godot2d", "inpaint", "erase", "layer25d"):
         # 这几个节点自己带一个同名字段存参数；拆帧产物（frames）与导出包
         # 跨项目无效，模板里只保留参数与结构。
         item.update({
@@ -195,7 +195,7 @@ def _public(t: Dict[str, Any]) -> Dict[str, Any]:
               "clipsrc": "选择视频", "framesplit": "拆解帧",
               "spritegrid": "精灵图", "animpreview": "动画预览",
               "godot2d": "Godot 导出", "inpaint": "局部重绘",
-              "erase": "去除局部"}
+              "erase": "去除局部", "layer25d": "2.5D 分层模型"}
     for i, n in enumerate(nodes):
         steps.append({"n": i + 1, "title": labels.get(n.get("type"), n.get("type")),
                       "detail": "画布节点，占位坐标见 graph"})

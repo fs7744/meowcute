@@ -802,6 +802,8 @@ export type ResultMeta = {
   inpaint?: InpaintMeta
   /** 去除局部节点的产出（补法 / 走的像素 / 平移量） */
   erase?: EraseMeta
+  /** 2.5D 分层节点的产出（层列表 / 深度 / 下载链接） */
+  layer25d?: Layer25DMeta
 }
 
 export type ResultNode = {
@@ -1294,12 +1296,79 @@ export type EraseNode = {
   createdAt?: number
 }
 
+/** 2.5D 分层参数（对应后端 _clean_layer25d）。 */
+export type Layer25DOptions = {
+  enabled: boolean
+  /** see-through 工作分辨率（512~2048）：越大越慢，官方推荐 1280 */
+  resolution: number
+  steps: number
+  seed: number
+  /** 左右拆分：眼/耳/手饰/头发拆 l / r 两层 */
+  lrsplit: boolean
+}
+
+/** 一层（Live2D 语义层：face / topwear / handwear-l …）。 */
+export type Layer25DLayer = {
+  name: string
+  file: string
+  url: string
+  width: number
+  height: number
+  /** 该层裁边后左上角在画布上的坐标（CSS 像素 = 图像像素） */
+  x: number
+  y: number
+  box: [number, number, number, number]
+  /** 深度中位数：0 = 最前（最上层），1 = 最后（最底层） */
+  depth: number | null
+  /** 绘制顺序：0 = 最前 */
+  order: number
+  /** 摆动幅度建议（0~1）：头发/五官大，身体大块面小 */
+  swing: number
+}
+
+/** 2.5D 分层的产出。 */
+export type Layer25DMeta = {
+  psdUrl: string
+  psdJsonUrl: string
+  depthPsdUrl: string | null
+  lrsplitPsdUrl: string | null
+  manifestUrl: string
+  frameSize: [number, number]
+  resolution: number
+  steps: number
+  seed: number
+  seconds: number
+  layers: Layer25DLayer[]
+  bytes?: number
+  sourceFile?: string
+}
+
+/** see-through 运行环境体检结果。 */
+export type Layer25DStatus = {
+  ok: boolean
+  dir: string
+  python: string
+  missing: string[]
+}
+
+export type Layer25DNode = {
+  id: string
+  type: 'layer25d'
+  x: number
+  y: number
+  layer25d: Layer25DOptions
+  result?: ResultImage | null
+  images?: ResultImage[]
+  meta?: Layer25DMeta | null
+  createdAt?: number
+}
+
 export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode | MatteNode
   | ViewGenNode | ThreeViewNode
   | WalkVideoNode | SequenceNode | SpriteSheetNode | PlayNode
   | PartsNode | RigWalkNode | TxtVideoNode
   | ClipSrcNode | FrameSplitNode | SpriteGridNode | AnimPreviewNode
-  | Godot2DNode | InpaintNode | EraseNode
+  | Godot2DNode | InpaintNode | EraseNode | Layer25DNode
 export type Edge = { from: string; to: string }
 
 export type Project = {

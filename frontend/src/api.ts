@@ -1,5 +1,5 @@
 import type {
-  BackgroundOption, DoctorReport, GenerateResult, GenParams, MatteOptions, NegativePreview,
+  BackgroundOption, DoctorReport, GenerateResult, GenParams, Layer25DStatus, MatteOptions, NegativePreview,
   PixelOptions, Project, ProjectFilesInfo, ProjectSummary, PromptExample, PromptPreview,
   ResultImage, PromptLimits, Style, TaskProgress, Template, RefAsset, VideoAsset,
 } from './types'
@@ -475,6 +475,20 @@ pixelArt?: boolean
         new Error(String(e?.detail || `上传蒙版失败（HTTP ${r.status}）`))))))
       .then((d: any) => d as { ok: boolean; mask: import('./types').InpaintMaskInfo })
   },
+
+  /** 2.5D 分层：see-through 运行环境体检（缺 venv / 缺权重时提前说清）。 */
+  layer25dStatus: () => fetch('/api/layer25d/status').then(j<Layer25DStatus>),
+
+  /** 2.5D 分层（任务制：一次 2~3 分钟）。 */
+  layer25d: (payload: {
+    projectId: string
+    sourceKind?: 'images' | 'refs'
+    sourceFile: string
+    resolution?: number
+    steps?: number
+    seed?: number
+    lrsplit?: boolean
+  }) => fetch('/api/layer25d', jsonInit(payload)).then(j<{ taskId: string }>),
 
   /** 去除局部：四种补法及其适用场景（界面直接显示，不在前端硬编码知识）。 */
   eraseMethods: () =>

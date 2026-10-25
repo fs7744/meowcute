@@ -9,6 +9,7 @@ import SpriteGridNode from '../components/SpriteGridNode'
 import GodotExportNode from '../components/GodotExportNode'
 import InpaintNode from '../components/InpaintNode'
 import EraseNode from '../components/EraseNode'
+import Layer25DNode from '../components/Layer25DNode'
 import MaskEditor from '../components/MaskEditor'
 import GenNode from '../components/GenNode'
 import InputNode from '../components/InputNode'
@@ -35,6 +36,7 @@ import type {
   Godot2DNode as Godot2DNodeType, Godot2DMeta,
   InpaintNode as InpaintNodeType,
   EraseMethodInfo, EraseNode as EraseNodeType,
+  Layer25DNode as Layer25DNodeType,
   InputNode as InputNodeType, MatteNode as MatteNodeType, PlayNode as PlayNodeType,
   Project, PromptExample, PromptLimits, PromptPreview, RefineNode as RefineNodeType,
   ResultImage,
@@ -75,6 +77,7 @@ const ANIMPREVIEW_W = 340
 const GODOT_W = 380
 const INPAINT_W = 400
 const ERASE_W = 400
+const LAYER25D_W = 420
 const NODE_W: Record<string, number> = {
   generate: GEN_W, result: RES_W, input: INPUT_W, refine: REFINE_W, matte: MATTE_W,
   viewgen: VIEWGEN_W, threeview: THREEVIEW_W, walkvideo: WALKVIDEO_W,
@@ -82,7 +85,7 @@ const NODE_W: Record<string, number> = {
   txtvideo: TXTVIDEO_W,
   clipsrc: CLIPSRC_W, framesplit: FRAMESPLIT_W, spritegrid: SPRITEGRID_W,
   animpreview: ANIMPREVIEW_W, godot2d: GODOT_W, inpaint: INPAINT_W,
-  erase: ERASE_W,
+  erase: ERASE_W, layer25d: LAYER25D_W,
 }
 
 /** 哪些类型的节点可以作为某个节点的上游（决定自定义工作流是否合法）。 */
@@ -109,9 +112,11 @@ const UPSTREAM_RULES: Record<string, string[]> = {
   // 局部重绘 / 去除局部要一张「可以改的图」：上传的、生成的、精修/抠过的、结果卡的都行
   inpaint: ['input', 'generate', 'matte', 'refine', 'result'],
   erase: ['input', 'generate', 'matte', 'refine', 'result'],
+  // 2.5D 分层要一张干净的立绘：上传的、生成的、精修/抠过的、结果卡的都行
+  layer25d: ['input', 'generate', 'matte', 'refine', 'result'],
   result: ['generate', 'refine', 'matte', 'viewgen', 'threeview',
            'walkvideo', 'sequence', 'spritesheet', 'play', 'txtvideo',
-           'parts', 'rigwalk', 'inpaint', 'erase'],
+           'parts', 'rigwalk', 'inpaint', 'erase', 'layer25d'],
 }
 
 const UPSTREAM_HINT: Record<string, string> = {
@@ -128,7 +133,8 @@ const UPSTREAM_HINT: Record<string, string> = {
   godot2d: '精灵图（可隔着「动画预览」）',
   inpaint: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
   erase: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
-  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 四视图拼板 / 行走链 / 局部重绘 / 去除局部',
+  layer25d: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
+  result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 四视图拼板 / 行走链 / 局部重绘 / 去除局部 / 2.5D 分层',
 }
 
 function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): boolean {
@@ -141,7 +147,7 @@ function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): b
  *  四视图拼板不在列：它要收正/侧/背/右四路。 */
 const SINGLE_INPUT = new Set(['refine', 'matte', 'result', 'viewgen',
                               'walkvideo', 'sequence', 'spritesheet', 'play',
-                              'godot2d', 'inpaint', 'erase'])
+                              'godot2d', 'inpaint', 'erase', 'layer25d'])
 
 /** 右键「添加节点」的目录：分类 → 具体节点。
  *  节点类型只会越来越多，平铺成一条长列表很快就用不了了。 */
@@ -185,6 +191,13 @@ const NODE_CATALOG: {
         hint: 'u2net / GrabCut 抠图，输出透明底 PNG' },
       { type: 'threeview', label: '四视图拼板', dot: 'd-threeview',
         hint: '正/侧/背三张按共同基线拼成横向板' },
+    ],
+  },
+  {
+    id: 'layer25d', label: '2.5D / 分层', hint: '静态图 → 会动的分层模型',
+    items: [
+      { type: 'layer25d', label: '2.5D 分层模型', dot: 'd-layer25d',
+        hint: 'See-Through 拆层 → 分层 PSD（每层补全遮挡，可直接绑骨）' },
     ],
   },
   {
@@ -258,7 +271,7 @@ const NODE_LABEL: Record<string, string> = {
   txtvideo: '文本生视频', parts: '拆件', rigwalk: '骨骼行走',
   clipsrc: '选择视频', framesplit: '拆解帧', spritegrid: '精灵图',
   animpreview: '动画预览', godot2d: 'Godot 导出', inpaint: '局部重绘',
-  erase: '去除局部',
+  erase: '去除局部', layer25d: '2.5D 分层模型',
 }
 const nodeLabel = (t: string) => NODE_LABEL[t] || t
 
@@ -709,6 +722,7 @@ export default function Canvas({ projectId, onBack }: Props) {
     else if (type === 'godot2d') addGodotNode(at)
     else if (type === 'inpaint') addInpaintNode(at)
     else if (type === 'erase') addEraseNode(at)
+    else if (type === 'layer25d') addLayer25DNode(at)
     else addEmptyResultNode(at)
   }
 
@@ -959,6 +973,23 @@ export default function Canvas({ projectId, onBack }: Props) {
         instruction: '', constraint: '', negative: '', aiMode: 'crop',
         context: 0.35, steps: null, seed: null, maxSeqLen: null,
         maskFile: '', mask: null,
+      },
+      result: null, images: [], meta: null,
+      createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addLayer25DNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(LAYER25D_W, 520)
+    const node: Layer25DNodeType = {
+      id: newId('l2d'), type: 'layer25d', x: spot.x, y: spot.y,
+      layer25d: {
+        enabled: true, resolution: 1024, steps: 30, seed: 42, lrsplit: true,
       },
       result: null, images: [], meta: null,
       createdAt: Date.now() / 1000,
@@ -2145,6 +2176,56 @@ export default function Canvas({ projectId, onBack }: Props) {
     } : p)
   }
 
+  // ---- 2.5D 分层：See-Through 子进程，2~3 分钟（任务制） ----
+  const runLayer25D = async (node: Layer25DNodeType) => {
+    if (!node.layer25d?.enabled) return
+    if (isRunning(node.id)) return
+    const up = upstreamImage(node)
+    if (!up) {
+      alert('没有可用的源图：把「选择图片 / 生成图 / 像素精修 / 扣除背景」连到它的输入端口')
+      return
+    }
+    markBusy(node.id, true)
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const o = node.layer25d
+      const { taskId } = await api.layer25d({
+        projectId: project!.id,
+        sourceKind: up.kind,
+        sourceFile: up.file,
+        resolution: o.resolution, steps: o.steps, seed: o.seed,
+        lrsplit: o.lrsplit,
+      })
+      activeTaskRef.current = taskId
+      setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+      const r: any = await awaitTask<any>(taskId, node.id)
+      if (activeTaskRef.current === taskId) activeTaskRef.current = null
+      const meta = r.meta
+      setProject((p) => p ? {
+        ...p,
+        nodes: p.nodes.map((n) => n.id === node.id
+          ? ({ ...n, meta } as CanvasNode) : n),
+      } : p)
+      // 合成预览推给下游结果卡：分层本身是「一堆层」，给张叠好的图更好接
+      if (meta?.previewUrl) {
+        const result: ResultImage = {
+          assetId: 'layer25d-preview', url: meta.previewUrl,
+          width: meta.frameSize?.[0] || 0, height: meta.frameSize?.[1] || 0,
+          origAssetId: up.file, origUrl: up.url,
+          origSize: [up.width, up.height],
+        }
+        pushDownstreamResult(node.id, [result], { layer25d: meta })
+      }
+    } catch (e: any) {
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
+  }
+
   // ---- 去除局部：非 AI 毫秒级 / AI 几十秒，共用任务制 ----
   const runErase = async (node: EraseNodeType) => {
     if (!node.erase?.enabled) return
@@ -3253,6 +3334,10 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is EraseNodeType => n.type === 'erase'),
     [project?.nodes],
   )
+  const layer25dNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is Layer25DNodeType => n.type === 'layer25d'),
+    [project?.nodes],
+  )
 
   /** 某个节点的入边来自哪一类上游（节点卡上显示「输入：xxx」）。 */
   const upstreamLabel = useCallback((id: string): string | null => {
@@ -3757,6 +3842,28 @@ export default function Canvas({ projectId, onBack }: Props) {
                 onStartLink={startLink}
                 onFinishLink={finishLink}
                 onPreview={(url, title, orig) => setPreview({ src: url, origSrc: orig, title })}
+              />
+            )
+          })}
+
+          {layer25dNodes.map((n, i) => {
+            const up = upstreamImage(n)
+            return (
+              <Layer25DNode
+                key={n.id}
+                node={n}
+                index={i}
+                running={isRunning(n.id)}
+                progress={tasks[n.id]?.progress?.label}
+                error={tasks[n.id]?.error ?? null}
+                upstream={up}
+                onChange={(patch) => patchNode(n.id, patch)}
+                onDelete={() => deleteNode(n.id)}
+                onDragStart={startDragNode(n.id)}
+                onRun={() => runLayer25D(n)}
+                onStartLink={startLink}
+                onFinishLink={finishLink}
+                onPreview={(url, title) => setPreview({ src: url, title })}
               />
             )
           })}

@@ -47,7 +47,7 @@ ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen",
                  "parts", "rigwalk", "txtvideo",
                  "threeview", "walkvideo", "sequence", "spritesheet", "play",
                  "clipsrc", "framesplit", "spritegrid", "animpreview",
-                 "godot2d", "inpaint", "erase")
+                 "godot2d", "inpaint", "erase", "layer25d")
 
 # 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
 # 默认关掉等于把开关藏起来。
@@ -362,6 +362,17 @@ DEFAULT_ERASE = {
 }
 
 
+# 2.5D 分层模型（See-Through）：静态立绘 → 可操作的分层 PSD。
+# 一次要 2~3 分钟，所以默认分辨率取 1024（官方 1280 更准但慢一倍）。
+DEFAULT_LAYER25D = {
+    "enabled": True,
+    "resolution": 1024,
+    "steps": 30,
+    "seed": 42,
+    "lrsplit": True,
+}
+
+
 def _now() -> float:
     return round(time.time(), 3)
 
@@ -506,6 +517,12 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                 n["meta"] = None
                 n["godot2d"] = {**DEFAULT_GODOT2D,
                                 **(n.get("godot2d") if isinstance(n.get("godot2d"), dict) else {})}
+            elif n["type"] == "layer25d":
+                n["result"] = None
+                n["images"] = []
+                n["meta"] = None
+                n["layer25d"] = {**DEFAULT_LAYER25D,
+                                 **(n.get("layer25d") if isinstance(n.get("layer25d"), dict) else {})}
             elif n["type"] == "erase":
                 n["result"] = None
                 n["images"] = []
@@ -745,6 +762,14 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         elif n["type"] == "godot2d":
             item.update({
                 "godot2d": _clean_godot2d(n.get("godot2d")),
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "layer25d":
+            item.update({
+                "layer25d": _clean_layer25d(n.get("layer25d")),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "images": [i for i in (n.get("images") or []) if isinstance(i, dict)][:4],
                 "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
                 "createdAt": _num(n.get("createdAt"), _now()),
             })
@@ -1365,6 +1390,18 @@ def _clean_inpaint(g: Any) -> Dict[str, Any]:
         if g.get("maxSeqLen") else None,
         "maskFile": str(g.get("maskFile") or "")[:200],
         "mask": mask_info,
+    }
+
+
+def _clean_layer25d(g: Any) -> Dict[str, Any]:
+    """2.5D 分层参数：白名单 + 夹紧（漏一项就是「改了存不下」）。"""
+    g = g if isinstance(g, dict) else {}
+    return {
+        "enabled": bool(g.get("enabled", True)),
+        "resolution": _ci(g.get("resolution"), 1024, 512, 2048),
+        "steps": _ci(g.get("steps"), 30, 4, 60),
+        "seed": _ci(g.get("seed"), 42, 0, 2 ** 31 - 1),
+        "lrsplit": bool(g.get("lrsplit", True)),
     }
 
 

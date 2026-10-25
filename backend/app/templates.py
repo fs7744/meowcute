@@ -320,6 +320,86 @@ TEMPLATES: List[Dict[str, Any]] = [
         },
     },
     {
+        "id": "layer25d_model",
+        "name": "2.5D 分层模型 · See-Through",
+        "tagline": "静态动漫图 → 分层 PSD → 会动的 2.5D 角色",
+        "status": "available",
+        "accent": "#B98BFF",
+        "icon": "layers",
+        "description": (
+            "手上有一张画好的动漫立绘，想让它动起来。专业工作流里这一步叫"
+            "「分层」：把角色拆成脸、头发、上衣、左右手……十几个图层，每层补全"
+            "被挡住的部分，排好前后顺序，再交给 Live2D / 引擎去驱动——一个角色"
+            "手工做要几小时。\n"
+            "这条链用 **See-Through**（MIT 系实验室的开源方案）把这件事自动化："
+            "「选择图片」→ 抠掉背景 →「2.5D 分层」跑模型拆层 → 交付一个**分层 "
+            "PSD**（每层都是补全过的完整图形，层序 = 深度顺序），外加每层的"
+            "透明 PNG 与深度数据。\n"
+            "**慢是真慢**：一次 2~3 分钟（要跑 LayerDiff 分层 + Marigold 深度），"
+            "但它是确定性流程——同样的图 + 同样的种子，出来的是同一份分层。"
+        ),
+        "highlights": [
+            "分层 PSD：Live2D 语义层（face / topwear / handwear-l / hair…），"
+            "层序按单目深度排好，丢进 PS 或 Live2D 能直接用",
+            "每层都补全了被遮挡的区域：层一分开摆动不会露出白洞"
+            "（这是人工分层最费时的部分）",
+            "深度数据一起给：每层的 depth_median 就是它的前后位置",
+            "左右拆分：眼睛/耳朵/手饰/头发拆成 l / r 两层，做眨眼和侧摆的前提",
+            "附每层透明 PNG + 深度 PSD：想自己再加工就直接拿走",
+            "画布里能实时预览 2.5D 效果：拖动滑杆看各层怎么错位、呼吸",
+        ],
+        "inputs": [
+            {"key": "image", "label": "角色立绘", "required": True,
+             "hint": "单人、正面或 3/4 侧、纯色或简单背景的动漫立绘效果最好"},
+            {"key": "layer25d", "label": "分层参数", "required": False,
+             "hint": "分辨率（512~2048）/ 步数 / 种子 / 左右拆分"},
+        ],
+        "steps": [
+            {"n": 1, "title": "选择图片", "detail": "上传角色立绘（也可连「生成图」的产出）"},
+            {"n": 2, "title": "分层", "detail": "See-Through 跑图层分解 + 深度估计（2~3 分钟）"},
+            {"n": 3, "title": "看层", "detail": "层列表 + 2.5D 实时预览，确认前后顺序和错位"},
+            {"n": 4, "title": "下载", "detail": "分层 PSD / 深度 PSD / 每层 PNG / manifest"},
+        ],
+        "outputs": [
+            {"label": "分层 PSD", "detail": "可直接在 Photoshop / Live2D 里接着绑骨"},
+            {"label": "每层透明 PNG", "detail": "按层名分文件，附带画布坐标"},
+            {"label": "深度与顺序 JSON", "detail": "每层的 depth_median 与绘制顺序"},
+            {"label": "深度 PSD", "detail": "灰度深度图，做 3D / 视差用"},
+        ],
+        "defaults": {
+            "styleId": "pixel_16bit",
+            "width": 512,
+            "height": 512,
+            "n": 1,
+            "background": "gray",
+            "maxSeqLen": None,
+        },
+        "notes": [
+            "画布是一条直线：选择图片 → 2.5D 分层 → 图片结果。",
+            "**输入图越干净越好**：纯色底、单个角色、轮廓清楚。背景复杂会带进层里。",
+            "分辨率 1024 是质量与速度的折中；官方推荐 1280，但要跑更久。",
+            "同一张图 + 同一个种子 = 同一份分层，可以放心重跑对比。",
+            "分层只解决「拆开」，不解决「动起来」：绑骨 / 摆动参数是下一步的事，"
+            "画布里的预览只按深度做视差与呼吸，用来确认分层是否合理。",
+        ],
+        "graph": {
+            "nodes": [
+                {"id": "in1", "type": "input", "x": 80, "y": 220, "refs": [],
+                 "label": "角色立绘"},
+                {"id": "l2d", "type": "layer25d", "x": 520, "y": 180,
+                 "layer25d": {"enabled": True, "resolution": 1024, "steps": 30,
+                              "seed": 42, "lrsplit": True},
+                 "result": None, "images": [], "meta": None},
+                {"id": "rs1", "type": "result", "x": 1000, "y": 220,
+                 "images": [], "prompt": "", "negative": "", "meta": {}},
+            ],
+            "edges": [
+                {"from": "in1", "to": "l2d"},
+                {"from": "l2d", "to": "rs1"},
+            ],
+        },
+    },
+    {
         "id": "pixel_sprite_txt2img",
         "name": "像素精灵 · 文字生图",
         "tagline": "一句话 → 一张可达标的像素游戏素材",

@@ -1329,3 +1329,90 @@ video.clip-media { cursor: default; }
   line-height: 1.5;
   color: var(--text);
 }
+
+/* --- 2.5D 分层模型节点 ---
+   这张卡的信息量最大（源图 + 参数 + 实时 2.5D 预览 + 层列表 + 下载），
+   所以宽度给到 420，预览区固定高度、内部缩放，绝不把节点撑到无限高。 */
+.l25d-src {
+  display: block; width: 100%; margin-top: 6px; padding: 4; line-height: 0;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, .35); cursor: zoom-in;
+  position: relative;
+}
+.l25d-src img {
+  width: 100%; max-height: 200px; object-fit: contain; image-rendering: pixelated;
+}
+.l25d-src span {
+  position: absolute; left: 6px; bottom: 6px; font-size: 10px; line-height: 1.4;
+  color: var(--muted); background: rgba(0, 0, 0, .55); padding: 0 4px;
+}
+.l25d-params {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; margin-top: 8px;
+}
+.l25d-params .gen-field { margin: 0; }
+.l25d-switch { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+
+/* 实时 2.5D 预览：每层一个 <img>，用 transform 做错位——
+   交给合成器处理，20 层也能跑满帧；比 canvas 每帧重绘 20 张 1280² 快一个量级。 */
+.l25d-out { margin-top: 10px; }
+.l25d-stage {
+  position: relative; width: 100%; height: 300px; overflow: hidden;
+  border: 1px solid var(--line); background:
+    repeating-conic-gradient(#191920 0% 25%, #101014 0% 50%) 0 0 / 16px 16px;
+}
+.l25d-canvas {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%) scale(var(--l25d-scale, .3));
+  transform-origin: center center;
+}
+.l25d-layer {
+  position: absolute; image-rendering: pixelated;
+  transform-origin: 50% 50%; will-change: transform;
+}
+.l25d-stage-tip {
+  position: absolute; left: 0; right: 0; bottom: 0; text-align: center;
+  font-size: 10px; color: var(--muted); padding: 2px 0;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .65));
+  pointer-events: none;
+}
+.l25d-ctl {
+  display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap;
+}
+.l25d-slider {
+  display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted);
+}
+.l25d-slider input[type="range"] { width: 96px; accent-color: #b98bff; }
+.l25d-slider span { font-family: var(--mono); min-width: 34px; }
+
+/* 层列表 */
+.l25d-layers {
+  margin-top: 8px; max-height: 260px; overflow: auto;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, .25);
+}
+.l25d-layers-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 7px; font-size: 11px; color: var(--muted);
+  border-bottom: 1px solid var(--line); position: sticky; top: 0;
+  background: #14141a;
+}
+.l25d-layer-row {
+  display: flex; align-items: center; gap: 7px; padding: 4px 7px;
+  border-bottom: 1px solid rgba(255, 255, 255, .04);
+}
+.l25d-layer-row img {
+  width: 30px; height: 30px; object-fit: contain; cursor: zoom-in;
+  background: repeating-conic-gradient(#2a2a33 0% 25%, #191920 0% 50%) 0 0 / 8px 8px;
+}
+.l25d-layer-info { flex: 1; min-width: 0; }
+.l25d-layer-name { font-size: 12px; color: var(--text); }
+.l25d-layer-en {
+  font-size: 9px; color: var(--muted); margin-left: 5px; font-family: var(--mono);
+}
+.l25d-depthbar {
+  height: 3px; margin-top: 3px; background: rgba(255, 255, 255, .08); position: relative;
+}
+.l25d-depthbar i {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: linear-gradient(90deg, #b98bff, #4fb6ff);
+}
+.l25d-layer-order { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+.ctx-dot.d-layer25d { background: #b98bff; }

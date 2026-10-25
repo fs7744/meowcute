@@ -25,6 +25,8 @@
 - /api/erase                                     去除局部：涂抹擦除水印/杂物（扩散/纹理/镜像/AI 四选一）
 - /api/erase/instruction                         去除局部：AI 方式的提示词拼装预览
 - /api/erase/methods                             去除局部：四种方式的适用场景说明
+- /api/layer25d                                  2.5D 分层模型：静态立绘 → 可操作的分层 PSD（任务制）
+- /api/layer25d/status                           2.5D 分层模型：see-through 运行环境体检
 - /api/projects/{pid}/export/{path}               导出包文件下载（tres / tscn / zip / 逐帧 PNG）
 
 生成是「任务制」：POST /api/generate 立即返回 taskId，前端订阅 SSE 看进度，
@@ -69,6 +71,7 @@ from .pipelines import godot2d as godot2d_mod
 from .pipelines import inpaint as inpaint_mod
 from .pipelines import erase as erase_mod
 from .pipelines import parts as parts_mod
+from .pipelines import layer25d as layer25d_mod
 from .pipelines import rigwalk as rigwalk_mod
 from .pipelines import spritesheet as spritesheet_mod
 from .pipelines import threeview as threeview_mod
@@ -574,6 +577,9 @@ async def project_export_file(pid: str, path: str):
         media, as_attachment = "application/zip", True
     elif low.endswith(".txt"):
         media, as_attachment = "text/plain; charset=utf-8", True
+    elif low.endswith(".psd"):
+        # 分层 PSD 是二进制资源，浏览器要下载而不是当文本显示
+        media, as_attachment = "application/octet-stream", True
     elif low.endswith(".png"):
         media, as_attachment = "image/png", False
     else:                       # .tres / .tscn：让浏览器直接显示文本
@@ -2860,6 +2866,83 @@ async def _run_erase(task_id: str, payload: ErasePayload) -> None:
             "meta": {**meta, "seconds": round(time.time() - t0, 2)},
         }
         progress_mod.report(task_id, 2, 2, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+# --------------------------------------------------------------------------- #
+# 2.5D 分层模型（See-Through）：静态动漫图 → 可操作的分层 PSD
+# --------------------------------------------------------------------------- #
+class Layer25DPayload(BaseModel):
+    projectId: str
+    sourceKind: str = "images"
+    sourceFile: str
+    # 分辨率：see-through 官方推荐 1280，但一次要 2~3 分钟；
+    # 1024 是质量与速度的折中（默认），768 试手用
+    resolution: int = 1024
+    steps: int = 30
+    seed: int = 42
+    # 左右拆分：眼睛/耳朵/手饰/头发拆成 l/r 两层（Live2D 的常规做法）
+    lrsplit: bool = True
+
+
+@app.get("/api/layer25d/status")
+async def layer25d_status() -> Dict[str, Any]:
+    """see-through 能不能用、缺什么。界面直接显示，别让用户跑 3 分钟才报错。"""
+    return layer25d_mod.available()
+
+
+@app.post("/api/layer25d")
+async def layer25d_create(payload: Layer25DPayload) -> Dict[str, Any]:
+    """静态立绘 → 分层 PSD（任务制：一次 2~3 分钟，必须能看进度）。"""
+    if projects_mod.load_project(payload.projectId) is None:
+        raise HTTPException(404, "项目不存在")
+    env_info = layer25d_mod.available()
+    if not env_info["ok"]:
+        raise HTTPException(503, "see-through 不可用：" + "；".join(env_info["missing"]))
+    src = _load_source(payload.projectId, ThreeViewSource(
+        kind=("refs" if payload.sourceKind == "refs" else "images"),
+        file=payload.sourceFile))
+    if src is None:
+        raise HTTPException(404, "源图不存在：先把上游的图接过来（或重跑上游节点）")
+
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 100, "准备中…")
+    asyncio.create_task(_run_layer25d(task_id, payload))
+    return {"taskId": task_id}
+
+
+async def _run_layer25d(task_id: str, payload: Layer25DPayload) -> None:
+    t0 = time.time()
+    try:
+        src = _load_source(payload.projectId, ThreeViewSource(
+            kind=("refs" if payload.sourceKind == "refs" else "images"),
+            file=payload.sourceFile))
+        if src is None:
+            raise RuntimeError("源图不存在")
+        from . import storage as _st      # 同包（`..` 会指向 backend，那里没有 storage）
+        # 源图落一份到工作区（see-through 要一个真实文件路径）
+        work = _st.project_dir(payload.projectId) / "layer25d-work"
+        work.mkdir(parents=True, exist_ok=True)
+        src_path = work / f"source{Path(payload.sourceFile).suffix or '.png'}"
+        src.save(src_path)
+
+        result = await layer25d_mod.run_layer25d(
+            payload.projectId, src_path,
+            resolution=_clamp(payload.resolution, 512, 2048, 1024),
+            steps=_clamp(payload.steps, 4, 60, 30),
+            seed=_clamp(payload.seed, 0, 2 ** 31 - 1, 42),
+            lrsplit=bool(payload.lrsplit),
+            task_id=task_id,
+        )
+        result["seconds"] = round(time.time() - t0, 1)
+        result["sourceFile"] = payload.sourceFile
+        task_results[task_id] = {"taskId": task_id, "meta": result}
+        progress_mod.report(task_id, 100, 100, "完成")
         progress_mod.finish(task_id)
     except progress_mod.CancelledError:
         progress_mod.finish(task_id, "已取消")
