@@ -1,0 +1,155 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 820" font-family="system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <pattern id="grid" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.1" fill="#d6dce6"/>
+    </pattern>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#9aa3b2"/>
+    </marker>
+  </defs>
+
+  <!-- window -->
+  <rect x="10" y="10" width="1220" height="760" rx="14" fill="#eef1f6"/>
+  <rect x="10" y="10" width="1220" height="760" rx="14" fill="none" stroke="#d6dbe4" stroke-width="1"/>
+  <!-- title bar -->
+  <rect x="10" y="10" width="1220" height="38" rx="14" fill="#1f2430"/>
+  <rect x="10" y="30" width="1220" height="18" fill="#1f2430"/>
+  <circle cx="34" cy="29" r="5" fill="#ff5f57"/>
+  <circle cx="52" cy="29" r="5" fill="#febc2e"/>
+  <circle cx="70" cy="29" r="5" fill="#28c840"/>
+  <text x="96" y="34" fill="#e8ebf2" font-size="14" font-weight="600">喵喵叫的可爱助手 · PIXELFORGE</text>
+
+  <!-- left sidebar -->
+  <rect x="10" y="48" width="200" height="722" fill="#fafbfc"/>
+  <rect x="10" y="48" width="200" height="722" fill="none" stroke="#e3e7ee"/>
+  <text x="30" y="80" fill="#8a93a3" font-size="12" font-weight="600">工作区</text>
+  <rect x="22" y="96" width="176" height="34" rx="8" fill="#eef2ff"/>
+  <text x="36" y="118" fill="#3b5bdb" font-size="13" font-weight="600">▸ 我的项目</text>
+  <rect x="22" y="138" width="176" height="34" rx="8" fill="#ffffff"/>
+  <text x="36" y="160" fill="#444b58" font-size="13">模板库</text>
+  <rect x="22" y="180" width="176" height="34" rx="8" fill="#ffffff"/>
+  <text x="36" y="202" fill="#444b58" font-size="13">画布</text>
+  <rect x="22" y="222" width="176" height="34" rx="8" fill="#ffffff"/>
+  <text x="36" y="244" fill="#444b58" font-size="13">设置</text>
+  <line x1="22" y1="288" x2="198" y2="288" stroke="#e3e7ee"/>
+  <text x="30" y="312" fill="#8a93a3" font-size="12" font-weight="600">最近</text>
+  <rect x="22" y="326" width="176" height="40" rx="8" fill="#ffffff" stroke="#eef2f7"/>
+  <text x="34" y="345" fill="#444b58" font-size="12">像素小人-行走</text>
+  <text x="34" y="360" fill="#aeb6c2" font-size="10">文生图 · 已修改</text>
+  <rect x="22" y="374" width="176" height="40" rx="8" fill="#ffffff" stroke="#eef2f7"/>
+  <text x="34" y="393" fill="#444b58" font-size="12">BOSS四视图</text>
+  <text x="34" y="408" fill="#aeb6c2" font-size="10">四视图推导</text>
+
+  <!-- top bar -->
+  <rect x="210" y="48" width="1020" height="44" fill="#ffffff"/>
+  <rect x="210" y="48" width="1020" height="44" fill="none" stroke="#e3e7ee"/>
+  <text x="234" y="76" fill="#3b5bdb" font-size="14" font-weight="600">模板</text>
+  <text x="300" y="76" fill="#444b58" font-size="14">项目</text>
+  <text x="356" y="76" fill="#444b58" font-size="14">画布</text>
+  <text x="412" y="76" fill="#444b58" font-size="14">设置</text>
+  <!-- 简略/专业 toggle -->
+  <rect x="1050" y="60" width="160" height="22" rx="11" fill="#eef2f7"/>
+  <rect x="1050" y="60" width="80" height="22" rx="11" fill="#3b5bdb"/>
+  <text x="1066" y="75" fill="#ffffff" font-size="12" font-weight="600">简略</text>
+  <text x="1146" y="75" fill="#666e7c" font-size="12" font-weight="600">专业</text>
+
+  <!-- canvas -->
+  <rect x="210" y="92" width="750" height="558" fill="#f4f6fa"/>
+  <rect x="210" y="92" width="750" height="558" fill="url(#grid)"/>
+  <rect x="210" y="92" width="750" height="558" fill="none" stroke="#e3e7ee"/>
+
+  <!-- node A 输入卡 -->
+  <rect x="240" y="140" width="190" height="86" rx="10" fill="#ffffff" stroke="#cdd5e3"/>
+  <rect x="240" y="140" width="190" height="26" rx="10" fill="#4c6ef5"/>
+  <rect x="240" y="156" width="190" height="10" fill="#4c6ef5"/>
+  <text x="252" y="158" fill="#ffffff" font-size="12" font-weight="600">输入卡</text>
+  <text x="252" y="190" fill="#444b58" font-size="12">选择视频 / GIF</text>
+  <text x="252" y="208" fill="#aeb6c2" font-size="10">可先播放预览</text>
+
+  <!-- node B 处理卡 -->
+  <rect x="500" y="140" width="190" height="86" rx="10" fill="#ffffff" stroke="#cdd5e3"/>
+  <rect x="500" y="140" width="190" height="26" rx="10" fill="#15aabf"/>
+  <rect x="500" y="156" width="190" height="10" fill="#15aabf"/>
+  <text x="512" y="158" fill="#ffffff" font-size="12" font-weight="600">处理卡</text>
+  <text x="512" y="190" fill="#444b58" font-size="12">拆帧 / 挑帧</text>
+  <text x="512" y="208" fill="#aeb6c2" font-size="10">跳帧 + 近似度过滤</text>
+
+  <!-- node C 处理卡 -->
+  <rect x="240" y="420" width="190" height="86" rx="10" fill="#ffffff" stroke="#cdd5e3"/>
+  <rect x="240" y="420" width="190" height="26" rx="10" fill="#15aabf"/>
+  <rect x="240" y="436" width="190" height="10" fill="#15aabf"/>
+  <text x="252" y="438" fill="#ffffff" font-size="12" font-weight="600">处理卡</text>
+  <text x="252" y="470" fill="#444b58" font-size="12">拼精灵图</text>
+  <text x="252" y="488" fill="#aeb6c2" font-size="10">附带引擎索引 JSON</text>
+
+  <!-- node D 结果卡 -->
+  <rect x="500" y="420" width="190" height="86" rx="10" fill="#ffffff" stroke="#cdd5e3"/>
+  <rect x="500" y="420" width="190" height="26" rx="10" fill="#f59f00"/>
+  <rect x="500" y="436" width="190" height="10" fill="#f59f00"/>
+  <text x="512" y="438" fill="#ffffff" font-size="12" font-weight="600">结果卡</text>
+  <text x="512" y="470" fill="#444b58" font-size="12">动画预览</text>
+  <text x="512" y="488" fill="#aeb6c2" font-size="10">按帧率循环播放</text>
+
+  <!-- arrows -->
+  <path d="M430,183 L498,183" stroke="#9aa3b2" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M595,226 L385,418" stroke="#9aa3b2" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M430,463 L498,463" stroke="#9aa3b2" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- right settings panel -->
+  <rect x="980" y="92" width="250" height="558" rx="10" fill="#ffffff" stroke="#e3e7ee"/>
+  <text x="1000" y="120" fill="#1f2430" font-size="14" font-weight="700">节点设置</text>
+  <rect x="1000" y="132" width="60" height="20" rx="10" fill="#3b5bdb"/>
+  <text x="1012" y="146" fill="#ffffff" font-size="11" font-weight="600">简略</text>
+  <text x="1066" y="146" fill="#666e7c" font-size="11" font-weight="600">专业</text>
+
+  <text x="1000" y="180" fill="#8a93a3" font-size="11">提示词</text>
+  <rect x="1000" y="188" width="210" height="44" rx="6" fill="#f4f6fa" stroke="#e3e7ee"/>
+  <text x="1010" y="206" fill="#aeb6c2" font-size="11">（可选）描述想要的结果</text>
+
+  <text x="1000" y="256" fill="#8a93a3" font-size="11">画风 / 档位 / 尺寸</text>
+  <rect x="1000" y="264" width="100" height="28" rx="6" fill="#ffffff" stroke="#e3e7ee"/>
+  <text x="1010" y="282" fill="#444b58" font-size="11">像素风</text>
+  <rect x="1110" y="264" width="100" height="28" rx="6" fill="#ffffff" stroke="#e3e7ee"/>
+  <text x="1120" y="282" fill="#444b58" font-size="11">快速</text>
+
+  <!-- expanded advanced row -->
+  <rect x="1000" y="312" width="210" height="28" rx="6" fill="#f4f6fa" stroke="#dbe3f0"/>
+  <text x="1010" y="330" fill="#444b58" font-size="11">更多设置 · 步数/种子/CFG/引擎</text>
+  <text x="1188" y="330" fill="#aeb6c2" font-size="13">›</text>
+
+  <rect x="1000" y="356" width="210" height="1" fill="#eef2f7"/>
+  <text x="1000" y="384" fill="#8a93a3" font-size="11">抠图 / 对齐</text>
+  <rect x="1000" y="392" width="100" height="28" rx="6" fill="#ffffff" stroke="#e3e7ee"/>
+  <text x="1010" y="410" fill="#444b58" font-size="11">开</text>
+
+  <!-- callout leader lines + numbers -->
+  <!-- 1 top bar -->
+  <circle cx="300" cy="76" r="9" fill="#1f2430"/>
+  <text x="296" y="80" fill="#fff" font-size="11" font-weight="700">1</text>
+  <!-- 2 toggle -->
+  <circle cx="1090" cy="71" r="9" fill="#1f2430"/>
+  <text x="1086" y="75" fill="#fff" font-size="11" font-weight="700">2</text>
+  <!-- 3 canvas -->
+  <circle cx="330" cy="500" r="9" fill="#1f2430"/>
+  <text x="326" y="504" fill="#fff" font-size="11" font-weight="700">3</text>
+  <!-- 4 input card -->
+  <circle cx="270" cy="160" r="9" fill="#1f2430"/>
+  <text x="266" y="164" fill="#fff" font-size="11" font-weight="700">4</text>
+  <!-- 5 settings panel -->
+  <circle cx="1015" cy="340" r="9" fill="#1f2430"/>
+  <text x="1011" y="344" fill="#fff" font-size="11" font-weight="700">5</text>
+  <!-- 6 result card -->
+  <circle cx="560" cy="445" r="9" fill="#1f2430"/>
+  <text x="556" y="449" fill="#fff" font-size="11" font-weight="700">6</text>
+
+  <!-- legend -->
+  <rect x="10" y="778" width="1220" height="0" fill="none"/>
+  <g font-size="12" fill="#444b58">
+    <text x="30" y="800"><tspan fill="#1f2430" font-weight="700">①</tspan> 顶栏四个分页：模板 / 项目 / 画布 / 设置</text>
+    <text x="320" y="800"><tspan fill="#1f2430" font-weight="700">②</tspan> 简略 / 专业 开关（跨项目记忆）</text>
+    <text x="620" y="800"><tspan fill="#1f2430" font-weight="700">③</tspan> 无限画布：节点拖拽、连线、缩放、平移</text>
+    <text x="30" y="820"><tspan fill="#1f2430" font-weight="700">④</tspan> 输入卡 / 处理卡 / 结果卡 三类节点</text>
+    <text x="320" y="820"><tspan fill="#1f2430" font-weight="700">⑤</tspan> 节点参数：简略只露核心，专业展开高级项</text>
+    <text x="620" y="820"><tspan fill="#1f2430" font-weight="700">⑥</tspan> 结果卡：动画预览 / 导出精灵图</text>
+  </g>
+</svg>
