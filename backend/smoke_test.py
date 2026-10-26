@@ -2191,6 +2191,34 @@ def _run_checks(client) -> int:
     check("四角检测能抓到背景没抠干净的帧",
           _pc._corners_clean(_cap_src) and not _pc._corners_clean(_box((0, 0, 256, 256))))
 
+    # 推理尺寸下限（2026-10-26 真 bug）：Qwen-Image-2.1 在 128×128 上会报
+    # `shape mismatch: value tensor of shape [256, 4096] cannot be broadcast to
+    # indexing result of shape [1, 832, 4096]`，用户 120×120 的格子 12 帧全挂。
+    # 实测同一批数据 256/384/512 全部成功（IoU 0.93/0.89/0.92）。
+    check("小源帧会被抬到 256 再推理（128 会让模型直接崩）",
+          _pc._fit_size(120, 120, 0) == (256, 256)
+          and _pc._fit_size(64, 64, 0) == (256, 256)
+          and _pc._fit_size(120, 120, 128) == (256, 256),
+          str(_pc._fit_size(120, 120, 0)))
+    check("够大的源帧尺寸不动",
+          _pc._fit_size(384, 512, 0) == (384, 512))
+    check("天书报错会被翻成人话",
+          "尺寸太小" in _pc._friendly_error(
+              RuntimeError("shape mismatch: value tensor of shape [256, 4096] "
+                           "cannot be broadcast to indexing result of shape "
+                           "[1, 832, 4096]"))
+          and "显存" in _pc._friendly_error(RuntimeError("CUDA out of memory"))
+          and _pc._friendly_error(RuntimeError("boom")) == "boom")
+
+    # 参考板重排要**逐张**做：用户常传「一张立绘 + 一张长条四视图板」，
+    # 原来只在恰好 1 张时才重排，那张 1024×254 的板就被压成 64px 高了
+    _long = Image.new("RGBA", (1024, 254), (0, 0, 0, 0))
+    _sq = Image.new("RGBA", (360, 480), (0, 0, 0, 0))
+    check("长条参考板被重排、方形的不动（逐张判断）",
+          _pc.repack_board(_long)[1] == "4x1→2x2"
+          and _pc.repack_board(_sq)[1] == "as-is",
+          f"{_pc.repack_board(_long)} / {_pc.repack_board(_sq)}")
+
     # ---- 边跑边落盘（2026-10-26）：批量任务不该把整批像素攒在内存里 ----
     # 拆 600 帧 × 384² 是 338MB、八方向行走 648MB（重试时近 1.3GB），
     # 而且攒着的话中途失败/取消就一帧都拿不到。
@@ -2213,6 +2241,15 @@ def _run_checks(client) -> int:
           len(_seen) == len(_cfo) and all(_seen)
           and _cfm["count"] == len(_cfo) and _cfm["diffMedian"] >= 0,
           f"{len(_seen)} vs {len(_cfo)}")
+
+    # 补跑 / 重跑指定帧：整批重跑一次要几分钟，某一帧跑飞不该连累其余帧
+    from backend.app.main import PoseClonePayload as _PCP
+    _p1 = _PCP(projectId="x", files=["a.png", "b.png"])
+    check("默认全量重跑（only 空、不保留旧产物）",
+          _p1.only == [] and _p1.keepExisting is False)
+    _p2 = _PCP(projectId="x", files=["a.png"], only=[3, 1], keepExisting=True)
+    check("可以只重跑指定的几帧并保留其余",
+          _p2.only == [3, 1] and _p2.keepExisting is True)
 
     # 进度能携带「已完成的分片」，界面才能边跑边看
     from backend.app import progress as _pg

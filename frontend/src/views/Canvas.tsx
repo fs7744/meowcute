@@ -2104,9 +2104,28 @@ export default function Canvas({ projectId, onBack }: Props) {
   }
 
   // ---- 动作复刻链第 2 步：动作帧 + 角色四视图 → 换角色复刻（逐帧推理，慢） ----
+  /** 上游勾了帧、但本节点还没有产出的帧数（上次中途失败/取消留下的缺口）。 */
+  const poseCloneMissing = (node: PoseCloneNodeType): number => {
+    const files = upstreamPicks(node.id)?.files || []
+    if (!files.length) return 0
+    const have = new Set(
+      ((node as any).frames || []).map((f: any) => f.srcFile).filter(Boolean))
+    return files.filter((fn) => !have.has(fn)).length
+  }
+
+  /** 按 srcIndex 合并：新帧替换同一下标的旧帧，其余保留，最后按下标排序。 */
+  const mergeFrames = (old: any[], fresh: any[]): any[] => {
+    const by = new Map<number, any>()
+    for (const f of old) by.set(f.srcIndex ?? f.i, f)
+    for (const f of fresh) by.set(f.srcIndex ?? f.i, f)
+    return [...by.values()].sort((a, b) => (a.srcIndex ?? a.i) - (b.srcIndex ?? b.i))
+  }
+
   const executePoseClone = async (
     node: PoseCloneNodeType,
-  ): Promise<{ frames: any[]; meta: PoseCloneMeta }> => {
+    // undefined = 全量重跑；'missing' = 只补跑缺失帧；数组 = 只重跑这几帧
+    only?: number[] | 'missing',
+  ): Promise<{ frames: any[]; meta: PoseCloneMeta; partial: boolean }> => {
     if (!project) throw new Error('项目未加载')
     const v = node.poseclone
     const mode = v?.mode ?? 'per-frame'
@@ -2137,6 +2156,15 @@ export default function Canvas({ projectId, onBack }: Props) {
       }
       files = up.files
     }
+    // 缺哪些帧（上次中途失败/取消留下的缺口）：按源文件名比对，勾选顺序变了也对
+    const haveSrc = new Set(
+      (node.frames || []).map((f: any) => f.srcFile).filter(Boolean))
+    const missingIdx = files
+      .map((fn: string, k: number) => (haveSrc.has(fn) ? -1 : k))
+      .filter((k: number) => k >= 0)
+    if (only === 'missing' && !missingIdx.length) {
+      throw new Error('没有缺失的帧：上游勾选的每一帧都已经复刻过了')
+    }
 
     const { taskId } = await api.poseClone({
       projectId: project.id,
@@ -2156,26 +2184,43 @@ export default function Canvas({ projectId, onBack }: Props) {
       refMode: v?.refMode ?? 'auto',
       seed: v?.seed ?? null,
       maxSeqLen: v?.maxSeqLen ?? null,
+      // 补跑缺失：上游勾了、但这里还没有产出的帧。按**源文件名**比对而不是
+      // 下标——用户改过勾选顺序后下标会错位，文件名不会。
+      only: only === undefined ? [] : (only === 'missing' ? missingIdx : only),
+      // 只跑一部分时必须保留旧产物：没重跑的帧还得留在磁盘上
+      keepExisting: only !== undefined,
     })
     activeTaskRef.current = taskId
     setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
     const r: any = await awaitTask<any>(taskId, node.id)
     if (activeTaskRef.current === taskId) activeTaskRef.current = null
     const cl: any = r.clone || {}
-    return { frames: cl.frames || [], meta: (cl.meta || {}) as PoseCloneMeta }
+    return {
+      frames: cl.frames || [],
+      meta: (cl.meta || {}) as PoseCloneMeta,
+      partial: !!cl.partial,
+    }
   }
 
-  const runPoseClone = async (node: PoseCloneNodeType) => {
+  const runPoseClone = async (
+    node: PoseCloneNodeType, only?: number[] | 'missing',
+  ) => {
     if (!node.poseclone?.enabled) return
     if (isRunning(node.id)) return
     markBusy(node.id, true)
     setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
     try {
-      const { frames, meta } = await executePoseClone(node)
+      const { frames, meta, partial } = await executePoseClone(node, only)
       setProject((p) => p ? {
         ...p,
         nodes: p.nodes.map((n) => n.id === node.id ? ({
-          ...n, frames, meta,
+          ...n,
+          // 补跑/重跑只跑了一部分：把新帧**合并**进已有结果，只替换同
+          // srcIndex 的项。整体覆盖的话没重跑的帧会凭空消失。
+          frames: partial
+            ? mergeFrames((n as any).frames || [], frames)
+            : frames,
+          meta,
         } as CanvasNode) : n),
       } : p)
     } catch (e: any) {
@@ -4038,6 +4083,8 @@ export default function Canvas({ projectId, onBack }: Props) {
               partial={tasks[n.id]?.progress?.partial ?? null}
               error={tasks[n.id]?.error ?? null}
               upstreamPicked={upstreamPicks(n.id)?.files.length ?? null}
+              missingCount={poseCloneMissing(n)}
+              onRerun={(only) => runPoseClone(n, only)}
               charRefCount={upstreamRefFiles(n.id).length}
               onChange={(patch) => patchNode(n.id, patch)}
               onDelete={() => deleteNode(n.id)}

@@ -435,6 +435,10 @@ pixelArt?: boolean
     refMode?: string
     seed?: number | null
     maxSeqLen?: number | null
+    /** 只跑这几帧（源帧下标）。空 = 全量 */
+    only?: number[]
+    /** 保留没重跑的旧产物（配合 only 使用） */
+    keepExisting?: boolean
   }) =>
     fetch('/api/poseclone', jsonInit(payload)).then(j<{ taskId: string }>),
 

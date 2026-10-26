@@ -17,6 +17,10 @@ type Props = {
   upstreamPicked?: number | null
   /** 角色参考图（上游「选择图片」）张数 */
   charRefCount?: number
+  /** 上游勾了帧、但这里还没有产出的帧数（上次中途失败/取消留下的缺口） */
+  missingCount?: number
+  /** 重跑：传 'missing' = 补跑缺失帧；传数组 = 只重跑这几个源帧下标 */
+  onRerun?: (only: number[] | 'missing') => void
   onChange: (patch: Partial<PoseCloneNodeType>) => void
   onDelete: () => void
   onDragStart: (e: React.MouseEvent) => void
@@ -40,6 +44,7 @@ type Props = {
  */
 export default function PoseCloneNode({
   node, index, running, progress, partial, error, upstreamPicked, charRefCount,
+  missingCount, onRerun,
   onChange, onDelete, onDragStart, onRun, onStartLink, onFinishLink, onPreview,
 }: Props) {
   const DEFAULTS: PoseCloneNodeType['poseclone'] = {
@@ -53,6 +58,11 @@ export default function PoseCloneNode({
   const frames = useMemo(() => node.frames ?? [], [node.frames])
   const meta = node.meta
   const [showInstruction, setShowInstruction] = useState(false)
+  // 被点选为「待重跑」的源帧下标
+  const [picked, setPicked] = useState<Set<number>>(new Set())
+  const togglePick = (i: number) => setPicked((s) => {
+    const n = new Set(s); n.has(i) ? n.delete(i) : n.add(i); return n
+  })
   const custom = (v.instruction || '').trim()
   const effective = custom || POSECLONE_DEFAULT_INSTRUCTION
 
@@ -312,17 +322,42 @@ export default function PoseCloneNode({
             </div>
             <div className="fs-wall">
               {frames.map((f) => (
-                <button key={f.file} className="fs-cell on"
+                <button key={f.file}
+                  className={`fs-cell ${picked.has(f.srcIndex ?? f.i) ? '' : 'on'}`}
                   title={`第 ${f.i + 1} 帧`
                     + (f.iou != null ? ` · 动作重合 ${(f.iou * 100).toFixed(0)}%` : '')
-                    + '\n双击放大'}
+                    + '\n单击 = 选为待重跑；双击 = 放大'}
+                  onClick={() => togglePick(f.srcIndex ?? f.i)}
                   onDoubleClick={() => onPreview(f.url, `复刻第 ${f.i + 1} 帧`)}>
                   <img src={f.thumbUrl} alt={`复刻帧 ${f.i + 1}`} loading="lazy" />
                   <span className="fs-idx">{f.i + 1}</span>
                 </button>
               ))}
             </div>
-            <div className="hint" style={{ marginTop: 6 }}>
+
+            {/* 补跑 / 重跑：整批重跑一次要几分钟，某一帧跑飞了不该连累其余帧 */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6,
+              alignItems: 'center' }}>
+              {missingCount ? (
+                <button className="btn-mini primary" disabled={running}
+                  title={`上游勾了 ${upstreamPicked ?? 0} 帧、这里只有 ${frames.length} 帧，`
+                    + `缺 ${missingCount} 帧（多半是上次中途失败/取消）。只补跑这几帧。`}
+                  onClick={() => onRerun?.('missing')}>
+                  补跑缺失的 {missingCount} 帧
+                </button>
+              ) : null}
+              <button className="btn-mini" disabled={running || picked.size === 0}
+                title="只重跑你点选的这几帧（换种子再来一次），其余帧原样保留"
+                onClick={() => onRerun?.([...picked])}>
+                {picked.size ? `重跑选中的 ${picked.size} 帧` : '重跑选中帧'}
+              </button>
+              {picked.size ? (
+                <button className="btn-mini" onClick={() => setPicked(new Set())}
+                  title="清空选择">清空</button>
+              ) : null}
+            </div>
+            <div className="hint" style={{ marginTop: 4 }}>
+              点帧可以选为待重跑（换种子再跑一次），其余帧不会被动到。
               下游接「精灵图」：会把上面这些帧按网格拼成新精灵图，再接「动画预览」看循环。
             </div>
           </>

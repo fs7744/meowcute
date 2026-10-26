@@ -2717,6 +2717,13 @@ class PoseClonePayload(BaseModel):
     refMode: str = "auto"       # auto = 长条四视图板自动重排成方形
     seed: Optional[int] = None
     maxSeqLen: Optional[int] = None
+    # 只跑 files 里的这几帧（按**源帧下标**，空 = 全部重跑）。
+    # 用途：①补跑缺失帧——12 帧跑到第 10 帧崩了，不必从头再来；
+    #      ②只重跑某几帧——某一帧动作跑飞了、换个种子再来一次。
+    only: List[int] = Field(default_factory=list)
+    # 配合 only：不清旧产物，把没重跑的帧留在磁盘上（由前端合并进结果）。
+    # 为 False 时行为和以前一致：整批重跑、先清后写。
+    keepExisting: bool = False
 
 
 async def _run_pose_clone(task_id: str, payload: PoseClonePayload) -> None:
@@ -2776,19 +2783,28 @@ async def _run_pose_clone(task_id: str, payload: PoseClonePayload) -> None:
 
         if not payload.files:
             raise RuntimeError("没有动作帧：先在「拆解精灵图」里拆帧并勾选")
+        # 只跑指定的几帧（按源帧下标）：补跑缺失帧 / 单独重跑某几帧。
+        # 下标指的是 payload.files 的位置，所以**勾选顺序变了下标就变了**——
+        # 前端传的是「当前勾选列表」里的位置，两边用的是同一份列表，能对上。
+        only = {int(x) for x in payload.only if isinstance(x, (int, float))}
+        only = {x for x in only if 0 <= x < len(payload.files)}
         frames: List[Dict[str, Any]] = []
         missing = 0
         for k, fn in enumerate(payload.files[:96]):
+            if only and k not in only:
+                continue
             im = storage.load_image(payload.projectId, "images", fn)
             if im is None:
                 missing += 1
                 continue
-            frames.append({"i": k, "image": im})
+            frames.append({"i": k, "src": fn, "image": im})
         if not frames:
             raise RuntimeError("勾选的动作帧都读不出来（可能已被清理）")
 
-        _purge_prefix(payload.projectId, CLONE_FRAME_PREFIX)
-        _purge_prefix(payload.projectId, CLONE_THUMB_PREFIX)
+        # 补跑/重跑时**不能**清旧产物：没重跑的帧还要留在磁盘上给前端合并。
+        if not payload.keepExisting:
+            _purge_prefix(payload.projectId, CLONE_FRAME_PREFIX)
+            _purge_prefix(payload.projectId, CLONE_THUMB_PREFIX)
 
         # ---- 每帧生成完**立刻落盘**，不要攒到最后一并写 ----
         # 三个理由，都是实测出来的痛点：
@@ -2797,14 +2813,15 @@ async def _run_pose_clone(task_id: str, payload: PoseClonePayload) -> None:
         #   ③ 可视化：界面能边跑边看到已完成的帧，而不是干等一条进度条
         # 落盘后把 image 置 None 释放像素；只留统计字段供最终 meta 使用。
         out_frames: List[Dict[str, Any]] = []
-        _seq = [0]
 
         def _persist(f: Dict[str, Any]) -> None:
             img = f.get("image")
             if img is None:
                 return
-            _seq[0] += 1
-            seq = _seq[0]
+            # 文件名必须按**源帧下标**定，不能用递增计数器：
+            # 只重跑第 5 帧时计数器会从 1 开始，写出的 cloned-1.png 会顶掉
+            # 第 1 帧的产物（而第 1 帧这次根本没跑）。按 i 定就只会覆盖自己。
+            seq = int(f["i"]) + 1
             info = storage.save_image(payload.projectId, img, kind="images",
                                       prefix=CLONE_FRAME_PREFIX, seq=seq)
             thumb = img.copy()
@@ -2813,6 +2830,7 @@ async def _run_pose_clone(task_id: str, payload: PoseClonePayload) -> None:
                                        prefix=CLONE_THUMB_PREFIX, seq=seq)
             rec = {
                 "i": f["i"], "t": seq - 1, "srcIndex": f["i"],
+                "srcFile": f.get("src") or "",
                 "file": info["file"], "url": info["url"],
                 "thumbFile": tinfo["file"], "thumbUrl": tinfo["url"],
                 "w": info["width"], "h": info["height"],
@@ -2834,12 +2852,17 @@ async def _run_pose_clone(task_id: str, payload: PoseClonePayload) -> None:
             seed=payload.seed, max_seq_len=payload.maxSeqLen,
             provider_cfg=provider_cfg, task_id=task_id, on_frame=_persist)
 
+        out_frames.sort(key=lambda r: r["srcIndex"])
         task_results[task_id] = {
             "taskId": task_id,
             "clone": {
                 "mode": "per-frame",
                 "frames": out_frames,
+                # partial=True 时前端要把新帧**合并**进已有结果（只替换同
+                # srcIndex 的项），而不是整体覆盖——否则没重跑的帧会消失
+                "partial": bool(payload.keepExisting and only),
                 "meta": {**meta, "missingSource": missing,
+                         "rerun": sorted(only) or None,
                          "seconds": round(time.time() - t0, 1)},
             },
         }

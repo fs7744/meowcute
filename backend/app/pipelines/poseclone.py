@@ -235,20 +235,47 @@ def _align_to(gen: Image.Image, ref: Image.Image, *,
                  "edge": _touching_edges(out)}
 
 
+# 推理尺寸的下限。**128 会直接崩**，不是效果差的问题：
+# 实测（2026-10-26，用户 120×120 的精灵图格子，size=0 → 抬到 128）12 帧全部报
+# `shape mismatch: value tensor of shape [256, 4096] cannot be broadcast to
+# indexing result of shape [1, 832, 4096]`；同一批数据改 256 / 384 / 512 全部
+# 成功（IoU 0.93 / 0.89 / 0.92）。所以小帧也要在 256 上推理，出完再缩回源尺寸。
+MIN_INFER_SIZE = 256
+
+
+def _friendly_error(e: Exception) -> str:
+    """把模型的天书报错翻成能照着改的话。
+
+    `shape mismatch: value tensor of shape [256, 4096] cannot be broadcast to
+    indexing result of shape [1, 832, 4096]` 这种对用户毫无意义——它其实只是
+    「输出尺寸太小，模型的图像 token 数对不上」（实测 128 必崩、256 起正常）。
+    """
+    s = str(e)
+    low = s.lower()
+    if "shape mismatch" in low or "cannot be broadcast to indexing" in low:
+        return (f"出图尺寸太小，模型内部对不上（{s[:80]}）。"
+                f"请把「输出长边」设为 ≥{MIN_INFER_SIZE}，"
+                f"或把上游精灵图的单元格调大（现在这帧不到 {MIN_INFER_SIZE}px）")
+    if "out of memory" in low or "cuda" in low and "memory" in low:
+        return f"显存不够（{s[:60]}）：把「输出长边」调小，或关掉占显卡的程序"
+    return s[:300]
+
+
 def _fit_size(w: int, h: int, size: int = 0) -> Tuple[int, int]:
     """输出尺寸：默认跟随源帧（圆整到 16），也可由用户指定长边。
 
-    下限取 64 而不是 128：精灵图格子常见 64/96，若先放大到 128 再缩回来，
-    等于白白插值一遍（细节只会更少，不会更多）。
+    下限 MIN_INFER_SIZE=256：Qwen-Image-2.1 在 128×128 上会因为 image token 数
+    与联合序列槽位对不上而崩（见常量处的实测）。小于 256 的源帧照样在 256 上
+    推理、出完再缩回源尺寸——虽然不会凭空多出细节，但至少跑得出来。
     """
     if size and size > 0:
-        base = max(64, min(int(size), 1536))
+        base = max(MIN_INFER_SIZE, min(int(size), 1536))
         scale = base / max(1, max(w, h))
         nw, nh = int(round(w * scale)), int(round(h * scale))
     else:
         nw, nh = w, h
-    return (max(64, int(round(nw / 16)) * 16),
-            max(64, int(round(nh / 16)) * 16))
+    return (max(MIN_INFER_SIZE, int(round(nw / 16)) * 16),
+            max(MIN_INFER_SIZE, int(round(nh / 16)) * 16))
 
 
 def _fit_seq_len(text: str, requested: Optional[int]) -> int:
@@ -330,9 +357,19 @@ async def run_clone(
                            "连到本节点的角色端口")
 
     pack_note = "as-is"
-    if ref_mode != "as-is" and len(refs) == 1:
-        # 单张长条四视图板 → 重排成方形板；多张（用户逐张传视角）则不动
-        refs[0], pack_note = repack_board(refs[0])
+    # 逐张判断，而不是只在「恰好 1 张参考图」时才做：实测用户常传两张
+    # （一张立绘 + 一张长条四视图板），原来那个 len(refs)==1 的条件会让那张
+    # 1024×254 的板完全不重排 → letterbox 进 256×256 后只剩 64px 高，
+    # 模型看不清发型服装，复刻出来就是「配色差不多的陌生人」。
+    # 不是长条的图 repack_board 自己会返回 as-is，逐张调用是安全的。
+    if ref_mode != "as-is":
+        notes: List[str] = []
+        for _i in range(len(refs)):
+            refs[_i], _note = repack_board(refs[_i])
+            if _note != "as-is":
+                notes.append(f"第 {_i + 1} 张 {_note}")
+        if notes:
+            pack_note = "；".join(notes)
 
     provider = DiffusersProvider(provider_cfg or {})
     total = len(frames)
@@ -442,7 +479,8 @@ async def run_clone(
 
         if gen is None:
             out.append({"i": fr["i"], "image": None,
-                        "error": "生成失败", "seconds": round(time.time() - t0, 1)})
+                        "error": _friendly_error(e),
+                        "seconds": round(time.time() - t0, 1)})
             continue
 
         out.append({
@@ -501,6 +539,17 @@ async def run_clone(
         warnings.append(
             f"有 {auto_matted} 帧模型没画出透明背景，已自动抠掉（结果已修正，"
             "但发丝边缘可能不如原生透明干净）")
+    # 源帧比推理尺寸小得多时说清楚：推理会在 256 上做、再缩回源尺寸，
+    # 不会凭空多出细节。别让用户以为「复刻完变清晰了」。
+    tiny = [f["i"] for f in frames
+            if max((f.get("image") or getattr(f, "width", 0)).width
+                   if hasattr(f.get("image"), "width") else 0, 0) < MIN_INFER_SIZE]
+    if tiny:
+        warnings.append(
+            f"源帧只有 {len(tiny)} 帧的尺寸小于 {MIN_INFER_SIZE}px：复刻会在 "
+            f"{MIN_INFER_SIZE} 上推理再缩回原尺寸，动作能对齐但**不会变清晰**。"
+            "想要更清楚，把上游「拆解精灵图」的单元格调大（或换一张格子更大的精灵图）")
+
     if retried:
         warnings.append(
             f"有 {retried} 帧第一次跑飞了（剪影重合 <60%），已换 seed 自动重跑")
