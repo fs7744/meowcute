@@ -290,6 +290,10 @@ def run_grid(
         # 衣摆摆幅变化被推来推去）；per-frame=逐帧裁自己 bbox 再居中。
         # 注意键名叫 pivotMode：meta 末尾的 "pivot" 是索引里的枢轴信息（dict），别撞。
         "pivotMode": nmeta.get("pivot", "per-frame"),
+        # 落格时的实际缩放与重采样方式：scale < 1 说明内容被缩小、细节有损，
+        # 界面上要据此提示（想更清晰就把 cell 调大或把拆帧长边调大）
+        "scale": nmeta.get("scale") or (nmeta.get("scaleRange") or [None])[-1],
+        "resample": nmeta.get("resample"),
         "cropBox": nmeta.get("cropBox"),
         "place": nmeta.get("place"),
         "scaleRange": nmeta.get("scaleRange"),

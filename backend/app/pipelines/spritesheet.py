@@ -47,12 +47,18 @@ def trim_alpha(img: Image.Image) -> Tuple[Image.Image, Tuple[int, int, int, int]
 
 def _place(trimmed: Image.Image, size: int, scale: float, *,
            anchor: str = "bottom", pad: int = 2) -> Image.Image:
-    """按给定缩放把裁剪图贴进 size×size 画布（最近邻，像素素材不能插值）。"""
+    """按给定缩放把裁剪图贴进 size×size 画布。
+
+    放大用最近邻（像素素材不能插值，否则硬边被抹成渐变）；缩小时改面积平均
+    （最近邻缩小是丢样本，细线会断）。
+    """
     inner = max(1, size - pad * 2)
     nw = max(1, int(round(trimmed.width * scale)))
     nh = max(1, int(round(trimmed.height * scale)))
     nw, nh = min(nw, inner), min(nh, inner)
-    scaled = trimmed.resize((nw, nh), Image.NEAREST)
+    # 与 _normalize_shared 同一策略：放大用最近邻（保硬边），缩小用面积平均
+    scaled = trimmed.resize((nw, nh),
+                            Image.NEAREST if scale >= 1.0 else Image.BOX)
 
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     x = (size - nw) // 2
@@ -116,15 +122,21 @@ def _normalize_shared(frames: List[Image.Image], *, size: int, anchor: str,
         y = size - nh - pad
 
     outs: List[Image.Image] = []
+    # 放缩方向决定重采样：**放大用最近邻**（像素风保硬边），**缩小用面积平均**
+    # （NEAREST 在缩小时是「丢样本」不是「求平均」：0.73 倍时有些源像素直接被
+    # 跳过，细线会断、边缘会跳，观感又脏又糊；BOX 是均匀平均，缩多少都连续）。
+    rs = Image.NEAREST if common >= 1.0 else Image.BOX
     for f in frames:
         crop = f.convert("RGBA").crop((ux0, uy0, ux1, uy1))
         canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        canvas.alpha_composite(crop.resize((nw, nh), Image.NEAREST), (x, y))
+        canvas.alpha_composite(crop.resize((nw, nh), rs), (x, y))
         outs.append(canvas)
     return outs, {
         "size": [size, size], "frames": len(outs),
         "scaleRange": [round(common, 3), round(common, 3)],
         "sharedScale": True, "anchor": anchor, "pivot": "shared",
+        "resample": "nearest" if rs == Image.NEAREST else "box",
+        "scale": round(common, 3),
         # 并集窗口在**源坐标系**里，导出/调试时能对照原视频定位
         "cropBox": [int(ux0), int(uy0), int(ux1), int(uy1)],
         "place": [int(x), int(y), int(nw), int(nh)],

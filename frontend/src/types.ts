@@ -999,6 +999,10 @@ export type SpriteGridMeta = {
   scaleRange?: number[]
   /** 落格方式（shared / per-frame） */
   pivotMode?: string
+  /** 落格时的实际缩放：<1 表示内容被缩小（细节有损） */
+  scale?: number | null
+  /** 缩小用面积平均（box）、放大用最近邻（nearest） */
+  resample?: string | null
   /** 统一裁剪窗口（源坐标系）；只有 shared 模式有 */
   cropBox?: number[] | null
   place?: number[] | null

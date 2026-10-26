@@ -211,6 +211,18 @@ export default function SpriteGridNode({
           </div>
         ) : null}
 
+        {/* 清晰度体检：格子边长不决定细节，源有多少就是多少。内容被缩小过就
+            明确说出来，并给出「该调哪个参数」——否则用户只会觉得「256 还是糊」。 */}
+        {meta?.scale != null && meta.scale < 0.999 ? (
+          <div className="hint warn" style={{ marginTop: 4, lineHeight: 1.6 }}>
+            角色在格子里 {meta.place?.[2] ?? '?'}×{meta.place?.[3] ?? '?'}px，
+            是从 {Math.round((meta.place?.[2] ?? 0) / Math.max(0.01, meta.scale))}px
+            缩下来的（缩 {Math.round((1 - meta.scale) * 100)}%，细节有损）。
+            格子调大不会凭空多出细节：想更清晰请把「拆解帧」的长边调到
+            ≈ 单元格 × 1.3 以上，或把单元格降到 ≈ 角色像素尺寸。
+          </div>
+        ) : null}
+
         {sheet ? (
           <>
             <button className="grid-preview" title="点击放大"
