@@ -105,6 +105,56 @@ async def _on_startup() -> None:
     # 启动即准备好数据目录与示例库，避免首个请求踩初始化路径
     examples_mod.load_examples()
     asyncio.create_task(_idle_unload_loop())
+    _install_disconnect_noise_filter()
+
+
+def _is_client_disconnect_noise(context: Dict[str, Any]) -> bool:
+    """这条「loop 异常」是不是「对端已经断了」的已知噪声？
+
+    典型现场（Windows 上刷屏的那段）：
+        Exception in callback _ProactorBasePipeTransport._call_connection_lost()
+        ... self._sock.shutdown(socket.SHUT_RDWR)
+        ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。
+
+    成因：浏览器关标签/刷新、EventSource.close()、fetch 被 abort 之后，连接已经
+    RST 了，但 Proactor 的 _call_connection_lost 仍会对那个 socket 调 shutdown()。
+    这是 CPython 在 Windows 上的已知噪声——**连接本来就不在了，没有可修的动作**。
+
+    判据收得很窄（只认 ConnectionResetError + 连接丢失/关闭上下文），避免把真正的
+    服务端异常一起吞掉。
+    """
+    exc = context.get("exception")
+    if not isinstance(exc, ConnectionResetError):
+        return False
+    msg = str(context.get("message") or "").lower()
+    return ("_call_connection_lost" in msg or "connection_lost" in msg
+            or "shutdown" in msg)
+
+
+def _install_disconnect_noise_filter() -> None:
+    """装一个 loop 异常过滤器：只吞「客户端断连」噪声，其余照旧交给原处理器。
+
+    为什么需要：这段 traceback 会把终端刷得很吓人，让人以为后台崩了；而它既不影响
+    正在跑的任务（任务在独立的 asyncio.create_task 里，与 SSE 连接无耦合，前端断开
+    也不会取消它——结果照样落盘，下次拉 /api/tasks/{id} 还能拿到），也不影响下一次
+    请求。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    prev = loop.get_exception_handler()
+
+    def _handler(loop_: asyncio.AbstractEventLoop, context: Dict[str, Any]) -> None:
+        if _is_client_disconnect_noise(context):
+            return
+        if prev is not None:
+            prev(loop_, context)          # 保留原有行为（uvicorn 的日志、其它异常）
+        else:
+            loop_.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+
 
 
 # 空闲多久后自动卸载驻留底座（秒）。显存是独占资源：跑完一张图后如果一直

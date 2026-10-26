@@ -465,6 +465,17 @@ def _run_checks(client) -> int:
     check("自定义指令进存盘白名单", cc["instruction"] == "自定义正文")
     check("自定义负面词进存盘白名单", cc["negative"] == "负面词")
 
+    # 断连噪声过滤器（2026-10-26）：Windows 上客户端 RST 时 Proactor 会对已断的
+    # socket 调 shutdown()，asyncio 默认处理器把它打成整段 traceback。只该吞这一种。
+    from backend.app.main import _is_client_disconnect_noise
+    check("识别「客户端断连」噪声（_call_connection_lost + ConnectionResetError）",
+          _is_client_disconnect_noise({
+              "message": "Exception in callback _ProactorBasePipeTransport._call_connection_lost()",
+              "exception": ConnectionResetError(10054, "远程主机强迫关闭了一个现有的连接。")}))
+    check("真异常不会被当成断连噪声吞掉",
+          not _is_client_disconnect_noise(
+              {"message": "Task exception was never retrieved", "exception": RuntimeError("boom")}))
+
     print("== 行走节点的默认文本：可查看 / 可覆盖 ==")
     r = client.get("/api/walkvideo/defaults")
     wd = r.json()
