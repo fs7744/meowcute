@@ -1794,6 +1794,29 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
             if frames:
                 dir_images[di.dir] = frames[0].convert("RGB")
 
+        # 边跑边存：每个方向生成完立刻落 GIF + 立绘，然后释放该方向的帧。
+        # 否则 8 方向 × 81 帧（648MB，重试时近 1.3GB）会一直堆到全部跑完。
+        _walk_saved: Dict[str, Dict[str, Any]] = {}
+
+        def _persist_dir(d: Dict[str, Any]) -> None:
+            rec: Dict[str, Any] = {}
+            frames = d.get("frames") or []
+            if frames:
+                rec["gif"] = storage.save_gif(
+                    payload.projectId, frames, prefix=f"walk-{d['dir']}",
+                    fps=d.get("fps") or payload.fps)
+            view = d.get("view")
+            if view is not None:
+                vi = storage.save_image(payload.projectId, view.convert("RGBA"),
+                                        kind="images", prefix=f"wv-{d['dir']}")
+                rec["view"] = {"assetId": vi["id"], "url": vi["url"],
+                               "width": vi["width"], "height": vi["height"]}
+            _walk_saved[d["dir"]] = rec
+            progress_mod.push_partial(
+                task_id, {"dir": d["dir"], "label": d["label"],
+                          "count": len(frames),
+                          "gif": (rec.get("gif") or {}).get("url")})
+
         directions, meta = await walkvideo_mod.run_walk(
             base,
             dir_mode=payload.dirMode, action=payload.action,
@@ -1818,7 +1841,8 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
             retries=_clamp(payload.retries, 0, 5, 2),
             window=_clamp(payload.window, 0, 257, walkvideo_mod.DEFAULT_HY15_WINDOW),
             negative=(payload.negative or "").strip(),
-            engine=payload.engine)
+            engine=payload.engine,
+            on_direction=_persist_dir)
 
         # 显存账：峰值取各方向最大值（每段视频都单独清零过峰值统计），
         # 收尾值是卸载后的——这两个数能直接回答「这条链到底吃多少显存」
@@ -1832,26 +1856,24 @@ async def _run_walk_video(task_id: str, payload: WalkVideoPayload) -> None:
         if after is not None:
             meta["vramAfterGB"] = after
 
-        # 每方向存一个动画 GIF（视频中间产物）+ 首帧缩略图由前端 <img> 直出
+        # 每方向存一个动画 GIF（视频中间产物）+ 首帧缩略图由前端 <img> 直出。
+        # 注意：八方向 × 81 帧全攒在内存里是 648MB，所以改成**每跑完一个方向
+        # 立刻存盘**（见下面的 on_direction），这里只负责组装元数据。
         out_dirs = []
         images = []
         for d in directions:
-            gif = storage.save_gif(payload.projectId, d["frames"],
-                                   prefix=f"walk-{d['dir']}", fps=d.get("fps") or payload.fps)
-            images.append({"assetId": gif["id"], "url": gif["url"],
-                           "width": gif["width"], "height": gif["height"],
-                           "walkDir": d["dir"]})
-            # 立绘图单独存一份：节点上要能预览、用户要能看清哪一步走形了
-            view_info = None
-            if d.get("view") is not None:
-                vi = storage.save_image(payload.projectId, d["view"].convert("RGBA"),
-                                        kind="images", prefix=f"wv-{d['dir']}")
-                view_info = {"assetId": vi["id"], "url": vi["url"],
-                             "width": vi["width"], "height": vi["height"]}
+            saved = _walk_saved.get(d["dir"]) or {}
+            gif = saved.get("gif")
+            if gif:
+                images.append({"assetId": gif["id"], "url": gif["url"],
+                               "width": gif["width"], "height": gif["height"],
+                               "walkDir": d["dir"]})
             out_dirs.append({
                 "dir": d["dir"], "label": d["label"], "gif": gif,
-                "view": view_info,
-                "count": len(d["frames"]), "fps": d.get("fps"),
+                "view": saved.get("view"),
+                # 帧可能在落盘后被释放了，所以用预先存下来的 count
+                "count": d.get("count") or len(d.get("frames") or []),
+                "fps": d.get("fps"),
                 "seed": d.get("seed"), "mirrored": d.get("mirrored", False),
                 "mirroredFrom": d.get("mirroredFrom"),
                 "derive": d.get("derive"), "walk": d.get("walk"),
@@ -2011,6 +2033,10 @@ async def _run_txt_video(task_id: str, payload: TxtVideoPayload) -> None:
                 "assetId": gif["id"], "url": gif["url"],
                 "width": gif["width"], "height": gif["height"],
             }
+        # 视频帧是这条链最占内存的东西（257 帧 × 832×480 RGB ≈ 300MB，
+        # 720p 下接近 700MB）。两个产物都写完就立刻释放——否则它会一直活到
+        # 整个任务函数返回，白占几百 MB。
+        frames = []
         meta = dict(result.meta or {})
         after = DiffusersProvider.vram_gb().get("reserved")
         if after is not None:
@@ -2417,6 +2443,34 @@ async def _run_clip_split(task_id: str, payload: ClipSplitPayload) -> None:
             why = src_meta.get("error") or "文件不存在或格式不支持"
             raise RuntimeError(f"视频读不出来（{why}）：{payload.file}")
 
+        # 旧产物先清：只保留本次这一批，前端帧面板不需要历史批次。
+        # 必须在拆帧**之前**清：现在是边拆边落盘，拆到一半再清会把新帧删掉。
+        _purge_prefix(payload.projectId, CLIP_FRAME_PREFIX)
+        _purge_prefix(payload.projectId, CLIP_THUMB_PREFIX)
+
+        # 边拆边落盘：拆 600 帧 × 384² 全攒在内存里是 338MB，而且中途失败
+        # 一帧都拿不到。落盘后立刻置空 image 释放像素。
+        out_frames: List[Dict[str, Any]] = []
+
+        def _persist_clip(f: Dict[str, Any]) -> None:
+            img = f.get("image")
+            if img is None:
+                return
+            info = storage.save_image(payload.projectId, img, kind="images",
+                                      prefix=CLIP_FRAME_PREFIX, seq=f["i"])
+            thumb = img.copy()
+            thumb.thumbnail((96, 96), Image.LANCZOS)
+            tinfo = storage.save_image(payload.projectId, thumb, kind="images",
+                                       prefix=CLIP_THUMB_PREFIX, seq=f["i"])
+            out_frames.append({
+                "i": f["i"], "t": f["t"], "srcIndex": f["srcIndex"],
+                "file": info["file"], "url": info["url"],
+                "thumbFile": tinfo["file"], "thumbUrl": tinfo["url"],
+                "w": info["width"], "h": info["height"],
+                "diff": f["diff"], "sharp": f["sharp"], "hash": f["hash"],
+            })
+            f["image"] = None
+
         progress_mod.report(task_id, 0, 1, "拆帧中…")
         picked, meta = await asyncio.to_thread(
             clipframes_mod.run_split,
@@ -2432,27 +2486,9 @@ async def _run_clip_split(task_id: str, payload: ClipSplitPayload) -> None:
                 "auto", "u2net", "birefnet-general-lite", "birefnet-general",
                 "isnet-anime") else "auto",
             loop_close=bool(payload.loopClose),
-            task_id=task_id)
-
-        # 旧产物先清：只保留本次这一批，前端帧面板不需要历史批次
-        _purge_prefix(payload.projectId, CLIP_FRAME_PREFIX)
-        _purge_prefix(payload.projectId, CLIP_THUMB_PREFIX)
-
-        out_frames = []
-        for f in picked:
-            info = storage.save_image(payload.projectId, f["image"], kind="images",
-                                      prefix=CLIP_FRAME_PREFIX, seq=f["i"])
-            thumb = f["image"].copy()
-            thumb.thumbnail((96, 96), Image.LANCZOS)
-            tinfo = storage.save_image(payload.projectId, thumb, kind="images",
-                                       prefix=CLIP_THUMB_PREFIX, seq=f["i"])
-            out_frames.append({
-                "i": f["i"], "t": f["t"], "srcIndex": f["srcIndex"],
-                "file": info["file"], "url": info["url"],
-                "thumbFile": tinfo["file"], "thumbUrl": tinfo["url"],
-                "w": info["width"], "h": info["height"],
-                "diff": f["diff"], "sharp": f["sharp"], "hash": f["hash"],
-            })
+            task_id=task_id,
+            on_frame=_persist_clip)
+        out_frames.sort(key=lambda r: r["i"])
 
         first = out_frames[0] if out_frames else None
         task_results[task_id] = {
@@ -2751,38 +2787,52 @@ async def _run_pose_clone(task_id: str, payload: PoseClonePayload) -> None:
         if not frames:
             raise RuntimeError("勾选的动作帧都读不出来（可能已被清理）")
 
+        _purge_prefix(payload.projectId, CLONE_FRAME_PREFIX)
+        _purge_prefix(payload.projectId, CLONE_THUMB_PREFIX)
+
+        # ---- 每帧生成完**立刻落盘**，不要攒到最后一并写 ----
+        # 三个理由，都是实测出来的痛点：
+        #   ① 内存：整批帧堆在内存里随帧数线性涨（96 帧 × 1024² RGBA ≈ 400MB）
+        #   ② 中断不丢：跑到第 10 帧崩了/取消了，前面 9 帧（约 4 分钟）不该白费
+        #   ③ 可视化：界面能边跑边看到已完成的帧，而不是干等一条进度条
+        # 落盘后把 image 置 None 释放像素；只留统计字段供最终 meta 使用。
+        out_frames: List[Dict[str, Any]] = []
+        _seq = [0]
+
+        def _persist(f: Dict[str, Any]) -> None:
+            img = f.get("image")
+            if img is None:
+                return
+            _seq[0] += 1
+            seq = _seq[0]
+            info = storage.save_image(payload.projectId, img, kind="images",
+                                      prefix=CLONE_FRAME_PREFIX, seq=seq)
+            thumb = img.copy()
+            thumb.thumbnail((96, 96), Image.LANCZOS)
+            tinfo = storage.save_image(payload.projectId, thumb, kind="images",
+                                       prefix=CLONE_THUMB_PREFIX, seq=seq)
+            rec = {
+                "i": f["i"], "t": seq - 1, "srcIndex": f["i"],
+                "file": info["file"], "url": info["url"],
+                "thumbFile": tinfo["file"], "thumbUrl": tinfo["url"],
+                "w": info["width"], "h": info["height"],
+                "iou": f.get("iou"), "dx": f.get("dx"), "dy": f.get("dy"),
+                "scaled": f.get("scaled"), "tries": f.get("tries"),
+                "seconds": f.get("seconds"),
+                "diff": 0, "hash": "",
+            }
+            out_frames.append(rec)
+            f["image"] = None            # 释放这一帧的像素
+            # 推给订阅者：界面立刻能显示这一帧（取消/失败时也不会丢）
+            progress_mod.push_partial(task_id, rec)
+
         out, meta = await poseclone_mod.run_clone(
             frames, refs,
             instruction=payload.instruction, negative=payload.negative,
             steps=payload.steps or None, size=payload.size,
             background=background, anchor=anchor, ref_mode=payload.refMode,
             seed=payload.seed, max_seq_len=payload.maxSeqLen,
-            provider_cfg=provider_cfg, task_id=task_id)
-
-        _purge_prefix(payload.projectId, CLONE_FRAME_PREFIX)
-        _purge_prefix(payload.projectId, CLONE_THUMB_PREFIX)
-
-        out_frames: List[Dict[str, Any]] = []
-        seq = 0
-        for f in out:
-            if f.get("image") is None:
-                continue
-            seq += 1
-            info = storage.save_image(payload.projectId, f["image"], kind="images",
-                                      prefix=CLONE_FRAME_PREFIX, seq=seq)
-            thumb = f["image"].copy()
-            thumb.thumbnail((96, 96), Image.LANCZOS)
-            tinfo = storage.save_image(payload.projectId, thumb, kind="images",
-                                       prefix=CLONE_THUMB_PREFIX, seq=seq)
-            out_frames.append({
-                "i": f["i"], "t": seq - 1, "srcIndex": f["i"],
-                "file": info["file"], "url": info["url"],
-                "thumbFile": tinfo["file"], "thumbUrl": tinfo["url"],
-                "w": info["width"], "h": info["height"],
-                "iou": f.get("iou"), "dx": f.get("dx"), "dy": f.get("dy"),
-                "seconds": f.get("seconds"),
-                "diff": 0, "hash": "",
-            })
+            provider_cfg=provider_cfg, task_id=task_id, on_frame=_persist)
 
         task_results[task_id] = {
             "taskId": task_id,

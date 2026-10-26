@@ -2191,6 +2191,38 @@ def _run_checks(client) -> int:
     check("四角检测能抓到背景没抠干净的帧",
           _pc._corners_clean(_cap_src) and not _pc._corners_clean(_box((0, 0, 256, 256))))
 
+    # ---- 边跑边落盘（2026-10-26）：批量任务不该把整批像素攒在内存里 ----
+    # 拆 600 帧 × 384² 是 338MB、八方向行走 648MB（重试时近 1.3GB），
+    # 而且攒着的话中途失败/取消就一帧都拿不到。
+    _cfs = []
+    for _i in range(30):
+        _im = Image.new("RGB", (160, 160), (240, 240, 240))
+        ImageDraw.Draw(_im).rectangle([60 + _i % 5, 40, 100 + _i % 5, 130],
+                                      fill=(90, 110, 150))
+        _cfs.append(_im)
+    _seen: list = []
+
+    def _cb(f):
+        _seen.append(f["image"] is not None)
+        f["image"] = None            # 模拟落盘后释放
+
+    from backend.app.pipelines import clipframes as _cf2
+    _cfo, _cfm = _cf2.run_split(_cfs, fps=30.0, fps_cap=10, max_frames=20,
+                                matte=False, loop_close=False, on_frame=_cb)
+    check("拆帧逐帧回调：每帧都拿到图，且释放后不影响统计",
+          len(_seen) == len(_cfo) and all(_seen)
+          and _cfm["count"] == len(_cfo) and _cfm["diffMedian"] >= 0,
+          f"{len(_seen)} vs {len(_cfo)}")
+
+    # 进度能携带「已完成的分片」，界面才能边跑边看
+    from backend.app import progress as _pg
+    _pg.create("_smoke_partial", 10, "x")
+    _pg.push_partial("_smoke_partial", {"i": 0, "url": "/u/0.png"})
+    _snap = _pg.get("_smoke_partial").snapshot()
+    check("进度里能带上已完成的分片（取消/失败也不丢已跑的部分）",
+          _snap.get("partial") and _snap["partial"][0]["url"] == "/u/0.png",
+          str(_snap.get("partial")))
+
     # 模板：graph 必须是「两路输入汇到动作复刻」这条链
     from backend.app.templates import get_template as _get_tpl
     _tpl = _get_tpl("sprite_pose_clone")

@@ -23,7 +23,7 @@
 from __future__ import annotations
 
 import base64
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
@@ -270,11 +270,16 @@ def run_split(
     matte_model: str = "auto",
     loop_close: bool = True,
     task_id: Optional[str] = None,
+    on_frame: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """源帧 → 选中的帧（可选抠图），每帧带指纹/差异/锐度。
 
     loop_close：按整周期裁到「整周期」帧数，让末帧回绕到首帧正好是一步。
     只在**真有接缝问题**时动手（见 plan_loop），代价是可能丢几帧尾巴。
+
+    **on_frame**：每帧处理完就回调一次。调用方应在这里落盘并把 `item["image"]`
+    置空——否则拆 600 帧 × 384² 就是 338MB 像素一直堆在内存里（且中途失败
+    一帧都拿不到）。meta 只用到标量字段（diff/hash），释放 image 不影响统计。
 
     返回 (frames, meta)。frames 元素：
         {i, srcIndex, t, image, hash, diff, sharp, matte}
@@ -343,6 +348,12 @@ def run_split(
             "sharp": round(sharpness(work), 2),
             "matte": bool(matte),
         })
+        # 边跑边落盘：调用方存盘后置空 image 释放像素（600 帧时是几百 MB）
+        if on_frame is not None:
+            try:
+                on_frame(out[-1])
+            except Exception:
+                pass
     progress_mod.report(task_id, n, n, f"{n} 帧就绪")
 
     meta = {

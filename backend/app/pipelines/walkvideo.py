@@ -34,7 +34,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PIL import Image
 
@@ -549,6 +549,7 @@ async def run_walk(
     negative: str = "",
     engine: Optional[str] = None,
     window: int = DEFAULT_HY15_WINDOW,
+    on_direction: Optional["Callable[[Dict[str, Any]], None]"] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """跑完一个方向集合，返回每方向的帧序列。
 
@@ -723,6 +724,41 @@ async def run_walk(
         detail = "；".join(f"{f['label']}：{f['error']}" for f in failures[:3])
         raise RuntimeError(f"全部方向都失败了（{detail or '没有可用输入'}）")
 
+    # ---- 边跑边落盘 ----
+    # 八个方向 × 81 帧全攒在内存里是 648MB（重试时还同时留着上一次的结果，
+    # 接近 1.3GB），而且跑完才存 GIF——中途崩了一个方向就全丢。
+    # 所以每个方向组装好就交给 on_direction 落盘，然后尽快释放像素。
+    #
+    # 释放有个约束：**镜像方向要翻来源方向的帧**，所以来源方向的帧必须等它的
+    # 镜像都建完才能放。DIR_MIRROR_OF 是静态表，按它算等待数即可。
+    _waiters: Dict[str, List[str]] = {}
+    for _d in dirs:
+        _s = DIR_MIRROR_OF.get(_d)
+        if _s and _s in dirs:
+            _waiters.setdefault(_s, []).append(_d)
+    _pending = {_s: len(v) for _s, v in _waiters.items()}
+    _by_dir: Dict[str, Dict[str, Any]] = {}
+    _released: set = set()
+
+    def _release(d: str) -> None:
+        if d in _released:
+            return
+        if _pending.get(d):
+            return                      # 还有镜像方向要用我的帧
+        e = _by_dir.get(d)
+        if e is None:
+            return
+        # count 要**先**存下来：main.py 拿它填节点上的帧数，释放后数不到了
+        e["count"] = len(e.get("frames") or [])
+        # 两处都要清：entry["frames"] 和 clips[d] 指向的是**同一个列表对象**，
+        # 只清一边引用还在，像素不会真的被回收
+        e["frames"] = []
+        e.pop("view", None)
+        clips.pop(d, None)
+        if d in views:
+            views.pop(d)
+        _released.add(d)
+
     # 组装输出（含镜像方向）
     out: List[Dict[str, Any]] = []
     for d in dirs:
@@ -766,7 +802,22 @@ async def run_walk(
             }
         if view_img is not None:
             entry["view"] = view_img
+        entry["count"] = len(entry.get("frames") or [])
         out.append(entry)
+        _by_dir[entry["dir"]] = entry
+        # 先落盘（GIF + 立绘），再尽量释放像素
+        if on_direction is not None:
+            try:
+                on_direction(entry)
+            except Exception:
+                pass
+        _release(d)
+        if d in DIR_MIRROR_OF and DIR_MIRROR_OF.get(d):
+            _src = DIR_MIRROR_OF[d]
+            if _src in _pending:
+                _pending[_src] -= 1
+                if _pending[_src] <= 0:
+                    _release(_src)      # 镜像建完了，来源方向的帧可以放了
 
     meta = {
         "dirMode": dir_mode, "dirModeLabel": DIR_MODE_LABELS.get(dir_mode, dir_mode),

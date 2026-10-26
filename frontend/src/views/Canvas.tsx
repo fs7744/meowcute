@@ -4035,6 +4035,7 @@ export default function Canvas({ projectId, onBack }: Props) {
               index={i}
               running={isRunning(n.id)}
               progress={tasks[n.id]?.progress?.label}
+              partial={tasks[n.id]?.progress?.partial ?? null}
               error={tasks[n.id]?.error ?? null}
               upstreamPicked={upstreamPicks(n.id)?.files.length ?? null}
               charRefCount={upstreamRefFiles(n.id).length}

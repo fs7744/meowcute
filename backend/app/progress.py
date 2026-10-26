@@ -16,7 +16,7 @@ class CancelledError(Exception):
 
 class TaskProgress:
     __slots__ = ("task_id", "total", "done", "label", "created", "cancelled",
-                 "done_at", "error", "updated_at")
+                 "done_at", "error", "updated_at", "partial")
 
     def __init__(self, task_id: str, total: int = 0, label: str = ""):
         self.task_id = task_id
@@ -28,6 +28,10 @@ class TaskProgress:
         self.cancelled = False
         self.done_at: Optional[float] = None
         self.error: Optional[str] = None
+        # 已完成的分片结果（逐帧落盘的任务会往这里追加）。
+        # 为什么需要：分钟级的批量任务如果只在结束时才给结果，跑到第 10 帧崩了
+        # 就等于白等 4 分钟；而且界面上「转圈 4 分钟什么都看不到」体验很差。
+        self.partial: List[Dict[str, Any]] = []
 
     def snapshot(self) -> Dict[str, Any]:
         return {
@@ -39,6 +43,7 @@ class TaskProgress:
             "cancelled": self.cancelled,
             "doneAt": self.done_at,
             "error": self.error,
+            "partial": self.partial or None,
         }
 
 
@@ -75,6 +80,26 @@ def report(task_id: Optional[str], done: int, total: int, label: str = "") -> No
     if t is None:
         return
     t.done, t.total, t.label = int(done), int(total), label
+    t.updated_at = time.time()
+    for q in _WAITERS.get(task_id, []):
+        try:
+            q.put_nowait(t.snapshot())
+        except Exception:
+            pass
+
+
+def push_partial(task_id: Optional[str], item: Dict[str, Any]) -> None:
+    """追加一个「已完成的分片」，并立刻推给订阅者。
+
+    用于分钟级的逐帧任务：每帧落盘后调用，界面能边跑边看到结果，
+    中途取消/失败也不会丢已经跑出来的那部分。
+    """
+    if not task_id:
+        return
+    t = _TASKS.get(task_id)
+    if t is None:
+        return
+    t.partial.append(item)
     t.updated_at = time.time()
     for q in _WAITERS.get(task_id, []):
         try:

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
@@ -304,11 +304,19 @@ async def run_clone(
     seed: Optional[int] = None,
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
+    on_frame: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """逐帧复刻。
 
     frames：spritesplit.run_split 的结果（每项含 image / i）
     char_refs：目标角色参考图（建议 1 张拼好的四视图；≤3 张都用得上）
+
+    **on_frame**：每帧复刻完成就回调一次（传这一帧的字典）。调用方应在这里
+    落盘并把 `item["image"]` 置空释放内存——否则整批帧会一直堆在内存里：
+    96 帧 × 1024² RGBA 就是 400MB，中途崩了还一帧都拿不到（前面跑的几十秒
+    全白费）。本函数在 `on_frame` 之后仍会把 image 保留在返回值里，方便
+    纯库调用；调用方主动置 None 才是「边跑边落盘」的用法。
+
     返回 (out_frames, meta)。out_frames 元素：
         {i, image, iou, dx, dy, seconds, instruction}
     """
@@ -468,6 +476,12 @@ async def run_clone(
                             f"{label} 完成（剪影重合 {iou * 100:.0f}%"
                             f"{'，已修正尺寸' if ainfo.get('scaled') else ''}"
                             f"{'，' + ''.join(new_edges) + '边贴到画布' if new_edges else ''}）")
+        # 先落盘、再继续下一帧：调用方会在这里存盘并置空 image 释放内存
+        if on_frame is not None:
+            try:
+                on_frame(out[-1])
+            except Exception:
+                pass
 
     ok = [f for f in out if f.get("image") is not None]
     ious = [f["iou"] for f in ok]

@@ -1595,6 +1595,9 @@ export type TaskProgress = {
   cancelled: boolean
   doneAt: number | null
   error: string | null
+  /** 已完成的分片（逐帧/逐方向落盘的任务会边跑边追加，界面能实时显示）。
+   *  中途取消或失败时，已跑出来的那部分就在这里，不会白等。 */
+  partial?: any[] | null
 }
 
 export type GenerateResult = {

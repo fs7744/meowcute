@@ -10,6 +10,8 @@ type Props = {
   index: number
   running?: boolean
   progress?: string | null
+  /** 已跑完并落盘的帧（后端边跑边推），跑的过程中就能看到 */
+  partial?: any[] | null
   error?: string | null
   /** 上游「拆解精灵图」勾了几帧（没连线时提示用） */
   upstreamPicked?: number | null
@@ -37,7 +39,7 @@ type Props = {
  * ③ **整图一次改只作草稿**：20 秒能看角色像不像，但它会重排网格，不能出最终素材
  */
 export default function PoseCloneNode({
-  node, index, running, progress, error, upstreamPicked, charRefCount,
+  node, index, running, progress, partial, error, upstreamPicked, charRefCount,
   onChange, onDelete, onDragStart, onRun, onStartLink, onFinishLink, onPreview,
 }: Props) {
   const DEFAULTS: PoseCloneNodeType['poseclone'] = {
@@ -208,6 +210,20 @@ export default function PoseCloneNode({
           <div className="txtv-progress">
             {progress ? <div className="hint walk-progress">{progress}</div> : null}
             <div className="txtv-progress-bar indet"><i /></div>
+            {/* 已跑完的帧：后端每帧落盘就推一次，不用干等整批结束。
+                中途取消/失败时这些帧也已经存盘了，不会白跑。 */}
+            {partial && partial.length ? (
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
+                {partial.map((f: any) => (
+                  <img key={f.file} src={f.thumbUrl || f.url}
+                    className="frame-thumb" alt={`第 ${(f.i ?? 0) + 1} 帧`}
+                    title={`第 ${(f.i ?? 0) + 1} 帧 · 动作重合 ${Math.round((f.iou ?? 0) * 100)}%`}
+                    onClick={() => onPreview?.(f.url, `第 ${(f.i ?? 0) + 1} 帧`)}
+                    style={{ width: 44, height: 44, objectFit: 'contain',
+                      background: '#1b1d23', borderRadius: 3, cursor: 'pointer' }} />
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
         {error ? <div className="node-error">{error}</div> : null}
