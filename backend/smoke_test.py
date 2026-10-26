@@ -499,6 +499,27 @@ def _run_checks(client) -> int:
           # 缺省走后端单点常量 DEFAULT_WINDOW：段数越少漂移越小（见该常量注释）
           and _clean_walkvideo({})["window"] == DEFAULT_HY15_WINDOW
           and _clean_walkvideo({"window": 999})["window"] == 257)
+
+    # 显存体检（2026-10-26）：分窗阈值只按帧数切，720p 下 41 帧一段就要 23GB+，
+    # 「720p + 60 帧」实测直接 CUDA OOM。plan_generation 是纯函数，不用加载权重就能测。
+    from backend.app.providers.hy15 import plan_generation
+    check("720p 下 41 帧一段装不下 → 段长自动缩到大画面上限 21",
+          plan_generation(60, 41, 1280, 704, True)[0] == 21,
+          str(plan_generation(60, 41, 1280, 704, True)))
+    check("显存体检不会越过用户更小的段长",
+          plan_generation(60, 13, 1280, 704, True)[0] == 13)
+    check("480x848 下 41 帧一段放得下，不动用户设置",
+          plan_generation(121, 41, 480, 848, True)[0] == 41)
+    check("放得下时 window=0 就真的整段跑（不分窗）",
+          plan_generation(61, 0, 480, 848, True)[0] == 0)
+    check("放不下时 window=0 也会被迫分段（宁可分段也别 OOM）",
+          plan_generation(121, 0, 480, 848, True)[0] == 61)
+    try:
+        plan_generation(60, 41, 1280, 704, False)
+        _t2v_blocked = False
+    except RuntimeError as exc:
+        _t2v_blocked = "60" in str(exc) and "21" in str(exc)
+    check("纯文本装不下时直接拦下并给出可降到的帧数", _t2v_blocked)
     check("行走视频默认引擎是 hy15",
           _clean_walkvideo({})["engine"] == "hy15",
           str(_clean_walkvideo({}).get("engine")))

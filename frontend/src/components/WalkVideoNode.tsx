@@ -636,8 +636,9 @@ export default function WalkVideoNode({
             <div className="hint" style={{ marginTop: -4, lineHeight: 1.6 }}>
               帧数大于「分窗阈值」才分窗。默认 <b>{HY15_DEFAULT_WINDOW}</b>：
               段数越少角色漂移越小（121 帧 6 段→3 段：instability 30.8%→23.4%、
-              颜色漂移 76.8→57.3，耗时反而 122.7s→104.3s）。显存吃紧可调小（如 21），
-              0 = 关闭（长片会 OOM）。
+              颜色漂移 76.8→57.3，耗时反而 122.7s→104.3s）。
+              高分辨率会自动收缩段长（720p 下每段最多 21 帧），估算超 24G 时
+              会先降段长再跑，不会直接 OOM；输 0 = 不分窗（能装下就整段跑）。
             </div>
           ) : null}
 

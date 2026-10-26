@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import AdvancedSection, { ParamGroup } from './AdvancedSection'
 import { api } from '../api'
+import { HY15_SOFT_LIMIT_GB, hy15EstPeakGB } from '../lib/hy15Defaults'
 import type { TxtVideoNode as TxtVideoNodeType } from '../types'
 
 type Props = {
@@ -107,6 +108,10 @@ export default function TxtVideoNode({
   // 超了后端会静默夹取，所以界面上必须提前说清楚「最长多少秒」。
   const FRAME_CAP = { hy15: 257, wan: 193 } as const
   const frameCap = FRAME_CAP[effEngine]
+  // 显存体检：分辨率 × 帧数决定一次前向的激活量。720p + 长帧在 24G 上装不下，
+  // 以前是跑到一半抛 CUDA OOM（用户很难自己归因到参数），这里提前说清。
+  const vramGB = hy15EstPeakGB(v.numFrames, v.width, v.height)
+  const vramOver = effEngine === 'hy15' && vramGB > HY15_SOFT_LIMIT_GB
   // 时长与帧数是同一个量的两种表达：时长 = 帧数 ÷ 帧率。
   // 存的是帧数（真值），时长输入只是换个更好懂的口径去写它。
   const duration = v.numFrames / Math.max(1, v.fps)
@@ -223,6 +228,14 @@ export default function TxtVideoNode({
             : RES_PRESETS[v.resolution].note}
           {v.resolution === '720p' && effEngine === 'hy15' ? '（⚠ 当前引擎是 hy15）' : ''}
         </div>
+        {vramOver ? (
+          <div className="hint warn" style={{ marginTop: -2, lineHeight: 1.6 }}>
+            {v.numFrames} 帧 / {v.width}×{v.height} 一次前向要约{' '}
+            <b>{vramGB.toFixed(1)}GB</b>，超过单段安全线 {HY15_SOFT_LIMIT_GB}GB
+            （24G 卡）。接参考图时会自动分段接力（段数越多角色越容易漂，能降 480p 就降）；
+            纯文本没有首帧锚点不能分段，会直接拦下并给出可行参数。
+          </div>
+        ) : null}
 
         <div className="param-grid">
           <label className="gen-field">

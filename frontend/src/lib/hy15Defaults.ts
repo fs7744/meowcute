@@ -21,3 +21,19 @@ export const HY15_DEFAULT_WINDOW = 41
 export const HY15_WINDOW_RATIONALE =
   '默认 41：段数越少漂移越小——121 帧 6 段→3 段，instability 30.8%→23.4%、' +
   '颜色漂移 76.8→57.3、耗时 122.7s→104.3s，而 41 帧/段峰值 18.76GB 仍在 24G 内。'
+
+/** 显存预算，必须与后端 backend/app/providers/hy15.py 的同名常量一致。
+ *  peak ≈ 14.6GB + 5.97e-5 × 帧数 × (W/16) × (H/16)
+ *  拟合自 4090 实测（I2V / offload / 12 步 / 480x848）：
+ *  21/33/49/61 帧 = 16.6/17.4/18.9/20.4GB，误差约 ±2GB。
+ *  只用于 UI 提前提示「这个分辨率+帧数装不下」，真正调度在后端。 */
+export const HY15_VRAM_BASE_GB = 14.6
+export const HY15_VRAM_SLOPE = 5.97e-5
+/** 单段安全线 = 实测跑通过的最重峰值（61 帧 / 480x848 = 20.4GB）。 */
+export const HY15_SOFT_LIMIT_GB = 20.5
+
+/** 估算「一次前向 frames 帧」的峰值显存（GB）。 */
+export function hy15EstPeakGB(frames: number, w: number, h: number): number {
+  const tpf = Math.max(1, Math.floor(w / 16) * Math.floor(h / 16))
+  return HY15_VRAM_BASE_GB + HY15_VRAM_SLOPE * frames * tpf
+}

@@ -100,6 +100,135 @@ RESIDENT_MAX_FRAMES = 25
 # 配置误判成 OOM——上限只该拦「跑飞到系统内存」，不该误伤正常的接近满载）。
 GPU_FRACTION = 0.97
 
+# ---------------------------------------------------------------- 显存预算
+# 为什么需要：分窗阈值只按**帧数**切，可显存还跟**分辨率**成正比。1280x704 下
+# 41 帧一段要 ≈27GB，用户设「720p + 60 帧」就会直接撞 CUDA OOM（实测踩到）。
+# 这里用「每帧 token 数」把两者合成一个刻度，拟合自实测（4090 24G / I2V /
+# offload / 12 步 / 480x848，tokens = 帧数 × (W/16) × (H/16)）：
+#   21 帧 33.4k tok → 16.6GB；33 帧 52.5k → 17.4；49 帧 77.9k → 18.9；61 帧 97.0k → 20.4
+#   ⇒ peak ≈ 14.6GB + 5.97e-5 × tokens（14.6 ≈ DiT 最重那一层 + VAE/SigLIP 固定缓冲）
+# 误差约 ±2GB（app 里 640x640/33 帧/20 步实测 19.77，比拟合值高约 2GB），所以
+# 预算取 SOFT_LIMIT_GB=20.5 而不是贴着 23：实测 20.4GB（61 帧 / 480x848 整段）
+# 是跑通过的最重配置，就把它当红线。就算估算偏乐观，还有第二层保护：真 OOM 时
+# 把段长降档重试（见 _generate）。
+VRAM_SLOPE_GB_PER_TOKEN = 5.97e-5
+VRAM_BASE_GB = 14.6
+SOFT_LIMIT_GB = 20.5          # 规划分窗时的目标上限（=实测跑通过的最重峰值）
+VRAM_ALLOWED_GB = 23.0        # 24G 卡 × 0.97 实际可用
+# 大画面（>0.6MP，如 720p 1280x704）另加一条硬上限：token 线性模型在 720p 上偏乐观。
+# 实测 1280x704 / 12 步：25 帧一段 OOM；21 帧一段通过（峰值 21.39GB）。取 21。
+HIRES_AREA_PX = 600_000
+HIRES_MAX_SEG_FRAMES = 21
+# 管线默认输出尺寸（width/height 未指定时用它做估算）
+_DEFAULT_RES = (480, 848)
+
+
+def _tok_per_frame(w: int, h: int) -> int:
+    """一帧在 transformer 里的 token 数（VAE 压缩 16x，patch=(1,1,1)）。"""
+    return max(1, (int(w) // 16) * (int(h) // 16))
+
+
+def _est_peak_gb(frames: int, w: int, h: int) -> float:
+    """估算「整段 frames 帧一次性前向」的峰值显存（GB）。仅用于分窗决策与报错文案。"""
+    if not (w and h):
+        w, h = _DEFAULT_RES
+    return VRAM_BASE_GB + VRAM_SLOPE_GB_PER_TOKEN * int(frames) * _tok_per_frame(w, h)
+
+
+def _fit_seg_frames(w: int, h: int, cap: int) -> int:
+    """在 SOFT_LIMIT_GB 内，一段最多能塞几帧（对齐 4k+1、≥13、不超过 cap）。"""
+    budget = max(0.0, SOFT_LIMIT_GB - VRAM_BASE_GB)
+    f = int(budget / (VRAM_SLOPE_GB_PER_TOKEN * _tok_per_frame(w, h)))
+    # 大画面单独收一刀：token 线性模型在 720p 上偏乐观（同等 token 数下大画面更吃
+    # 显存——注意力/瓦片解码的空间开销）。实测 1280x704：25 帧一段必 OOM、
+    # 21 帧一段跑通过（峰值 21.39GB），所以硬封顶 21，连试都不试 25（省 4 分钟白跑）。
+    if int(w) * int(h) > HIRES_AREA_PX:
+        f = min(f, HIRES_MAX_SEG_FRAMES)
+    f = max(13, (f - 1) // 4 * 4 + 1)
+    return min(f, int(cap)) if cap else f
+
+
+def plan_generation(frames: int, window: int, width: int, height: int,
+                    has_image: bool, limit_gb: float = 21.0
+                    ) -> Tuple[int, str]:
+    """纯函数：按显存预算定「每段多少帧」，返回 (window, 给人看的说明)。
+
+    window=0 表示用户不要分窗；但只要整段装不下，这里仍会返回一个可用的段长
+    （宁可分段也别撞 OOM）——所以调用方拿到的 0 就真的表示「整段跑」。
+    has_image=False（纯文本）没有首帧锚点、无法接力，装不下只能抛错让用户降规模。
+
+    抽成纯函数是为了能单测：不需要加载 16G 权重就能验证决策（见 backend/smoke_test.py）。
+    """
+    w, h = (int(width), int(height)) if (width and height) else _DEFAULT_RES
+    win = max(13, (int(window) - 1) // 4 * 4 + 1) if window and int(window) >= 13 else 0
+    whole = _est_peak_gb(frames, w, h)
+
+    if not has_image:
+        if whole > VRAM_ALLOWED_GB:
+            sw, sh = _res_for_frames(frames, w, h, limit_gb)
+            raise RuntimeError(
+                f"文本生视频这一步要约 {whole:.1f}GB 显存（{frames} 帧 / {w}×{h}），"
+                f"超过 24G 卡可用量 {VRAM_ALLOWED_GB:.0f}GB。纯文本没有首帧锚点、"
+                f"不能像图生视频那样分窗接力，只能降规模：把帧数从 {frames} 降到 "
+                f"≤{_fit_seg_frames(w, h, frames)}，或把分辨率降到 {sw}×{sh} 以下。")
+        return win, ""
+
+    if whole <= SOFT_LIMIT_GB:
+        return win, ""          # 整段/用户设定都装得下，不动
+
+    if _est_peak_gb(13, w, h) > VRAM_ALLOWED_GB:
+        sw, sh = _res_for_frames(13, w, h, limit_gb)
+        raise RuntimeError(
+            f"分辨率 {w}×{h} 太高：连模型最小的 13 帧一段都要约 "
+            f"{_est_peak_gb(13, w, h):.1f}GB 显存，超过 24G 卡可用量。"
+            f"请把分辨率降到 {sw}×{sh} 以下，或把帧数减到 13。")
+
+    fit = _fit_seg_frames(w, h, frames)
+    new_win = min(win, fit) if win else fit
+    if win and new_win >= win:
+        return win, ""
+    old_desc = (f"{win} 帧一段约 {_est_peak_gb(win, w, h):.1f}GB" if win
+                else f"整段 {frames} 帧约 {whole:.1f}GB")
+    note = (f"分窗阈值按显存自动调整为 {new_win} 帧（{w}×{h}：原 {old_desc} "
+            f"会顶到 24G 上限，调整后每段约 {_est_peak_gb(new_win, w, h):.1f}GB）")
+    return new_win, note
+
+
+def _res_for_frames(frames: int, w: int, h: int, limit_gb: float = 21.0) -> Tuple[int, int]:
+    """反解：同样帧数下，要把分辨率降到多少才装得进 limit_gb（保长宽比）。"""
+    if not (w and h):
+        w, h = _DEFAULT_RES
+    budget_tok = (limit_gb - VRAM_BASE_GB) / (VRAM_SLOPE_GB_PER_TOKEN * max(1, frames))
+    scale = math.sqrt(max(0.05, budget_tok / _tok_per_frame(w, h)))
+    nw = max(128, int(w * scale) // 16 * 16)
+    nh = max(128, int(h * scale) // 16 * 16)
+    return nw, nh
+
+
+def _is_oom(exc: BaseException) -> bool:
+    """认 CUDA OOM：显式类型 + 文案兜底（自定义显存上限抛的也是 OutOfMemoryError）。"""
+    try:
+        import torch
+
+        if isinstance(exc, torch.cuda.OutOfMemoryError):
+            return True
+    except Exception:
+        pass
+    s = str(exc).lower()
+    return "out of memory" in s or "cuda oom" in s
+
+
+def _empty_cache() -> None:
+    try:
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 
 def _cap_gpu_fraction() -> None:
     """给单进程设显存上限：宁可干净抛 OOM，也不要静默卡死。"""
@@ -462,7 +591,6 @@ def _generate(
 
     progress_mod.check_cancel(task_id)
     t2v = image is None
-    pipe = get_pipeline(task_id, t2v=t2v)
 
     # 帧数不设上限：4k+1 对齐 + 下限 13 即可，具体多长由用户决定。
     n = max(13, (int(frames) - 1) // 4 * 4 + 1)
@@ -472,10 +600,22 @@ def _generate(
     win = 0
     if window and int(window) >= 13:
         win = max(13, (int(window) - 1) // 4 * 4 + 1)
-    chunked = win >= 13 and n > win and image is not None
 
     # 分辨率：规整到 16 的倍数；无效则 (0,0) → 各路径沿用管线默认
     rw, rh = _norm_res(width, height)
+
+    # ---- 显存体检：段长必须跟分辨率一起算，否则 720p 下 41 帧一段就顶爆 24G ----
+    # 决策交给纯函数 plan_generation（可单测）：只往下调段长、绝不越过用户给的上限；
+    # 真装不下就提前抛一句人话，而不是让用户在 Windows 上干等一次 CUDA OOM。
+    # 放在 get_pipeline 之前：装不下的配置连 16G 权重都不该去加载（省 30s 无谓等待）。
+    win, note = plan_generation(n, win, rw, rh, has_image=image is not None)
+    ew, eh = (rw, rh) if (rw and rh) else _DEFAULT_RES
+
+    chunked = win >= 13 and n > win and image is not None
+    if note and chunked:
+        progress_mod.report(task_id, 0, 0, note)
+
+    pipe = get_pipeline(task_id, t2v=t2v)
 
     gen = None
     if seed is not None and not chunked:
@@ -489,19 +629,52 @@ def _generate(
 
     t0 = time.time()
     if chunked:
-        imgs = _chunked_i2v(pipe, embeds, image=image, frames=n, steps=st,
-                            guidance=use_guid, seed=seed, window=win,
-                            task_id=task_id, progress=progress,
-                            width=rw, height=rh)
+        # 兜底：估算有 ±2GB 误差，真撞 OOM 就把段长降档重来（会从头跑这一段，但
+        # 比整条失败强）。降不动（13 帧还 OOM）才把异常抛给上层。
+        cand: List[int] = [win]
+        for w2 in (25, 21, 17, 13):
+            if 13 <= w2 < win:
+                cand.append(w2)
+        imgs = None
+        for i, w2 in enumerate(cand):
+            try:
+                imgs = _chunked_i2v(pipe, embeds, image=image, frames=n, steps=st,
+                                    guidance=use_guid, seed=seed, window=w2,
+                                    task_id=task_id, progress=progress,
+                                    width=rw, height=rh)
+                win = w2
+                break
+            except Exception as exc:
+                if not _is_oom(exc) or i == len(cand) - 1:
+                    raise
+                progress_mod.report(
+                    task_id, 0, 0,
+                    f"显存不足（段长 {w2} 帧），降到 {cand[i + 1]} 帧重试…")
+                note = ((note + "；") if note else "") + f"OOM 后段长降为 {cand[i + 1]} 帧"
+                _empty_cache()
+        assert imgs is not None
     else:
         progress_mod.report(
             task_id, int((progress or {}).get("base") or 0),
             int((progress or {}).get("grand") or st),
             f"{str((progress or {}).get('label') or '')} 去噪 {st} 步（{n} 帧"
             f"{f' / {rw}x{rh}' if rw else ''}）…".strip())
-        imgs = _denoise(pipe, embeds, image=image, n_frames=n, steps=st,
-                        guidance=use_guid, gen=gen, t2v=t2v,
-                        width=rw, height=rh)
+        try:
+            imgs = _denoise(pipe, embeds, image=image, n_frames=n, steps=st,
+                            guidance=use_guid, gen=gen, t2v=t2v,
+                            width=rw, height=rh)
+        except Exception as exc:
+            if not _is_oom(exc):
+                raise
+            _empty_cache()
+            hint = (f"把帧数降到 ≤{_fit_seg_frames(ew, eh, n)}"
+                    f"（{ew}×{eh} 单段安全线）")
+            if image is not None:
+                hint += "，或把「分窗阈值」调到 13，让长片自动分段接力"
+            raise RuntimeError(
+                f"显存不足：{n} 帧 / {ew}×{eh} 一次跑完要约 "
+                f"{_est_peak_gb(n, ew, eh):.1f}GB，超过本机 24G 卡的可用量。"
+                f"{hint}。") from exc
     dt = time.time() - t0
 
     vram: Dict[str, Any] = {}
@@ -525,6 +698,10 @@ def _generate(
     }
     if chunked:
         meta["window"] = win
+        # 段长被显存预算改小过 → 记下来，UI 能显示「为什么跟我要的不一样」
+        if note:
+            meta["windowAuto"] = note
+        meta["segments"] = max(1, math.ceil((n - win) / (win - 1)) + 1)
     return imgs, {**meta, **({"vram": vram} if vram else {})}
 
 
