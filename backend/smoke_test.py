@@ -2024,6 +2024,39 @@ def _run_checks(client) -> int:
     check("异图指纹差异显著", _cf.diff_percent(_ha, _hb) > 5.0,
           str(_cf.diff_percent(_ha, _hb)))
 
+    # 循环闭合：周期检测 + 整周期裁剪。
+    # 合成「姿势沿圆走」的指纹（相位差 = 圆周距离），这才是真实循环素材的形态：
+    # 直接对帧做差不行——相邻帧差异小、回绕差异大，只有环形才既有周期又不像。
+    def _ring(phase: int, P: int):
+        import math
+        th = 2 * math.pi * phase / P
+        cy, cx = 8 + 5 * math.sin(th), 8 + 5 * math.cos(th)
+        arr = np.zeros((16, 16), dtype=np.float32)
+        for y in range(16):
+            for x in range(16):
+                arr[y, x] = math.exp(-(((y - cy) ** 2 + (x - cx) ** 2) / (2 * 1.6 ** 2)))
+        return _cf.frame_hash(Image.fromarray((arr * 255).astype(np.uint8)).convert("RGB"))
+
+    _h31 = [_ring(i % 12, 12) for i in range(31)]      # 2.6 个周期
+    _pl31 = _cf.plan_loop(_h31)
+    check("能找到周期 12 并按整周期裁到 24 帧",
+          _pl31["action"] == "trimmed" and _pl31["period"] == 12
+          and _pl31["countAfter"] == 24 and _pl31["dropped"] == 7, str(_pl31))
+    check("裁完接缝降到与相邻帧同量级",
+          _pl31.get("ratioAfter") is not None and _pl31["ratioAfter"] <= 1.2,
+          str(_pl31.get("ratioAfter")))
+    _h24 = [_ring(i % 12, 12) for i in range(24)]       # 正好整周期
+    check("本来就闭合的素材一帧都不裁",
+          _cf.plan_loop(_h24)["action"] == "alreadyClosed"
+          and _cf.plan_loop(_h24)["countAfter"] == 24)
+    # 单调变化（模拟「走远 / 衣摆一路飘下去」）：没有周期谷 → 只报告不裁
+    _mono = [_cf.frame_hash(Image.fromarray(
+        np.full((16, 16), min(255, 10 + 8 * i), dtype=np.uint8)).convert("RGB"))
+        for i in range(30)]
+    check("非循环素材不误判周期、也不裁帧",
+          _cf.plan_loop(_mono)["action"] in ("noPeriod", "cannotTrim", "noGain")
+          and _cf.plan_loop(_mono)["countAfter"] == 30, str(_cf.plan_loop(_mono)["action"]))
+
     # 端到端：模板建项目 → 合成 GIF → 拆帧 → 拼精灵图
     r = client.post("/api/projects",
                     json={"name": "视频转素材", "templateId": "clip_to_sprite"})

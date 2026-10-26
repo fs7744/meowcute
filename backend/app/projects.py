@@ -1276,6 +1276,8 @@ def _clean_framesplit(f: Any) -> Dict[str, Any]:
         "end": (None if f.get("end") in (None, "", 0, "0")
                 else _cl(f.get("end"), 0.0, 0.0, 3600.0)),
         "matte": bool(f.get("matte", True)),
+        # 循环闭合：按整周期裁帧（默认开）。不进白名单 = 前端关了也存不下
+        "loopClose": bool(f.get("loopClose", True)),
         "tolerance": _ci(f.get("tolerance"), 40, 10, 120),
         "maxSide": _ci(f.get("maxSide"), 384, 64, 1024),
         # 跳帧步长：每 N 帧取 1 帧

@@ -853,6 +853,9 @@ export type FrameSplitOptions = {
   tolerance: number
   /** 解码时长边上限 */
   maxSide: number
+  /** 循环闭合：检测动作周期并按整周期裁帧，让末帧回绕到首帧正好是一步。
+   *  只在真有接缝问题且找到明显周期时动手；非循环素材原样保留并给出说明。 */
+  loopClose: boolean
   /** 跳帧步长：每 N 帧取 1 帧（1 = 全保留） */
   step: number
   /** 近似度过滤阈值（%）：与上一张保留帧差异低于它就算重复 */
@@ -914,6 +917,24 @@ export type FrameSplitMeta = {
   diffMedian: number
   diffMax: number
   seconds: number
+  /** 循环闭合的体检结论（后端 plan_loop 产出）。
+   *  action：trimmed=已按整周期裁 / alreadyClosed=本来就闭合 /
+   *  noPeriod=这段不是循环素材（接缝会跳）/ cannotTrim / noGain / tooShort / off */
+  loop?: {
+    action: string
+    period?: number
+    cycles?: number
+    countBefore?: number
+    countAfter?: number
+    dropped?: number
+    /** 首尾接缝 / 段内相邻差异（%），与 diffMedian 同一口径 */
+    seam?: number
+    adjacent?: number
+    ratio?: number
+    seamAfter?: number
+    ratioAfter?: number
+    confidence?: number
+  }
 }
 
 export type ClipSrcNode = {

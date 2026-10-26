@@ -2371,6 +2371,9 @@ class ClipSplitPayload(BaseModel):
     end: Optional[float] = None  # 结束秒（None=到结尾）
     matte: bool = True          # 抠背景
     tolerance: int = 40
+    # 循环闭合（默认开）：检测动作周期，按**整周期**裁帧，让末帧回绕到首帧正好
+    # 是一步。只在真有接缝问题且有明显周期时动手；非循环素材会原样保留并给出说明。
+    loopClose: bool = True
     maxSide: int = 384          # 解码时长边上限（精灵单元格一般 64~256）
 
 
@@ -2420,6 +2423,7 @@ async def _run_clip_split(task_id: str, payload: ClipSplitPayload) -> None:
             end=(None if payload.end is None else float(payload.end)),
             matte=payload.matte,
             tolerance=_clamp(payload.tolerance, 10, 120, 40),
+            loop_close=bool(payload.loopClose),
             task_id=task_id)
 
         # 旧产物先清：只保留本次这一批，前端帧面板不需要历史批次

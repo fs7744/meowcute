@@ -41,7 +41,8 @@ export default function FramesplitNode({
 }: Props) {
   const DEFAULTS: FrameSplitNodeType['framesplit'] = {
     enabled: true, fpsCap: 12, maxFrames: 120, start: 0, end: null,
-    matte: true, tolerance: 40, maxSide: 384, step: 1, simPct: 0, picks: [],
+    matte: true, tolerance: 40, maxSide: 384, loopClose: true,
+    step: 1, simPct: 0, picks: [],
   }
   const v = { ...DEFAULTS, ...node.framesplit }
   const patch = (p: Partial<typeof v>) => onChange({ framesplit: { ...v, ...p } })
@@ -49,6 +50,35 @@ export default function FramesplitNode({
   const frames = useMemo(() => node.frames ?? [], [node.frames])
   const meta = node.meta
   const [showAll, setShowAll] = useState(false)
+
+  /** 循环体检结论。这条链上最影响观感的一项，直接给结论，别让用户自己猜：
+   *  循环处跳一下比帧内任何抖动都显眼，而判断「该不该裁、为什么没裁」需要数据。 */
+  const loopNote = useMemo(() => {
+    const lp = meta?.loop
+    if (!lp) return null
+    const seam = lp.seam?.toFixed(2)
+    const adj = lp.adjacent?.toFixed(2)
+    switch (lp.action) {
+      case 'trimmed':
+        return { warn: false, text:
+          `已按整周期裁到 ${lp.countAfter} 帧（周期 ${lp.period} 帧 × ${lp.cycles}，丢 ${lp.dropped} 帧）：` +
+          `首尾差 ${seam}% → ${lp.seamAfter?.toFixed(2)}%，与相邻帧 ${adj}% 相当` }
+      case 'alreadyClosed':
+        return { warn: false, text: `循环已闭合：首尾差 ${seam}%，与相邻帧 ${adj}% 相当` }
+      case 'noPeriod':
+        return { warn: true, text:
+          `这段不是循环素材：首尾差 ${seam}% 是相邻帧 ${adj}% 的 ${lp.ratio} 倍，循环播放会明显跳一下。` +
+          '裁帧救不了（各部位根本没回到起始姿势）——建议重新生成（提示词写「原地走 · 固定机位」），' +
+          '或在时间轴上手动掐出一个完整周期' }
+      case 'noGain':
+        return { warn: true, text:
+          `找到周期但裁完并没更顺（首尾仍 ${seam}%），已保持原样` }
+      case 'cannotTrim':
+        return { warn: true, text: '有周期，但裁完不足 6 帧，已保持原样' }
+      default:
+        return null
+    }
+  }, [meta])
 
   const filtered = useMemo(
     () => applyFilters(frames, { step: v.step, simPct: v.simPct }),
@@ -140,6 +170,17 @@ export default function FramesplitNode({
           </button>
         </div>
 
+        <div className="switch-row" style={{ marginTop: 6 }}>
+          <span className="t" style={{ fontSize: 12 }}
+            title="检测动作周期并按整周期裁帧：末帧回绕到首帧就正好是一步，循环播放不会跳。只在「真有接缝问题 + 找到明显周期」时才裁（可能丢几帧尾巴）；不是循环素材时原样保留，只给结论不动帧。">
+            循环闭合（取整周期）
+          </span>
+          <button className={`switch ${v.loopClose ? 'on' : ''}`}
+            onClick={() => patch({ loopClose: !v.loopClose })} aria-label="切换循环闭合">
+            <i />
+          </button>
+        </div>
+
         <AdvancedSection title="更多设置"
           hint="起止时间 · 抠图容差 · 解码长边">
           <div className="param-grid">
@@ -202,6 +243,12 @@ export default function FramesplitNode({
               ) : null}
               {meta ? <span className="meta-pill">{meta.seconds}s</span> : null}
             </div>
+            {loopNote ? (
+              <div className={`hint${loopNote.warn ? ' warn' : ''}`}
+                style={{ marginTop: 2, lineHeight: 1.6 }}>
+                {loopNote.text}
+              </div>
+            ) : null}
 
             {/* ---- 两道筛子：即时生效，但只改「显示」，不动已勾选 ---- */}
             <div className="fs-filters">
