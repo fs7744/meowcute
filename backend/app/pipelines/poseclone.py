@@ -42,6 +42,16 @@ DEFAULT_INSTRUCTION = (
     "与图1 完全一致，不要美化、不要加戏；\n"
     "· 构图：角色在画面中的位置、大小比例、朝向，与图1 一致；\n"
     "· 画风：与图2 一致。\n"
+    # 拓扑锁定：这三条是单独补的。只说「四肢角度一致」是不够的——模型常常做出
+    # 骨骼大致对、但左右手互换 / 佩剑换了只手 / 空手凭空多出武器的结果，帧内看
+    # 着正常，连起来播会发现持剑手每帧在两只手之间跳。方法来自 2dimg2motion 的
+    # topology lock：左右以**画面**说、持物要指定归属手、空手必须保持空。
+    "· 左右方位：以画面为准——图1 里在画面左侧的手脚或持物，生成后仍在画面左侧，"
+    "不要左右镜像、不要交换四肢；\n"
+    "· 持物归属：武器、道具、盾牌必须由图1 中同一侧的手以同样的方式握持；"
+    "图1 里空着的手保持空着，不要凭空添加武器或道具；\n"
+    "· 配饰跟随身体：披风、裙摆、发丝、飘带的朝向与穿戴位置跟随图1 的姿态，"
+    "不要改到另一侧；\n"
     "图2 只是设定参考，**不要把它的四个视角一起画出来**，只画一个角色、一个姿势。\n"
     "画面里只有这一个角色，{背景}，没有地面、没有投影、没有边框、没有文字、"
     "没有其他人物。"
@@ -50,6 +60,8 @@ DEFAULT_INSTRUCTION = (
 DEFAULT_NEGATIVE = (
     "多个角色, 四视图, 分屏, 拼图, 网格线, 文字, 水印, 边框, 地面, 阴影, "
     "多余的手脚, 肢体扭曲, 姿势改变, 动作简化, 站桩, 换装, 换发型, 换个角色, "
+    # 拓扑类负面词（对应指令里的三条锁定）：左右镜像/持物换手/凭空加武器
+    "左右镜像, 左右手互换, 持物换手, 多余的武器, 多余的道具, 换背景, "
     "抗锯齿, 渐变背景, 半透明"
 )
 
@@ -132,6 +144,13 @@ def _match_scale(gen: Image.Image, ref: Image.Image,
     统一到同一个高度」，是两回事。
 
     相似度在 [lo, hi] 内就不动：轻微差异属于正常复刻误差，动它反而引入抖动。
+
+    **但「比例接近」不等于「装得下」**（2026-10-26 修的真 bug）：源帧角色顶部在
+    y=3、底边在 y=254，可用高度 254；模型画出 270px 高的角色，比例只有 1.08
+    （落在 [0.88, 1.14] 内，判为「不用动」），底边对齐后顶部越界 → 角色头顶
+    被 `alpha_composite` 直接裁掉 16px。拼成精灵图后头顶平一块。
+    所以判据要同时满足「比例在容差内」**且**「绝对高度不超过可用空间」。
+    可用空间 = 源帧底边到画布顶的距离（底边对齐后角色能向下伸展的全部余量）。
     """
     mb, mr = _fg_mask(gen), _fg_mask(ref)
     bb, br = _bbox_of(mb), _bbox_of(mr)
@@ -139,16 +158,50 @@ def _match_scale(gen: Image.Image, ref: Image.Image,
         return gen, {"scaled": False, "ratio": None}
     gh = max(1, bb[3] - bb[1])
     rh = max(1, br[3] - br[1])
+    # 底边对齐后，角色最多能有多高：底边到画布顶（留 1px 余量给抗锯齿边）
+    cap = max(1, br[3] - 1)
+    target_h = min(rh, cap)
     ratio = gh / rh
-    info: Dict[str, Any] = {"scaled": False, "ratio": round(float(ratio), 3)}
-    if lo <= ratio <= hi:
+    info: Dict[str, Any] = {"scaled": False, "ratio": round(float(ratio), 3),
+                            "cap": int(cap)}
+    if lo <= ratio <= hi and gh <= cap:
         return gen, info
-    s = rh / gh
+    s = target_h / gh
     nw = int(round(gen.width * s))
     nh = int(round(gen.height * s))
     if not (16 <= nw <= 4096 and 16 <= nh <= 4096):
         return gen, info
-    return gen.resize((nw, nh), Image.LANCZOS), {**info, "scaled": True}
+    return gen.resize((nw, nh), Image.LANCZOS), {
+        **info, "scaled": True, "clipped": gh > cap}
+
+
+def _touching_edges(img: Image.Image) -> List[str]:
+    """剪影碰到哪几条画布边。用来抓「角色被裁」——这是最容易被忽略的瑕疵：
+    精灵图里头顶平一块、脚被切掉一截，播放时非常扎眼，但剪影重合度可能还很高
+    （裁掉的是边缘几像素），只看 IoU 发现不了。
+    2dimg2motion 把 canvas-too-small 列为硬失败，我们这边补上检测。
+    """
+    m = _fg_mask(img)
+    if not m.any():
+        return []
+    ys, xs = np.nonzero(m)
+    edges: List[str] = []
+    if int(ys.min()) <= 0:
+        edges.append("上")
+    if int(ys.max()) >= m.shape[0] - 1:
+        edges.append("下")
+    if int(xs.min()) <= 0:
+        edges.append("左")
+    if int(xs.max()) >= m.shape[1] - 1:
+        edges.append("右")
+    return edges
+
+
+def _corners_clean(img: Image.Image) -> bool:
+    """四角是否全透明。四角不透明 = 背景没抠干净（这块会在精灵图里变成实底色块）。"""
+    a = np.asarray(img.convert("RGBA"))
+    return bool(a[0, 0, 3] < 8 and a[0, -1, 3] < 8
+                and a[-1, 0, 3] < 8 and a[-1, -1, 3] < 8)
 
 
 def _align_to(gen: Image.Image, ref: Image.Image, *,
@@ -178,7 +231,8 @@ def _align_to(gen: Image.Image, ref: Image.Image, *,
 
     out = Image.new("RGBA", ref.size, (0, 0, 0, 0))
     out.alpha_composite(work, (dx, dy))
-    return out, {**sinfo, "dx": dx, "dy": dy, "aligned": bool(dx or dy)}
+    return out, {**sinfo, "dx": dx, "dy": dy, "aligned": bool(dx or dy),
+                 "edge": _touching_edges(out)}
 
 
 def _fit_size(w: int, h: int, size: int = 0) -> Tuple[int, int]:
@@ -288,6 +342,10 @@ async def run_clone(
     warnings: List[str] = []
     retried = 0
     auto_matted = 0
+    clipped = 0
+    dirty_corners = 0
+    clip_notes: List[str] = []
+    baselines: List[int] = []
     want_transparent = background in ("transparent", "", "none")
     t_start = time.time()
 
@@ -392,9 +450,24 @@ async def run_clone(
             "mode": rmeta.get("mode"),
             "vram": rmeta.get("vram"),
         })
+        # ---- 结构校验（三项，全部毫秒级）：贴边 / 四角 / 脚底线 ----
+        # 2dimg2motion 把这几项列为硬失败，而只算剪影重合是发现不了的——
+        # 裁掉头顶 3px 的帧 IoU 可能仍有 0.95。
+        src_edges = _touching_edges(src)
+        new_edges = [e for e in (ainfo.get("edge") or []) if e not in src_edges]
+        if new_edges:
+            clipped += 1
+            if len(clip_notes) < 4:
+                clip_notes.append(f"第 {k + 1} 帧{''.join(new_edges)}边被裁")
+        if want_transparent and not _corners_clean(gen):
+            dirty_corners += 1
+        _b = _bbox_of(_fg_mask(gen))
+        if _b:
+            baselines.append(int(_b[3]))
         progress_mod.report(task_id, use_steps * (k + 1), grand,
                             f"{label} 完成（剪影重合 {iou * 100:.0f}%"
-                            f"{'，已修正尺寸' if ainfo.get('scaled') else ''}）")
+                            f"{'，已修正尺寸' if ainfo.get('scaled') else ''}"
+                            f"{'，' + ''.join(new_edges) + '边贴到画布' if new_edges else ''}）")
 
     ok = [f for f in out if f.get("image") is not None]
     ious = [f["iou"] for f in ok]
@@ -417,6 +490,21 @@ async def run_clone(
     if retried:
         warnings.append(
             f"有 {retried} 帧第一次跑飞了（剪影重合 <60%），已换 seed 自动重跑")
+    # ---- 结构校验的三条结论（对应 2dimg2motion 的硬失败清单）----
+    if clipped:
+        detail = "；".join(clip_notes)
+        warnings.append(
+            f"有 {clipped} 帧角色贴到了画布边（{detail}）：模型把角色画得比源帧大，"
+            "超出部分已被裁掉——精灵图里会看到头顶/手脚被切平。"
+            "把这几帧重跑，或换一组留白更多的动作素材")
+    if dirty_corners:
+        warnings.append(
+            f"有 {dirty_corners} 帧四角不透明（背景没抠干净）：拼成精灵图后"
+            "会出现实底色块，建议重跑这几帧或在「精灵图」里打开抠图")
+    if len(set(baselines)) > 1:
+        warnings.append(
+            f"脚底线不齐（出现在第 {sorted(set(baselines))} 行）：逐帧对齐有 1~2px"
+            "的取整误差，循环播放时角色会轻微上下跳")
 
     meta: Dict[str, Any] = {
         "count": len(ok),
@@ -433,6 +521,11 @@ async def run_clone(
         # 后处理统计：这两项说明「看起来不对」的帧有多少是被自动修过的
         "retried": retried,
         "autoMatted": auto_matted,
+        # 结构校验（毫秒级，不看剪影重合也能发现的问题）
+        "baselineRows": sorted(set(baselines)),
+        "baselineStable": len(set(baselines)) <= 1,
+        "clipped": clipped,
+        "cornersDirty": dirty_corners,
         "instruction": build_instruction(custom or DEFAULT_INSTRUCTION,
                                         index=1, total=total,
                                         background=background),

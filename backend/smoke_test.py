@@ -2160,6 +2160,37 @@ def _run_checks(client) -> int:
     check("指令占位符被替换成实际值",
           "3/12" in _txt and "{帧号}" not in _txt and "透明" in _txt)
 
+    # 拓扑锁定（2026-10-26 借鉴 2dimg2motion）：只说「四肢角度一致」不够，模型会
+    # 骨骼大致对但左右手互换 / 佩剑换只手 / 空手凭空多武器——帧内看不出来，连播才炸
+    check("指令锁了左右方位（要求以画面为准、不许镜像）",
+          "画面左侧" in _pc.DEFAULT_INSTRUCTION and "左右镜像" in _pc.DEFAULT_INSTRUCTION)
+    check("指令锁了持物归属（同一侧的手 + 空手保持空）",
+          "同一侧的手" in _pc.DEFAULT_INSTRUCTION and "空着的手保持空着" in _pc.DEFAULT_INSTRUCTION)
+    check("负面词里有拓扑类约束",
+          "左右手互换" in _pc.DEFAULT_NEGATIVE and "持物换手" in _pc.DEFAULT_NEGATIVE)
+
+    # 画布限幅（2026-10-26 修的真 bug）：比例落在容差内 ≠ 装得下。源帧角色顶部
+    # y=3、底边 y=254，模型画出 270px 高（比例只有 1.08，旧判据说「不用动」），
+    # 底边对齐后顶部越界 → 头顶被直接裁掉，拼成精灵图后头顶平一块。
+    _cap_src = _box((100, 3, 160, 254))
+    _tall = _box((100, 0, 160, 269))
+    _alt, _capinfo = _pc._align_to(_tall, _cap_src)
+    check("比例在容差内但装不下时会限幅（不再裁头）",
+          bool(_capinfo.get("scaled")) and bool(_capinfo.get("clipped"))
+          and int(_pc._bbox_of(_pc._fg_mask(_alt))[1]) >= 1,
+          f"top={_pc._bbox_of(_pc._fg_mask(_alt))[1]} {_capinfo}")
+    _fit = _box((98, 5, 158, 252))
+    _afit, _fitinfo = _pc._align_to(_fit, _cap_src)
+    check("本来就装得下时不乱动",
+          not _fitinfo.get("scaled") and _pc.silhouette_iou(_afit, _cap_src) > 0.9)
+
+    # 结构校验三件套：这些瑕疵只看剪影重合度发现不了
+    check("贴边检测能抓到被裁的帧",
+          _pc._touching_edges(_tall) == ["上", "下"] and _pc._touching_edges(_cap_src) == [],
+          str(_pc._touching_edges(_tall)))
+    check("四角检测能抓到背景没抠干净的帧",
+          _pc._corners_clean(_cap_src) and not _pc._corners_clean(_box((0, 0, 256, 256))))
+
     # 模板：graph 必须是「两路输入汇到动作复刻」这条链
     from backend.app.templates import get_template as _get_tpl
     _tpl = _get_tpl("sprite_pose_clone")

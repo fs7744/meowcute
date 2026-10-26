@@ -235,6 +235,39 @@ export default function PoseCloneNode({
                   网格已变
                 </span>
               ) : null}
+              {/* 结构校验三项：只看「动作重合度」是看不出来的——
+                  裁掉头顶 3px 的帧，剪影重合可能还有 0.95。
+                  这三项是确定性测量，拼成精灵图后才会暴露的问题在这里提前报。 */}
+              {meta.clipped ? (
+                <span className="meta-pill bad"
+                  title="这些帧的角色贴到了画布边、超出部分已被裁掉：精灵图里会看到头顶或手脚被切平。建议重跑这几帧，或换留白更多的动作素材">
+                  {meta.clipped} 帧被裁边
+                </span>
+              ) : null}
+              {meta.cornersDirty ? (
+                <span className="meta-pill bad"
+                  title="这些帧四角不透明 = 背景没抠干净，拼图后会留下实底色块">
+                  {meta.cornersDirty} 帧背景残留
+                </span>
+              ) : null}
+              {(meta.baselineStable === false && (meta.baselineRows?.length ?? 0) > 1) ? (
+                <span className="meta-pill bad"
+                  title={`脚底线分别在第 ${meta.baselineRows!.join(' / ')} 行：逐帧对齐有 1~2px 取整误差，循环播放时角色会轻微上下跳`}>
+                  脚底线不齐
+                </span>
+              ) : null}
+              {meta.autoMatted ? (
+                <span className="meta-pill"
+                  title="这些帧模型没给出透明背景，已由程序自动抠掉">
+                  {meta.autoMatted} 帧自动抠底
+                </span>
+              ) : null}
+              {meta.retried ? (
+                <span className="meta-pill"
+                  title="这些帧第一次生成时动作跑飞了（重合度<60%），已换种子自动重跑">
+                  {meta.retried} 帧重跑过
+                </span>
+              ) : null}
               <span className="meta-pill">{meta.seconds}s</span>
             </div>
             {meta.warnings?.length ? (

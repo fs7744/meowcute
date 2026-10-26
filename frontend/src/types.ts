@@ -1060,9 +1060,21 @@ export type PoseCloneMeta = {
   instruction: string
   negative: string
   warnings: string[]
-  /** whole-sheet 模式：网格是否被模型改动 */
+  /** 复刻结果是否与网格同构（whole-sheet 模式） */
   gridKept?: boolean
   grid?: { cols: number; rows: number; cellW: number; cellH: number }
+  /** 有多少帧因为第一次跑飞而自动重跑过 */
+  retried?: number
+  /** 有多少帧背景没透明、由程序自动抠掉 */
+  autoMatted?: number
+  // ---- 结构校验三项（只看剪影重合度发现不了的问题）----
+  /** 有多少帧角色贴到画布边 = 被裁掉了边缘（裁剪会在精灵图里变成切平的头顶/手脚） */
+  clipped?: number
+  /** 有多少帧四角不透明 = 背景没抠干净（拼图后会成实底方块） */
+  cornersDirty?: number
+  /** 各帧底边所在行。长度 >1 = 脚底线不齐，循环播放会轻微上下跳 */
+  baselineRows?: number[]
+  baselineStable?: boolean
 }
 
 export type PoseCloneNode = {
