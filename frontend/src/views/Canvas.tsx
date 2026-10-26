@@ -900,7 +900,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       id: newId('sg'), type: 'spritegrid', x: spot.x, y: spot.y,
       spritegrid: {
         enabled: true, cell: 128, cols: 0, padding: 0, margin: 0,
-        anchor: 'bottom', sharedScale: true, fps: 12,
+        anchor: 'bottom', sharedScale: true, pivot: 'shared', fps: 12,
       },
       result: null, images: [], meta: null, indexUrl: null,
       createdAt: Date.now() / 1000,
@@ -1939,6 +1939,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       margin: sg?.margin ?? 0,
       anchor: sg?.anchor ?? 'bottom',
       sharedScale: sg?.sharedScale ?? true,
+      pivot: sg?.pivot ?? 'shared',
       fps: sg?.fps ?? 12,
     })
     const sheet: ResultImage = {

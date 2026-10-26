@@ -411,6 +411,8 @@ pixelArt?: boolean
     margin?: number
     anchor?: string
     sharedScale?: boolean
+    /** 落格方式：shared=统一裁剪窗口（默认） / per-frame=逐帧居中 */
+    pivot?: 'shared' | 'per-frame'
     fps?: number
   }) =>
     fetch('/api/spritegrid', jsonInit(payload)).then(j<{

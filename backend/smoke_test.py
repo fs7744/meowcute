@@ -2057,6 +2057,42 @@ def _run_checks(client) -> int:
           _cf.plan_loop(_mono)["action"] in ("noPeriod", "cannotTrim", "noGain")
           and _cf.plan_loop(_mono)["countAfter"] == 30, str(_cf.plan_loop(_mono)["action"]))
 
+    # 落格方式（2026-10-26）：精灵图「左右抖动」的真凶是逐帧按自己的 bbox 居中——
+    # 衣摆/袖子摆一下，bbox 中心就移，整幅（连纹丝不动的头）被反向挪回去。
+    # 实测真实素材头只晃 3.8px，逐帧居中把它放大成 16~96px。
+    from backend.app.pipelines.spritegrid import run_grid as _run_grid
+    _fr = []
+    for _i in range(8):
+        _im = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+        _d = ImageDraw.Draw(_im)
+        _d.rectangle([80, 20, 120, 180], fill=(200, 80, 60, 255))       # 身体（不动）
+        _d.rectangle([100, 120, 140 + 5 * _i, 150], fill=(220, 140, 60, 255))  # 右袖逐帧变长
+        _fr.append(_im)
+
+    def _upper_x(sheet, cell, cols, n):
+        arr = np.array(sheet)
+        out = []
+        for k in range(n):
+            c, r = k % cols, k // cols
+            al = arr[r * cell:(r + 1) * cell, c * cell:(c + 1) * cell, 3] > 128
+            ys = np.nonzero(al.any(1))[0]
+            if not ys.size:
+                continue
+            band = al[ys.min():ys.min() + max(4, int((ys.max() - ys.min()) * 0.35))]
+            xs = np.nonzero(band)[1]
+            if xs.size:
+                out.append(float(xs.mean()))
+        return out
+
+    _sh, _i1, _m1 = _run_grid(_fr, cell=128, pivot="shared")
+    _pf, _i2, _m2 = _run_grid(_fr, cell=128, pivot="per-frame")
+    _hx_sh = _upper_x(_sh, _m1["cell"], _m1["cols"], len(_fr))
+    _hx_pf = _upper_x(_pf, _m2["cell"], _m2["cols"], len(_fr))
+    _rng_sh = max(_hx_sh) - min(_hx_sh)
+    _rng_pf = max(_hx_pf) - min(_hx_pf)
+    check("统一落格：上身不随衣摆摆动漂移（≤1px）", _rng_sh <= 1.0, f"{_rng_sh:.2f}px")
+    check("逐帧居中确实会漂（说明这项修的是真问题）", _rng_pf > 4.0, f"{_rng_pf:.2f}px")
+
     # 端到端：模板建项目 → 合成 GIF → 拆帧 → 拼精灵图
     r = client.post("/api/projects",
                     json={"name": "视频转素材", "templateId": "clip_to_sprite"})

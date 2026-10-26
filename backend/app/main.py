@@ -2491,6 +2491,9 @@ class SpriteGridPayload(BaseModel):
     margin: int = 0
     anchor: str = "bottom"
     sharedScale: bool = True
+    # 落格方式：shared=统一裁剪窗口+统一缩放（默认，逐帧不重算居中，
+    # 衣摆/袖子摆动不会被放大成整幅左右位移）；per-frame=逐帧裁自己 bbox 再居中
+    pivot: str = "shared"
     fps: float = 12.0
 
 
@@ -2530,6 +2533,8 @@ async def sprite_grid(payload: SpriteGridPayload) -> Dict[str, Any]:
             margin=_clamp(payload.margin, 0, 64, 0),
             anchor=payload.anchor if payload.anchor in spritegrid_mod.ANCHORS else "bottom",
             shared_scale=bool(payload.sharedScale),
+            pivot=("per-frame" if payload.pivot in ("per-frame", "perframe")
+                   else "shared"),
             fps=max(0.5, min(float(payload.fps), 60.0)),
         )
     except ValueError as e:

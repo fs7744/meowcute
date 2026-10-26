@@ -235,6 +235,7 @@ def run_grid(
     margin: int = 0,
     anchor: str = "bottom",
     shared_scale: bool = True,
+    pivot: str = "shared",
     fps: float = 12.0,
     image_name: str = "spritesheet.png",
     task_id: Optional[str] = None,
@@ -254,7 +255,8 @@ def run_grid(
     progress_mod.report(task_id, 0, 3, "规整帧…")
     norm, nmeta = normalize_frames(
         list(frames), shared_scale=bool(shared_scale), size=cell,
-        anchor=anchor, pad=FRAME_PAD)
+        anchor=anchor, pad=FRAME_PAD,
+        pivot=("per-frame" if pivot == "perframe" or pivot == "per-frame" else "shared"))
     # 清零只做一次：compose / verify 都信任这个结果（见 spritesheet 注释）
     norm = [zero_transparent_rgb(f) for f in norm]
 
@@ -284,6 +286,12 @@ def run_grid(
         "margin": max(0, int(margin)),
         "anchor": anchor,
         "sharedScale": bool(shared_scale),
+        # 落格方式：shared=统一裁剪窗口与缩放（逐帧不重算居中，角色不会因为
+        # 衣摆摆幅变化被推来推去）；per-frame=逐帧裁自己 bbox 再居中。
+        # 注意键名叫 pivotMode：meta 末尾的 "pivot" 是索引里的枢轴信息（dict），别撞。
+        "pivotMode": nmeta.get("pivot", "per-frame"),
+        "cropBox": nmeta.get("cropBox"),
+        "place": nmeta.get("place"),
         "scaleRange": nmeta.get("scaleRange"),
         "sheetSize": [sheet.width, sheet.height],
         "checks": checks,

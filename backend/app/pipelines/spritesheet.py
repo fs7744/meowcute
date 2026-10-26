@@ -66,6 +66,71 @@ def _place(trimmed: Image.Image, size: int, scale: float, *,
     return canvas
 
 
+def _normalize_shared(frames: List[Image.Image], *, size: int, anchor: str,
+                      pad: int, scale: Optional[float]
+                      ) -> Tuple[List[Image.Image], Dict[str, Any]]:
+    """统一裁剪窗口 + 统一变换：所有帧用**同一个 crop 矩形**和**同一个缩放**落格。
+
+    为什么必须这样（2026-10-26 实测踩到）：逐帧按自己的 bbox 居中，会让「衣摆/
+    袖子摆动」变成整幅画面的左右位移——素材里头的横向量程只有 3.8px，逐帧居中
+    之后放大成 **96.5px（25 倍）**，精灵图看起来就是角色在原地左右乱跳。
+    根因是 bbox 中心随摆幅变化，而居中是拿它当参考的。
+
+    换成「取所有帧 bbox 的并集当裁剪窗口」后：每帧裁的是同一块区域、缩放同一个
+    系数、落在同一个位置——**逐帧重算这一步被彻底去掉**，角色在格子里的位移只
+    来自素材本身（真实动作），不再被放大。
+
+    代价：并集比任何单帧都大一点，角色在格子里会略小（换来的是不抖）。
+    """
+    inner = max(1, size - pad * 2)
+    boxes = []
+    for f in frames:
+        b = f.convert("RGBA").split()[-1].getbbox()
+        boxes.append(b)
+    valid = [b for b in boxes if b]
+    if not valid:
+        return [Image.new("RGBA", (size, size), (0, 0, 0, 0)) for _ in frames], {
+            "size": [size, size], "frames": len(frames), "scaleRange": [],
+            "sharedScale": True, "anchor": anchor, "pivot": "shared"}
+    ux0 = min(b[0] for b in valid)
+    uy0 = min(b[1] for b in valid)
+    ux1 = max(b[2] for b in valid)
+    uy1 = max(b[3] for b in valid)
+    uw, uh = max(1, ux1 - ux0), max(1, uy1 - uy0)
+    # 外部给的 scale 是按**单帧**包围盒算的；换成并集窗口后可能超出内容区，
+    # 此时等比回缩——绝不非等比拉伸，像素角色一变形就毁了。
+    common = float(scale) if scale else min(inner / uw, inner / uh)
+    if uw * common > inner or uh * common > inner:
+        common = min(inner / uw, inner / uh)
+    nw = max(1, int(round(uw * common)))
+    nh = max(1, int(round(uh * common)))
+    if nw > inner or nh > inner:
+        f2 = inner / max(nw, nh)
+        nw, nh = max(1, int(nw * f2)), max(1, int(nh * f2))
+    x = (size - nw) // 2
+    if anchor == "center":
+        y = (size - nh) // 2
+    elif anchor == "top":
+        y = pad
+    else:
+        y = size - nh - pad
+
+    outs: List[Image.Image] = []
+    for f in frames:
+        crop = f.convert("RGBA").crop((ux0, uy0, ux1, uy1))
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        canvas.alpha_composite(crop.resize((nw, nh), Image.NEAREST), (x, y))
+        outs.append(canvas)
+    return outs, {
+        "size": [size, size], "frames": len(outs),
+        "scaleRange": [round(common, 3), round(common, 3)],
+        "sharedScale": True, "anchor": anchor, "pivot": "shared",
+        # 并集窗口在**源坐标系**里，导出/调试时能对照原视频定位
+        "cropBox": [int(ux0), int(uy0), int(ux1), int(uy1)],
+        "place": [int(x), int(y), int(nw), int(nh)],
+    }
+
+
 def normalize_frames(
     frames: List[Image.Image],
     *,
@@ -74,8 +139,16 @@ def normalize_frames(
     anchor: str = "bottom",
     pad: int = 2,
     scale: Optional[float] = None,
+    pivot: str = "shared",
 ) -> Tuple[List[Image.Image], Dict[str, Any]]:
     """把一摞透明帧规整成同尺寸精灵帧（裁空白 → 缩放 → 锚点对齐）。
+
+    pivot：
+      shared（默认，推荐）所有帧用同一个裁剪窗口与缩放，**逐帧不再重算居中**。
+        角色在格子里的位移只来自素材本身的真实动作，不会因为摆幅变化被放大。
+      per-frame  旧行为：每帧裁到自己的 bbox 再居中。角色被撑满格子，但衣摆/
+        袖子一摆就会把整幅画面推来推去（实测放大 25 倍），只在「素材本身各帧
+        完全静止、只想最大化利用率」时才用。
 
     scale：外部给定的统一缩放（run_sheets 算的**全方向**系数）。给了就用它，
     不再按本方向的包围盒各自撑满——八个方向如果各算各的，转身时角色会忽大
@@ -83,6 +156,9 @@ def normalize_frames(
     """
     if not frames:
         return [], {"size": [size, size], "frames": 0}
+    same_canvas = len({f.size for f in frames}) == 1
+    if pivot != "per-frame" and same_canvas:
+        return _normalize_shared(frames, size=size, anchor=anchor, pad=pad, scale=scale)
     prepared = [trim_alpha(f) for f in frames]
     inner = max(1, size - pad * 2)
 
@@ -255,23 +331,25 @@ def run_sheets(
     out: List[Dict[str, Any]] = []
     done = 0
 
-    # 全方向统一缩放：先量所有方向所有帧的最大包围盒，算一个系数。逐方向
+    # 全方向统一缩放：先量所有方向所有帧的包围盒，算一个系数。逐方向
     # 各自撑满的话，转身时角色会忽大忽小——这是精灵表最容易被一眼看出的毛病。
+    #
+    # 用「每个方向的**并集**包围盒」而不是「单帧最大」：落格现在用统一裁剪窗口
+    # （见 _normalize_shared），并集比任何单帧都大；若这里仍按单帧最大算系数，
+    # 并集更大的方向会被迫等比回缩，于是各方向系数不再一致——等于把刚修好的
+    # 「转身不变大小」又弄坏。
     global_scale: Optional[float] = None
     if shared_scale:
-        max_w = max_h = 1
-        for d in directions:
-            for f in (d.get("frames") or []):
-                # 只取 alpha 包围盒的尺寸，不真的裁：这一阶段只需要尺寸，
-                # 裁剪会为每帧多一次全图拷贝，而 normalize_frames 随后还会
-                # 再裁一遍（64 帧就是 128 次多余的拷贝）。
-                box = f.getchannel("A").getbbox()
-                if not box:
-                    continue
-                max_w = max(max_w, box[2] - box[0])
-                max_h = max(max_h, box[3] - box[1])
         inner = max(1, int(size) - FRAME_PAD * 2)
-        global_scale = min(inner / max(1, max_w), inner / max(1, max_h))
+        union_w = union_h = 1
+        for d in directions:
+            boxes = [f.getchannel("A").getbbox() for f in (d.get("frames") or [])]
+            boxes = [b for b in boxes if b]
+            if not boxes:
+                continue
+            union_w = max(union_w, max(b[2] for b in boxes) - min(b[0] for b in boxes))
+            union_h = max(union_h, max(b[3] for b in boxes) - min(b[1] for b in boxes))
+        global_scale = min(inner / max(1, union_w), inner / max(1, union_h))
 
     for d in directions:
         progress_mod.check_cancel(task_id)

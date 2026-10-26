@@ -1302,6 +1302,9 @@ def _clean_spritegrid(s: Any) -> Dict[str, Any]:
         "margin": _ci(s.get("margin"), 0, 0, 64),
         "anchor": anchor,
         "sharedScale": bool(s.get("sharedScale", True)),
+        # 落格方式：shared=统一裁剪窗口（默认，不会把衣摆摆动放大成左右位移）
+        "pivot": ("per-frame" if str(s.get("pivot") or "") in ("per-frame", "perframe")
+                  else "shared"),
         "fps": _cl(s.get("fps"), 12.0, 0.5, 60.0),
     }
 

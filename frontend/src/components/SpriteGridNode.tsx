@@ -40,7 +40,7 @@ export default function SpriteGridNode({
 }: Props) {
   const DEFAULTS: SpriteGridNodeType['spritegrid'] = {
     enabled: true, cell: 128, cols: 0, padding: 0, margin: 0,
-    anchor: 'bottom', sharedScale: true, fps: 12,
+    anchor: 'bottom', sharedScale: true, pivot: 'shared', fps: 12,
   }
   const v = { ...DEFAULTS, ...node.spritegrid }
   const patch = (p: Partial<typeof v>) => onChange({ spritegrid: { ...v, ...p } })
@@ -144,6 +144,24 @@ export default function SpriteGridNode({
               <i />
             </button>
           </div>
+
+          <div className="switch-row" style={{ marginTop: 6 }}>
+            <span className="t" style={{ fontSize: 12 }}
+              title="开（默认）：所有帧裁同一块区域、缩放同一系数，逐帧不再重算居中——衣摆/袖子摆动不会被放大成整幅左右位移（实测能把 96px 的假抖动压到 3.8px）。关：每帧裁自己的包围盒再居中撑满，只有素材各帧完全静止时才合适。">
+              统一落格（推荐）
+            </span>
+            <button className={`switch ${v.pivot === 'shared' ? 'on' : ''}`}
+              onClick={() => patch({ pivot: v.pivot === 'shared' ? 'per-frame' : 'shared' })}
+              aria-label="切换统一落格">
+              <i />
+            </button>
+          </div>
+          {v.pivot === 'per-frame' ? (
+            <div className="hint warn" style={{ marginTop: 2, lineHeight: 1.6 }}>
+              逐帧居中会把「衣摆/袖子摆一下」变成整幅画面的左右位移（实测放大 25 倍），
+              精灵图看着像角色在原地乱跳。除非素材各帧完全静止，否则别关。
+            </div>
+          ) : null}
         </AdvancedSection>
 
         {/* 布局快捷方式：方形网格适合 GPU 采样，横排适合 Godot hframes /

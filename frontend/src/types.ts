@@ -978,6 +978,10 @@ export type SpriteGridOptions = {
   anchor: 'bottom' | 'center' | 'top'
   /** 共享缩放：整段循环用同一系数，角色不忽大忽小 */
   sharedScale: boolean
+  /** 落格方式：shared = 所有帧同一个裁剪窗口与缩放（默认，逐帧不重算居中，
+   *  衣摆/袖子摆动不会被放大成整幅左右位移）；per-frame = 逐帧裁自己 bbox 再
+   *  居中，会把小幅摆动放大成明显抖动（只在素材各帧完全静止时用）。 */
+  pivot: 'shared' | 'per-frame'
   /** 动画帧率（写进索引 JSON，动画预览默认取它） */
   fps: number
 }
@@ -993,6 +997,11 @@ export type SpriteGridMeta = {
   anchor: string
   sharedScale: boolean
   scaleRange?: number[]
+  /** 落格方式（shared / per-frame） */
+  pivotMode?: string
+  /** 统一裁剪窗口（源坐标系）；只有 shared 模式有 */
+  cropBox?: number[] | null
+  place?: number[] | null
   sheetSize: [number, number]
   checks: { cellsMatchFrames: boolean; reason?: string; mismatchAt?: number; cells?: number }
   warnings: string[]
