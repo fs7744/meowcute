@@ -364,6 +364,56 @@ def _punch_bg_holes(rgb: np.ndarray, kept: np.ndarray, palette: List[np.ndarray]
     return kept, punched
 
 
+def _decontaminate_edge(arr: np.ndarray, kept: np.ndarray,
+                        bg: np.ndarray, depth: float = 2.5,
+                        brighten: float = 8.0) -> int:
+    """把轮廓最外 1~2px 的「半背景混合像素」洗回纯前景色（只改 RGB，不动 alpha）。
+
+    为什么需要（2026-10-26 实测）：`_despill` 走的是**色相**污染（绿幕/蓝幕那种），
+    白底没有任何色相，于是这条路径对白底完全无效——alpha 边界切在发丝中间时，
+    留下的一圈「深色发丝 + 白底」的混合像素（如 172,183,187，内侧真色是 98,114,118）
+    在深色背景上就是一条扎眼的白边，看着像"白底没抠掉"，其实背景早就干净了
+    （该素材精确底色残留只有 27px/8 帧）。
+
+    判据（三条同时满足才动）：
+      ① 在轮廓最外 depth 像素内
+      ② 比最近的内侧"深层"像素更亮（brighten 以上）——混了背景必然被提亮
+      ③ 离背景色比内侧参考色更近（|p-B| < |F-B|）：说明它是被背景覆盖过的混合
+         像素，而不是角色自己的高光（高光不会朝背景色方向走）
+    命中就把 RGB 换成那个内侧参考色 F（alpha 保持二值不变），**形状一点不变**，
+    只是把白边染回本色。幂等：第二次跑 p==F，②③ 不再成立。
+    """
+    try:
+        import cv2
+        from scipy import ndimage
+    except Exception:
+        return 0
+    if not kept.any():
+        return 0
+    rgb = arr[:, :, :3].astype(np.float32)
+    dist = cv2.distanceTransform(kept.astype(np.uint8), cv2.DIST_L2, 5)
+    deep = kept & (dist > float(depth))
+    if not deep.any():
+        return 0
+    # 每个边界像素找最近的「深层」像素当参考色（EDT 一次算完，别逐像素搜索）
+    _, idx = ndimage.distance_transform_edt(~deep, return_indices=True)
+    ref = rgb[idx[0], idx[1]]
+    band = kept & (dist <= float(depth))
+    if not band.any():
+        return 0
+    b = np.asarray(bg, dtype=np.float32).reshape(1, 1, 3)
+    d_bg = np.abs(rgb - b).sum(axis=2)
+    d_bg_ref = np.abs(ref - b).sum(axis=2)
+    lum = rgb.mean(axis=2)
+    lum_ref = ref.mean(axis=2)
+    hit = band & (lum > lum_ref + float(brighten)) & (d_bg < d_bg_ref - 1.0)
+    n = int(hit.sum())
+    if not n:
+        return 0
+    arr[hit, 0:3] = ref[hit].astype(arr.dtype)
+    return n
+
+
 def drop_bg_islands(cut: Image.Image, tol: float = 70.0) -> Image.Image:
     """丢掉 mask 里「孤立小块且整体都是背景色」的伪影岛。
 
@@ -844,12 +894,17 @@ def remove_background(
     removed = int((~kept).sum())
 
     despilled = 0
+    decontaminated = 0
     residual = 0
     alpha = np.where(kept, 255, 0).astype(np.uint8)
 
     if hard:
         if despill:
             despilled = _despill(arr, kept, palette, float(tolerance))
+            # 色相去污对**白/灰底**无效（没有色相可查），这里补一条按亮度的混合像素
+            # 回洗：把轮廓最外 1~2px 被背景提亮的混合像素染回内侧本色（只改 RGB）
+            decontaminated = _decontaminate_edge(
+                arr, kept, np.asarray(palette[0], dtype=np.float32))
         arr[:, :, 3] = alpha
         # 去污之后还剩多少「底色色相」的像素：在下游使用前先量一次污染
         channel = _chroma_channel(palette)
@@ -879,6 +934,8 @@ def remove_background(
         "feather": feather,
         "hard": hard,
         "despilledPixels": despilled,
+        # 白/灰底下靠亮度判据回洗的边缘混合像素数（色相去污对它无效）
+        "edgeDecontaminated": decontaminated,
         "holesFilled": holes_filled,
         # 被挖掉的「背景漏进轮廓」像素数（白底舌状块）。非 0 说明这帧原本会残留白块
         "bgHolesPunched": bg_holes,
