@@ -881,7 +881,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       id: newId('fs'), type: 'framesplit', x: spot.x, y: spot.y,
       framesplit: {
         enabled: true, fpsCap: 12, maxFrames: 120, start: 0, end: null,
-        matte: true, tolerance: 40, maxSide: 384, loopClose: true,
+        matte: true, tolerance: 40, matteModel: 'auto', maxSide: 384, loopClose: true,
         step: 1, simPct: 0, picks: [],
       },
       frames: [], source: null, result: null, meta: null,
@@ -1865,6 +1865,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       end: fs?.end ?? null,
       matte: fs?.matte ?? true,
       tolerance: fs?.tolerance ?? 40,
+      matteModel: fs?.matteModel ?? 'auto',
       loopClose: fs?.loopClose ?? true,
       maxSide: fs?.maxSide ?? 384,
     })

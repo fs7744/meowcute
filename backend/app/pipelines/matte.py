@@ -541,10 +541,21 @@ def engine_status() -> Dict[str, Any]:
         primary, note = "grabcut", "未装 u2net 权重，走 GrabCut 图割，纯色/渐变底可用"
     else:
         primary, note = "key", "只有颜色键兜底，背景必须是接近纯色的底"
-    if sess is None and _U2NET_ERR:
+    # 更强底座（BiRefNet / ISNet）：装上就用它，发丝/细结构比 u2net 好一档
+    pref = preferred_model()
+    models = {}
+    for n in _EXTRA_MODELS:
+        models[n] = {"ready": os.path.exists(_model_path(n)),
+                     "error": _SESSION_ERR.get(n)}
+    if pref in _EXTRA_MODELS:
+        primary = pref
+        note = (f"{pref}：细结构（发丝/薄带）比 u2net 明显好，自动抠图默认用它"
+                f"（MEOWCUTE_MATTE_MODEL=u2net 可切回）")
+    elif sess is None and _U2NET_ERR:
         note += f"（{_U2NET_ERR}）"
     return {"available": True, "primary": primary, "note": note,
-            "u2net": sess is not None, "cv2": cv2_ok, "u2netError": _U2NET_ERR}
+            "u2net": sess is not None, "cv2": cv2_ok, "u2netError": _U2NET_ERR,
+            "models": models, "preferred": pref}
 
 
 def _mask_keep(rgb: np.ndarray) -> np.ndarray:
@@ -553,6 +564,66 @@ def _mask_keep(rgb: np.ndarray) -> np.ndarray:
     session = _u2net_session()
     if session is None:
         raise RuntimeError(_U2NET_ERR or "u2net session unavailable")
+    mask = remove(Image.fromarray(rgb), session=session, only_mask=True)
+    return np.array(mask) >= 128
+
+
+# --------------------------------------------------------------------------- #
+# 更强的分割底座：BiRefNet / ISNet（rembg 的 ONNX 会话）
+# --------------------------------------------------------------------------- #
+# 为什么加：u2net 是 2020 年的模型，发丝、细带、半透明边缘明显力不从心——
+# 白底+深色头发时 alpha 边界会切在发丝中间，留下一圈亮边。BiRefNet（2024）
+# 在这类细结构上高一个档；isnet-anime 是动漫专精，画风接近时可作轻量替代。
+#
+# 权重同样放 U2NET_HOME，**缺失时绝不联网下载**（同 u2net 的规矩：rembg 的
+# 自动下载会卡住请求几十分钟）。要下载就显式跑 tools/fetch_matte_models.py。
+_EXTRA_MODELS = ("birefnet-general-lite", "birefnet-general", "isnet-anime")
+_SESSIONS: Dict[str, Any] = {}
+_SESSION_ERR: Dict[str, str] = {}
+
+
+def _model_path(name: str) -> str:
+    return os.path.join(_U2NET_HOME, f"{name}.onnx")
+
+
+def _extra_session(name: str):
+    """按名字取（并缓存）rembg 会话；权重缺失返回 None（不联网）。"""
+    if name in _SESSIONS or name in _SESSION_ERR:
+        return _SESSIONS.get(name)
+    p = _model_path(name)
+    if not os.path.exists(p):
+        _SESSION_ERR[name] = f"权重缺失：{p}"
+        return None
+    with _U2NET_LOCK:
+        if name in _SESSIONS or name in _SESSION_ERR:
+            return _SESSIONS.get(name)
+        try:
+            from rembg import new_session
+            _SESSIONS[name] = new_session(name)
+        except Exception as e:      # onnxruntime 版本 / 权重损坏
+            _SESSION_ERR[name] = f"{type(e).__name__}: {e}"
+            return None
+    return _SESSIONS[name]
+
+
+def preferred_model() -> str:
+    """这一轮自动抠图优先用哪个底座。
+
+    优先级：环境变量 MEOWCUTE_MATTE_MODEL > 有权的第一个（lite → 全量 → isnet-anime）
+    > u2net（永远在）。用户想强制回 u2net 就 `MEOWCUTE_MATTE_MODEL=u2net`。
+    """
+    env = (os.environ.get("MEOWCUTE_MATTE_MODEL") or "").strip()
+    if env:
+        return env
+    for n in _EXTRA_MODELS:
+        if os.path.exists(_model_path(n)):
+            return n
+    return "u2net"
+
+
+def _mask_keep_model(session, rgb: np.ndarray) -> np.ndarray:
+    """任意 rembg 会话 → kept 掩码。与 _mask_keep 同口径（<128 判背景）。"""
+    from rembg import remove
     mask = remove(Image.fromarray(rgb), session=session, only_mask=True)
     return np.array(mask) >= 128
 
@@ -823,6 +894,12 @@ def remove_background(
     else:
         chain = [method]
 
+    # 有更强底座（BiRefNet / ISNet）就排在最前面试；不合格仍然按 _plausible 降级。
+    if method == "auto":
+        _pref = preferred_model()
+        if _pref != "u2net":
+            chain = [_pref] + chain
+
     kept = None
     grown = 0
     holes_filled = 0
@@ -832,6 +909,13 @@ def remove_background(
     retry_reason = ""
 
     def _try(cand: str):
+        if cand in _EXTRA_MODELS:
+            if min(h, w) < 32:
+                return None
+            sess = _extra_session(cand)
+            if sess is None:
+                return None
+            return _mask_keep_model(sess, arr[:, :, :3])
         if cand == "u2net":
             if min(h, w) < 32 or not u2net_available():
                 return None

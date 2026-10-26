@@ -851,6 +851,9 @@ export type FrameSplitOptions = {
   end: number | null
   matte: boolean
   tolerance: number
+  /** 抠图底座：auto=按可用权重自动挑（BiRefNet-lite > ISNet > u2net）；
+   *  u2net=快但发丝边缘糊；birefnet-general-lite=发丝干净但 CPU 上约 4~5 倍慢 */
+  matteModel: 'auto' | 'u2net' | 'birefnet-general-lite' | 'birefnet-general' | 'isnet-anime'
   /** 解码时长边上限 */
   maxSide: number
   /** 循环闭合：检测动作周期并按整周期裁帧，让末帧回绕到首帧正好是一步。

@@ -267,6 +267,7 @@ def run_split(
     end: Optional[float] = None,
     matte: bool = True,
     tolerance: int = 40,
+    matte_model: str = "auto",
     loop_close: bool = True,
     task_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -320,7 +321,8 @@ def run_split(
         if matte:
             try:
                 work, mm = prepare_frame(img, matte=True,
-                                         tolerance=int(tolerance))
+                                         tolerance=int(tolerance),
+                                         model=matte_model)
             except Exception:
                 # 单帧抠图失败不该让整批失败：留原帧并计数，前端会标出来
                 work = img.convert("RGBA")

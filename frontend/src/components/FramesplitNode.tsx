@@ -41,7 +41,7 @@ export default function FramesplitNode({
 }: Props) {
   const DEFAULTS: FrameSplitNodeType['framesplit'] = {
     enabled: true, fpsCap: 12, maxFrames: 120, start: 0, end: null,
-    matte: true, tolerance: 40, maxSide: 384, loopClose: true,
+    matte: true, tolerance: 40, matteModel: 'auto' as const, maxSide: 384, loopClose: true,
     step: 1, simPct: 0, picks: [],
   }
   const v = { ...DEFAULTS, ...node.framesplit }
@@ -169,6 +169,23 @@ export default function FramesplitNode({
             <i />
           </button>
         </div>
+
+        {v.matte ? (
+          <div className="param-grid" style={{ marginTop: 6 }}>
+            <label className="gen-field">
+              <span className="gen-field-label"
+                title="抠图底座。BiRefNet（2024）对发丝/薄带这些细结构明显强于 u2net（2020）：白底+深色头发时 u2net 会把 alpha 边界切在发丝中间，留一圈亮边。代价是 CPU 上约 4~5 倍慢（实测 4.9s/帧 vs 1.1s/帧）。">
+                抠图引擎
+              </span>
+              <select className="input" value={v.matteModel}
+                onChange={(e) => patch({ matteModel: e.target.value as typeof v.matteModel })}>
+                <option value="auto">自动（有 BiRefNet 就用）</option>
+                <option value="birefnet-general-lite">BiRefNet（细，慢）</option>
+                <option value="u2net">u2net（快，发丝糊）</option>
+              </select>
+            </label>
+          </div>
+        ) : null}
 
         <div className="switch-row" style={{ marginTop: 6 }}>
           <span className="t" style={{ fontSize: 12 }}

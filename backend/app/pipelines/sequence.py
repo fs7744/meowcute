@@ -251,9 +251,15 @@ def _fill_enclosed_holes(cut: Image.Image, bg: Optional[Tuple[int, int, int]] = 
 
 
 def prepare_frame(img: Image.Image, *, matte: bool = True,
-                  tolerance: int = 40, pad_frac: float = 0.12
+                  tolerance: int = 40, pad_frac: float = 0.12,
+                  model: str = "auto"
                   ) -> Tuple[Image.Image, Dict[str, Any]]:
-    """一帧 → 透明底 RGBA。matte=False 时只转格式（给调试用）。"""
+    """一帧 → 透明底 RGBA。matte=False 时只转格式（给调试用）。
+
+    model：抠图底座。auto=按可用权重自动挑（BiRefNet-lite > ISNet > u2net）；
+    也可显式给 "birefnet-general-lite" / "u2net" 等。BiRefNet 发丝边缘更干净，
+    但 CPU 上约 4~5 倍慢——所以交给用户选。
+    """
     work = img.convert("RGBA")
     if not matte:
         return work, {"matte": False}
@@ -264,7 +270,7 @@ def prepare_frame(img: Image.Image, *, matte: bool = True,
     canvas.paste(work.convert("RGB"), (p, p))
     cut, meta = matte_pipe.remove_background(
         canvas, tolerance=tolerance, feather=0, hard=True,
-        method="auto", despill=True)
+        method=(model or "auto"), despill=True)
     cut = cut.crop((p, p, p + w, p + h))
     cut = matte_pipe.drop_bg_islands(cut)
     cut, filled = _fill_enclosed_holes(cut, bg=tuple(int(v) for v in bg))

@@ -2370,6 +2370,9 @@ class ClipSplitPayload(BaseModel):
     start: float = 0.0          # 起始秒
     end: Optional[float] = None  # 结束秒（None=到结尾）
     matte: bool = True          # 抠背景
+    # 抠图底座：auto（默认，按可用权重挑 BiRefNet-lite > ISNet > u2net）/
+    # u2net（快但发丝边缘糊）/ birefnet-general-lite（细，CPU 上约 4~5 倍慢）
+    matteModel: str = "auto"
     tolerance: int = 40
     # 循环闭合（默认开）：检测动作周期，按**整周期**裁帧，让末帧回绕到首帧正好
     # 是一步。只在真有接缝问题且有明显周期时动手；非循环素材会原样保留并给出说明。
@@ -2423,6 +2426,9 @@ async def _run_clip_split(task_id: str, payload: ClipSplitPayload) -> None:
             end=(None if payload.end is None else float(payload.end)),
             matte=payload.matte,
             tolerance=_clamp(payload.tolerance, 10, 120, 40),
+            matte_model=payload.matteModel if payload.matteModel in (
+                "auto", "u2net", "birefnet-general-lite", "birefnet-general",
+                "isnet-anime") else "auto",
             loop_close=bool(payload.loopClose),
             task_id=task_id)
 

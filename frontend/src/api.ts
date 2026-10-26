@@ -395,6 +395,8 @@ pixelArt?: boolean
     end?: number | null
     matte?: boolean
     tolerance?: number
+    /** 抠图底座：auto / u2net / birefnet-general-lite … */
+    matteModel?: string
     /** 循环闭合：按整周期裁帧（默认开，后端缺省也是 true） */
     loopClose?: boolean
     maxSide?: number
