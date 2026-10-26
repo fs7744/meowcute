@@ -308,6 +308,62 @@ def _fill_small_holes(kept: np.ndarray, max_area_ratio: float = 0.002) -> Tuple[
     return kept, filled
 
 
+def _punch_bg_holes(rgb: np.ndarray, kept: np.ndarray, palette: List[np.ndarray],
+                    tolerance: float = 24.0, min_area: int = 50,
+                    max_area_ratio: float = 0.06, flat_std: float = 5.0,
+                    reach: int = 4) -> Tuple[np.ndarray, int]:
+    """挖掉「被轮廓包住、但其实是背景」的浅色舌状块（白底漏进缝隙的那一块）。
+
+    为什么需要（2026-10-26 实测）：袍子和佩剑之间的缝只有 1~2px，白底从缝里
+    露出来，语义分割把整个轮廓**填实**，这块白就留成不透明的一片——缩到 128/256
+    的格子里特别扎眼，看起来像"白底没扣干净"。边界泛洪救不了：缝被前景连成一片，
+    泛洪进不去（`_fill_small_holes` 方向正好相反，它填的是透明洞）。
+
+    四个判据同时满足才动手（宁可留着，也不误伤白/浅色衣料）：
+      ① 颜色接近边框底色：欧氏距离 ≤ tolerance（默认 24，比抠图容差紧得多）
+      ② 局部平坦：5×5 灰度标准差 ≤ flat_std——背景没有褶皱与阴影，衣料必有
+      ③ 面积在 [min_area, max_area_ratio×主体]：太小是噪点，太大可能是白袍本体
+      ④ **贴着外部背景**：与「已抠掉的区域」膨胀 reach 像素后有交叠——说明它是
+         从窄缝漏进来的一块，而不是身体内部的白色饰件（内衬、领口、白袜）
+    """
+    try:
+        import cv2
+    except Exception:
+        return kept, 0
+    if not kept.any():
+        return kept, 0
+    area_kept = float(kept.sum())
+    dist = _palette_dist(rgb.astype(np.int32), palette)
+    gray = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    mu = cv2.blur(gray, (5, 5))
+    mu2 = cv2.blur(gray * gray, (5, 5))
+    std = np.sqrt(np.maximum(0.0, mu2 - mu * mu))
+
+    seed = kept & (dist <= float(tolerance)) & (std <= float(flat_std))
+    if not seed.any():
+        return kept, 0
+    # ④ 只认「外部背景伸手可及」的块：先把已抠掉的区域膨胀一圈
+    outside = (~kept).astype(np.uint8)
+    near_bg = cv2.dilate(outside, np.ones((3, 3), np.uint8),
+                         iterations=max(1, int(reach))).astype(bool)
+
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(seed.astype(np.uint8),
+                                                        connectivity=4)
+    if n <= 1:
+        return kept, 0
+    max_area = max(int(min_area), int(max_area_ratio * area_kept))
+    # 全向量化（同 _fill_small_holes 的教训：逐域扫全图会被噪点数拖死）
+    areas = stats[:, cv2.CC_STAT_AREA]
+    touches = np.bincount(lab[near_bg].ravel(), minlength=n) > 0
+    ok = (areas >= int(min_area)) & (areas <= max_area) & touches
+    ok[0] = False
+    if not ok.any():
+        return kept, 0
+    punched = int(areas[ok].sum())
+    kept = kept & ~ok[lab]
+    return kept, punched
+
+
 def drop_bg_islands(cut: Image.Image, tol: float = 70.0) -> Image.Image:
     """丢掉 mask 里「孤立小块且整体都是背景色」的伪影岛。
 
@@ -720,6 +776,7 @@ def remove_background(
     kept = None
     grown = 0
     holes_filled = 0
+    bg_holes = 0
     specks_removed = 0
     last_err = None
     retry_reason = ""
@@ -780,6 +837,10 @@ def remove_background(
         kept, specks_removed = _clean_alpha_specks(kept)
         if used != "key":
             kept, holes_filled = _fill_small_holes(kept)
+        # 反向一步：把「背景色从窄缝漏进轮廓」的那几块挖掉。
+        # 顺序放在补洞之后：先补掉噪点小洞，再把真正的背景舌状块打穿。
+        kept, bg_holes = _punch_bg_holes(rgb, kept, palette,
+                                         tolerance=min(24.0, float(tolerance)))
     removed = int((~kept).sum())
 
     despilled = 0
@@ -819,6 +880,8 @@ def remove_background(
         "hard": hard,
         "despilledPixels": despilled,
         "holesFilled": holes_filled,
+        # 被挖掉的「背景漏进轮廓」像素数（白底舌状块）。非 0 说明这帧原本会残留白块
+        "bgHolesPunched": bg_holes,
         "specksRemoved": specks_removed,
         "edgeOffset": int(edge),
         "bottomTrim": round(float(bottom_trim), 3),

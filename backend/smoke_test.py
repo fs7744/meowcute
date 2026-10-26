@@ -1214,6 +1214,29 @@ def _run_checks(client) -> int:
               int(_mt.get("despilledPixels") or 0) > 0,
               str(_mt.get("despilledPixels")))
 
+    # 补洞不能把「背景从窄缝漏进来的一块」补回去（2026-10-26 实测踩到）：
+    # 分割已经把缝隙抠成透明，旧逻辑无条件补洞 → alpha 变 255 而 RGB 还是白底，
+    # 成品上就多出一块怎么都扣不掉的白（实测某帧 538px，约 470px 是这么来的）。
+    from backend.app.pipelines.sequence import _fill_enclosed_holes
+    _scene = Image.new("RGBA", (300, 300), (255, 255, 255, 0))   # 透明但 RGB 是白底
+    _d = ImageDraw.Draw(_scene)
+    _d.rectangle([40, 40, 260, 260], fill=(90, 110, 140, 255))    # 角色
+    _scene.paste((255, 255, 255, 0), (120, 120, 150, 150))        # 内部一块「白底」透明孔
+    _with_bg, _n1 = _fill_enclosed_holes(_scene, bg=(255, 255, 255))
+    _legacy, _n2 = _fill_enclosed_holes(_scene, bg=None)
+    _a1 = _np.asarray(_with_bg)[:, :, 3]
+    _a2 = _np.asarray(_legacy)[:, :, 3]
+    check("补洞会看颜色：底色孔洞保持透明（不再补成白块）",
+          int(_a1[135, 135]) == 0 and _n1 == 0, f"alpha={_a1[135, 135]} filled={_n1}")
+    check("旧的无条件补洞确实会把它补实（证明这项修的是真问题）",
+          int(_a2[135, 135]) == 255 and _n2 > 0, f"alpha={_a2[135, 135]} filled={_n2}")
+    # 非底色孔洞（分割针孔）仍应补上
+    _pinhole = _scene.copy()
+    _pinhole.paste((90, 110, 140, 0), (120, 120, 150, 150))       # 整个孔 RGB = 角色色
+    _fixed, _n3 = _fill_enclosed_holes(_pinhole, bg=(255, 255, 255))
+    check("非底色的小针孔仍然会补（不误伤补洞本职）",
+          int(_np.asarray(_fixed)[:, :, 3][135, 135]) == 255 and _n3 > 0, f"filled={_n3}")
+
 
     print("== 保存白名单：参数不再丢 ===")
     # 这两处白名单漏字段 = 用户改了参数、保存刷新后静默重置回默认值

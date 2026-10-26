@@ -195,9 +195,22 @@ def _border_bg(img: Image.Image) -> Tuple[int, int, int]:
     return tuple(int(v) for v in base + 8)
 
 
-def _fill_enclosed_holes(cut: Image.Image, max_ratio: float = 0.02
-                         ) -> Tuple[Image.Image, int]:
-    """补回被角色完全围住的透明孔洞（只改 alpha，RGB 原样）。"""
+def _fill_enclosed_holes(cut: Image.Image, bg: Optional[Tuple[int, int, int]] = None,
+                         max_ratio: float = 0.02, bg_tol: float = 26.0,
+                         min_bg_area: int = 60) -> Tuple[Image.Image, int]:
+    """补回被角色完全围住的透明孔洞（只改 alpha，RGB 原样）。
+
+    为什么补：分割偶尔在身体内部打出小洞，不补的话精灵图会出现透光的针孔。
+
+    为什么不能无条件补（2026-10-26 实测踩到）：袍子和佩剑之间那条缝，分割
+    **本来已经正确抠成透明**，但这块透明区被完全围住、面积又小，就被这里补成
+    不透明——而它的 RGB 还是白底，成品上于是多出一块「怎么都扣不掉的白」。
+    实测某帧残留 538px，其中约 470px 全是这样补回来的。
+
+    所以改成看颜色：孔洞内容是**底色**（离 bg 很近）且面积不小，就认定它是
+    「背景从窄缝漏进来的一块」，保持透明；只有不像底色的孔洞（分割针孔、角色
+    自身的内部缝隙）才补。bg=None 时退回旧的无条件行为。
+    """
     a = np.asarray(cut).copy()
     kept = a[:, :, 3] > 8
     holes = (~kept).astype(np.uint8)
@@ -225,6 +238,11 @@ def _fill_enclosed_holes(cut: Image.Image, max_ratio: float = 0.02
         area = int(comp.sum())
         if area > limit:
             continue
+        if bg is not None and area >= min_bg_area:
+            colors = a[comp][:, :3].astype(np.int32)
+            d = np.sqrt(((colors - np.asarray(bg, dtype=np.int32)) ** 2).sum(axis=1))
+            if float(np.median(d)) <= bg_tol:
+                continue      # 内容是底色 → 这是背景，不是针孔
         a[comp, 3] = 255
         filled += area
     if not filled:
@@ -249,7 +267,7 @@ def prepare_frame(img: Image.Image, *, matte: bool = True,
         method="auto", despill=True)
     cut = cut.crop((p, p, p + w, p + h))
     cut = matte_pipe.drop_bg_islands(cut)
-    cut, filled = _fill_enclosed_holes(cut)
+    cut, filled = _fill_enclosed_holes(cut, bg=tuple(int(v) for v in bg))
     cut, recolored = matte_pipe.clean_edge_spill(cut, bg)
     return cut, dict(meta, holesRestored=filled, edgePixelsRecolored=recolored)
 
