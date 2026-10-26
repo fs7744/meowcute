@@ -1318,6 +1318,10 @@ def _clean_split_frame(f: Any) -> Optional[Dict[str, Any]]:
         "diff": _cl(f.get("diff"), 0.0, 0.0, 100.0),
         "sharp": _cl(f.get("sharp"), 0.0, 0.0, 1000.0),
         "hash": str(f.get("hash") or "")[:400],
+        # 复刻帧：用的第几格视角、身份迁移得分（不进白名单＝刷新后消失）
+        "view": _ci(f.get("view"), 0, 0, 4),
+        "idScore": (None if f.get("idScore") in (None, "")
+                    else _cl(f.get("idScore"), 0.0, 0.0, 1.0)),
         # 动作复刻的每帧指标。不进白名单 → 刷新页面后「动作重合 62%」那排
         # 告警凭空消失，用户以为复刻结果变好了（实际只是指标没了）。
         "iou": (None if f.get("iou") is None

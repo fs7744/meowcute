@@ -33,36 +33,30 @@ from .. import progress as progress_mod
 # 占位符用 {帧号} {总帧数} {背景} 这种中文花括号，避免和用户正文里的 {} 打架，
 # 替换走 str.replace 而不是 format。
 DEFAULT_INSTRUCTION = (
-    # 开头这两句是整条链最关键的地方（2026-10-27 用用户真实素材实测出来的）。
-    # 老指令只说「用图2 的角色一比一复刻图1」，从没说过**图1 里的角色不是要画的
-    # 对象**。用户的动作源是「光头肉色像素小人」、四视图是「青蓝古风剑客」，
-    # 结果模型每次都把那个光头小人原样抄一遍（肤色占比 0.56、青蓝 0.00）。
-    # 明确写「图1 只给姿势、它的外观一个都不要保留」之后，肤色降到 0.00。
-    "图1 是**动作参考**，它只提供姿势、朝向、以及在画面中的位置和大小。\n"
-    "特别注意：图1 里出现的那个角色（可能是灰色剪影、光头、肤色人台、"
-    "或者任何别的角色）**不是要画的对象**——它的发型、肤色、服装、体型、"
-    "配色，一个都不要保留。\n"
-    "图2 是目标角色的立绘（同一个角色的一个视角），"
-    "它是角色外观的**唯一来源**。\n"
-    "请画出这样的画面：**用图2 里的角色，摆出图1 的姿势**"
+    # 措辞用「**替换**」而不是「丢弃/重画」——这是 2026-10-27 六组实验换来的。
+    # Qwen-Image-Edit 的原生语义是「编辑第一张图」，它天然保留图1 的结构（姿势）、
+    # 替换内容（角色）。写成「把图1 的角色丢弃、按图2 重画」时模型会照字面做：
+    # 把「配色丢弃」执行成**画成灰色剪影**（实测 4 帧里 3 帧是灰人形），
+    # 或者只画参考立绘的裙子一角。
+    "把图1 里的角色**换成**图2 里的角色。这是一次「替换」，不是重新创作：\n"
+    "· **保持不变的**：图1 的姿势、朝向、重心、四肢位置、在画面中的位置和大小；"
+    "换句话说，「这个角色在做什么」完全照图1，一动都不要动；\n"
+    "· **被替换的**：这个角色是谁——脸型、发型、发色、瞳色、服装款式与配色、"
+    "配饰、武器，全部改成图2 里的角色，和丢掉的旧角色之间不留任何相似之处；\n"
+    "· 图1 里的旧角色可能是灰色剪影、光头、肤色人台或别的角色，"
+    "换完之后画面里不应该再看得出它的任何痕迹。\n"
+    "结果应该让人一眼看出：**图2 的角色，正在做图1 的动作**"
     "（第 {帧号}/{总帧数} 帧）。\n"
-    "· 外观：脸型、发型、发色、瞳色、服装款式与配色、配饰、武器、纹样，"
-    "全部以图2 为准，不要改动、不要简化；\n"
-    "· 姿势：身体姿态、四肢角度、躯干倾斜、重心、朝向、视线方向，"
-    "与图1 完全一致，不要美化、不要加戏；\n"
-    "· 构图：角色在画面中的位置、大小比例、朝向，与图1 一致；\n"
-    "· 画风：与图2 一致。\n"
-    # 拓扑锁定：这三条是单独补的。只说「四肢角度一致」是不够的——模型常常做出
-    # 骨骼大致对、但左右手互换 / 佩剑换了只手 / 空手凭空多出武器的结果，帧内看
-    # 着正常，连起来播会发现持剑手每帧在两只手之间跳。方法来自 2dimg2motion 的
-    # topology lock：左右以**画面**说、持物要指定归属手、空手必须保持空。
-    "· 左右方位：以画面为准——图1 里在画面左侧的手脚或持物，生成后仍在画面左侧，"
+    # 拓扑锁定：只说「四肢位置一致」不够——模型会做出骨骼大致对、但左右手互换 /
+    # 佩剑换了只手 / 空手凭空多出武器的结果。帧内看不出，连播才发现持剑手在
+    # 两只手之间跳。方法来自 2dimg2motion 的 topology lock。
+    "· 左右方位：以画面为准——图1 里在画面左侧的手脚或持物，换完仍在画面左侧，"
     "不要左右镜像、不要交换四肢；\n"
-    "· 持物归属：武器、道具、盾牌必须由图1 中同一侧的手以同样的方式握持；"
+    "· 持物归属：武器、道具必须由图1 中同一侧的手以同样的方式握持；"
     "图1 里空着的手保持空着，不要凭空添加武器或道具；\n"
     "· 配饰跟随身体：披风、裙摆、发丝、飘带的朝向与穿戴位置跟随图1 的姿态，"
     "不要改到另一侧；\n"
-    "图2 只是参考，**不要把它的多个视角一起画出来**，只画一个角色、一个姿势。\n"
+    "图2 只是角色参考，**不要把它的多个视角一起画出来**，只画一个角色、一个姿势。\n"
     "画面里只有这一个角色，{背景}，没有地面、没有投影、没有边框、没有文字、"
     "没有其他人物。"
 )
@@ -369,6 +363,47 @@ def _hist_dist(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.abs(a - b).sum()) / 2.0
 
 
+def view_index_for(img: Image.Image, cells: int = 4) -> int:
+    """按这一帧的剪影给它在四视图里配一个视角（0=正面, 1=侧面, 2=背面, 3=另一侧）。
+
+    为什么必须**逐帧**选，而不是整套动作用一个视角（2026-10-27 实测）：
+    用户那套 12 帧是**跨朝向**的行走循环——帧 1~3 正面、4~7 侧面、8~12 背面/侧背。
+    之前"整套用一个视角"等于把所有帧都强行画成那个朝向，动作就整段错了。
+
+    判据是左右镜像对称度：正面/背面左右对称（实测 0.87~0.95），侧面明显不对称
+    （0.61~0.76），阈值 0.80 能把两组分开。
+    正面和背面在剪影上是同一类（都对称），这里统一给正面格——对"角色是谁"没影响，
+    只是朝向会略偏，比整段画错朝向好得多。
+    """
+    if cells < 2:
+        return 0
+    m = _fg_mask(img)
+    ys, xs = np.nonzero(m)
+    if not xs.size:
+        return 0
+    sub = m[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    flip = sub[:, ::-1]
+    sym = float((sub & flip).sum() / max(1.0, (sub | flip).sum()))
+    return 0 if sym > 0.80 else 1
+
+
+def _gray_ratio(img: Image.Image) -> float:
+    """不透明区里「近似灰」的占比。用来抓模型偷懒画成剪影的情况。
+
+    实测（2026-10-27）：指令里一旦出现「把配色丢弃」这类字面要求，Qwen-Image
+    会真的输出一张**灰色人形**（12 帧里出现过 1 帧，灰色占比 0.6+，其余帧 0.00）。
+    这种帧的剪影重合度可能还很高（形态对、只是没上色），光看 IoU 抓不到。
+    """
+    a = np.asarray(img.convert("RGBA")).astype(np.int16)
+    m = a[..., 3] > 128
+    if not m.any():
+        return 1.0
+    px = a[m][:, :3]
+    r, g, b = px[:, 0], px[:, 1], px[:, 2]
+    gray = (np.abs(r - g) < 8) & (np.abs(g - b) < 8) & (r > 60) & (r < 190)
+    return float(gray.mean())
+
+
 async def run_clone(
     frames: Sequence[Dict[str, Any]],
     char_refs: Sequence[Image.Image],
@@ -428,23 +463,29 @@ async def run_clone(
     # ---- 四视图板 → 单视角立绘 ----
     # 给整张板时模型几乎不读它（见 split_board_cells 的实测）。切成单格之后
     # 参考图在同样的输出预算里有效像素翻 4 倍，身份才迁得过来。
-    # ref_view: auto = 先用第一帧试 4 个视角，选配色最像参考立绘的那个；
-    #           指定 front/side/back/side2 就直接用；board = 完全不动（老行为）。
+    #
+    # ref_view 语义：
+    #   auto   = **逐帧**按该帧剪影的左右对称度选格（正面/背面→格1，侧面→格2）。
+    #            必须逐帧：用户那套动作是跨朝向的行走循环，整套用一个视角会把
+    #            朝向画错一整段。
+    #   front / side / back / side2 = 整套固定用那一格（用户想强制某朝向时用）
+    #   board  = 整板一起喂（老行为，实测模型基本不读它，留作对照）
     view_note = ""
     cells: List[Image.Image] = []
+    fixed_view: Optional[int] = None
     if ref_view != "board" and refs:
         cells = split_board_cells(refs[0])
         if len(cells) == 4:
             if ref_view in ("front", "side", "back", "side2"):
-                idx = {"front": 0, "side": 1, "back": 2, "side2": 3}[ref_view]
-                refs = [cells[idx]]
-                view_note = f"用第 {idx + 1} 格视角"
+                fixed_view = {"front": 0, "side": 1, "back": 2, "side2": 3}[ref_view]
+                refs = [cells[fixed_view]]
+                view_note = f"整套固定用第 {fixed_view + 1} 格"
             else:
-                # auto：留到 provider 就绪后 probe（下面做）
-                refs = [cells[0]]
-                view_note = "待挑视角"
+                view_note = "逐帧自动配视角"
+                refs = [cells[0]]      # 占位，循环里按帧替换
         else:
             cells = []
+            fixed_view = 0
             view_note = "单张立绘（未切格）"
 
     provider = DiffusersProvider(provider_cfg or {})
@@ -459,45 +500,8 @@ async def run_clone(
     # 这个坑在 threeview 那边已经踩过一次（negative 只进了 meta 没进模型）。
     neg = (negative or "").strip() or DEFAULT_NEGATIVE
 
-    # ---- auto 挑视角：拿第一帧试 4 个视角，选「配色最像参考立绘」的那个 ----
-    # 为什么不能靠"剪影最像"来选：源帧是正面光头小人时，正面立绘与它剪影最像，
-    # 而实测正是正面立绘会让模型直接照抄源帧（肤色 0.57）。真正该看的是
-    # 「出图颜色像不像参考立绘」——像，才说明角色被迁过来了。
-    if cells and ref_view == "auto" and len(cells) == 4:
-        probe_src = frames[0]["image"]
-        pw, ph = _fit_size(probe_src.width, probe_src.height, size)
-        probe_steps = max(12, use_steps // 2)
-        best: Optional[Tuple[float, int]] = None
-        ref_hists = [_color_hist(c) for c in cells]
-        for ci, cell in enumerate(cells):
-            progress_mod.report(task_id, 0, grand,
-                                f"挑角色视角 {ci + 1}/4（用第 1 帧试画）…")
-            try:
-                r = await provider.generate(
-                    prompt=build_instruction(custom or DEFAULT_INSTRUCTION,
-                                             index=1, total=1,
-                                             background=background),
-                    width=pw, height=ph, steps=probe_steps, seed=seed, n=1,
-                    refs=[probe_src, cell], negative=neg,
-                    ref_bg=(None if background in ("transparent", "", "none")
-                            else _bg_rgb(background)),
-                    task_id=task_id,
-                    max_seq_len=_fit_seq_len(
-                        build_instruction(custom or DEFAULT_INSTRUCTION, index=1,
-                                          total=1, background=background),
-                        max_seq_len))
-                got = r.images[0].convert("RGBA")
-                d = _hist_dist(_color_hist(got), ref_hists[ci])
-            except progress_mod.CancelledError:
-                raise
-            except Exception:
-                continue
-            if best is None or d < best[0]:
-                best = (d, ci)
-        if best is not None:
-            refs = [cells[best[1]]]
-            view_note = (f"自动选中第 {best[1] + 1} 格（配色最接近参考）")
-
+    # 视角选择不再用「试画 4 次挑一个」——逐帧按剪影对称度直接配格更快（省 4 次
+    # 推理）也更准：跨朝向的动作循环，整套共用一个视角必然把某一段的朝向画错。
     out: List[Dict[str, Any]] = []
     warnings: List[str] = []
     retried = 0
@@ -518,14 +522,26 @@ async def run_clone(
         label = f"复刻第 {k + 1}/{total} 帧"
         t0 = time.time()
 
+        # 逐帧配视角：这一帧是正面还是侧面，就用四视图里对应的那一格。
+        # 整套动作跨朝向时（行走循环：正面→侧面→背面），这一步是必须的——
+        # 共用一个视角会把某一段的朝向整段画错。
+        if cells and fixed_view is None:
+            _vi = view_index_for(src, len(cells))
+            frame_refs = [cells[_vi]]
+            view_used = _vi + 1
+        else:
+            frame_refs = list(refs)
+            view_used = (fixed_view + 1) if fixed_view is not None else 0
+
         async def _attempt(seed_use: Optional[int],
                            _text: str = text, _w: int = w, _h: int = h,
-                           _k: int = k, _label: str = label, _src=src):
+                           _k: int = k, _label: str = label, _src=src,
+                           _refs: List[Image.Image] = frame_refs):
             res = await provider.generate(
                 prompt=_text,
                 width=_w, height=_h,
                 steps=use_steps, seed=seed_use, n=1,
-                refs=[_src, *refs],
+                refs=[_src, *_refs],
                 negative=neg,
                 # 参考图铺底色：动作帧是透明底，`convert("RGB")` 会把它压成
                 # 黑底，模型把黑当背景画进结果（暗部/地面），和「透明背景」打架
@@ -545,6 +561,8 @@ async def run_clone(
         # 0.11 / 0.60 / 0.95 这种跨度，所以「多跑几次挑最好」比「猜哪个参数
         # 能让它稳定」有效得多——而且失败是随机的，换 seed 就够了。
         best: Optional[Tuple[float, Image.Image, Dict[str, Any]]] = None
+        fallback: Optional[Tuple[Image.Image, Dict[str, Any]]] = None
+        gray_hits = 0
         max_tries = 3
         while tries < max_tries:
             tries += 1
@@ -578,9 +596,16 @@ async def run_clone(
 
             cur, ainfo = _align_to(cur, src, anchor=anchor)
             cur_iou = silhouette_iou(cur, src)
-            if best is None or cur_iou > best[0]:
+            # 灰剪影要当失败处理：它的剪影重合度可以很高（形态对、只是没上色），
+            # 实测就有一帧 iou 0.936 但灰色占比 0.6+，光看 IoU 会把它当成好帧。
+            cur_gray = _gray_ratio(cur)
+            if cur_gray > 0.45:
+                gray_hits += 1
+                if fallback is None:
+                    fallback = (cur, ainfo)
+            elif best is None or cur_iou > best[0]:
                 best = (cur_iou, cur, ainfo)
-            if cur_iou >= 0.6:
+            if cur_gray <= 0.45 and cur_iou >= 0.6:
                 break
             if tries < max_tries:
                 retried += 1
@@ -589,7 +614,14 @@ async def run_clone(
                 seed = (int(seed) + 101) % (2**31 - 1) if seed is not None \
                     else int(time.time() * 1000) % (2**31 - 1)
 
-        if best is not None:
+        if best is None and fallback is not None:
+            # 三次都画成灰剪影：与其交白卷，不如把那帧给用户并明确标注
+            gen, ainfo = fallback
+            iou = silhouette_iou(gen, src)
+            warnings.append(
+                f"第 {k + 1} 帧三次都画成了灰色剪影（模型没上色）："
+                "单独重跑这一帧，或换「角色视角」再试")
+        elif best is not None:
             iou, gen, ainfo = best
 
         if gen is None:
@@ -606,6 +638,13 @@ async def run_clone(
             "sizeRatio": ainfo.get("ratio"),
             "scaled": bool(ainfo.get("scaled")),
             "tries": tries,
+            # 这一帧用了四视图的第几格 + 身份迁移得分（出图配色与那格的相似度）。
+            # 得分低 = 角色没换成功（还在画图1 的旧角色），比剪影 IoU 直接得多：
+            # IoU 低可能是角色体型差异（长袍 vs 裸体），不一定是坏事。
+            "view": view_used,
+            "idScore": (round(1.0 - _hist_dist(_color_hist(gen),
+                                               _color_hist(frame_refs[0])), 3)
+                        if frame_refs else None),
             "seconds": round(time.time() - t0, 1),
             "instruction": text,
             "mode": rmeta.get("mode"),

@@ -2225,9 +2225,9 @@ def _run_checks(client) -> int:
     #   A 整板 + 老指令 → 复制光头小人（肤色占比 0.56）
     #   C 整板 + 强指令 → 画了个灰剪影（听懂"图1 不是对象"，但没用四视图）
     #   E 单视角 + 强指令 → 青蓝 0.83 / 肤色 0.01，正确画出剑客
-    check("指令明确说了图1 的角色不是要画的对象（否则模型会照抄它）",
-          "不是要画的对象" in _pc.DEFAULT_INSTRUCTION
-          and "唯一来源" in _pc.DEFAULT_INSTRUCTION,
+    check("指令明确说了图1 里的旧角色要整体换成图2 的角色",
+          "换成" in _pc.DEFAULT_INSTRUCTION
+          and "旧角色" in _pc.DEFAULT_INSTRUCTION,
           _pc.DEFAULT_INSTRUCTION[:40])
 
     _cellboard = Image.new("RGBA", (512, 508), (0, 0, 0, 0))
@@ -2245,6 +2245,36 @@ def _run_checks(client) -> int:
 
     _h_same = _pc._color_hist(Image.new("RGBA", (64, 64), (120, 160, 200, 255)))
     _h_diff = _pc._color_hist(Image.new("RGBA", (64, 64), (20, 20, 20, 255)))
+    # ---- 姿势复刻（2026-10-27 用户第二轮反馈：「动作这不是依然没有生成吗」）----
+    # 第一版为了治「模型抄图1 的角色」，写成「图1 只提供姿势」+「配色全部丢弃」，
+    # 结果治好了角色却把姿势一起丢了：模型照字面把「丢弃配色」执行成**画灰色剪影**
+    # （12 帧里 1 帧灰占比 0.6+，剪影 IoU 却有 0.936 —— 光看 IoU 抓不到）。
+    # 正解是用「**替换**」措辞（Qwen-Image-Edit 原生语义就是编辑第一张图），
+    # 并逐帧按剪影对称度配对应视角。
+    check("指令用「替换」措辞，而不是「丢弃/重画」",
+          "换成" in _pc.DEFAULT_INSTRUCTION
+          and "丢弃配色" not in _pc.DEFAULT_INSTRUCTION
+          and "保持不变的" in _pc.DEFAULT_INSTRUCTION,
+          _pc.DEFAULT_INSTRUCTION[:30])
+
+    _upright = Image.new("RGBA", (120, 120), (0, 0, 0, 0))
+    ImageDraw.Draw(_upright).rectangle([50, 20, 70, 110], fill=(200, 100, 80, 255))
+    _striding = Image.new("RGBA", (120, 120), (0, 0, 0, 0))
+    _sd = ImageDraw.Draw(_striding)
+    _sd.rectangle([60, 20, 80, 110], fill=(200, 100, 80, 255))    # 躯干偏右
+    _sd.rectangle([40, 70, 60, 80], fill=(200, 100, 80, 255))     # 前伸的手臂 → 不对称
+    check("对称帧配正面格、不对称帧配侧面格（逐帧配视角的判据）",
+          _pc.view_index_for(_upright) == 0 and _pc.view_index_for(_striding) == 1,
+          f"{_pc.view_index_for(_upright)} / {_pc.view_index_for(_striding)}")
+
+    _gray_img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    ImageDraw.Draw(_gray_img).rectangle([20, 10, 44, 54], fill=(120, 120, 120, 255))
+    _cyan_img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    ImageDraw.Draw(_cyan_img).rectangle([20, 10, 44, 54], fill=(150, 190, 210, 255))
+    check("灰剪影能被检测出来（它的 IoU 可能很高，只看 IoU 会漏）",
+          _pc._gray_ratio(_gray_img) > 0.45 and _pc._gray_ratio(_cyan_img) <= 0.45,
+          f'{_pc._gray_ratio(_gray_img):.2f} / {_pc._gray_ratio(_cyan_img):.2f}')
+
     check("配色直方图能区分「像参考」和「不像」（挑视角靠它）",
           _pc._hist_dist(_h_same, _h_same) < 0.01
           and _pc._hist_dist(_h_same, _h_diff) > 0.8,

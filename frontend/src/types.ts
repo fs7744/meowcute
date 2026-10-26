@@ -890,6 +890,11 @@ export type ClipFrame = {
   /** 复刻时整体平移了多少像素才对回源帧落脚点 */
   dx?: number | null
   dy?: number | null
+  /** 复刻时用了四视图的第几格（1~4）；0/undefined = 用的整板或单张立绘 */
+  view?: number | null
+  /** 身份迁移得分（0~1）：出图配色与所用参考格的相似度。
+   *  低 = 角色没换成功（还在画图1 里的旧角色）。比剪影 IoU 更能反映"像不像目标角色"。 */
+  idScore?: number | null
   /** 该帧推理耗时（秒） */
   seconds?: number | null
 }
@@ -1077,6 +1082,8 @@ export type PoseCloneMeta = {
   /** 各帧底边所在行。长度 >1 = 脚底线不齐，循环播放会轻微上下跳 */
   baselineRows?: number[]
   baselineStable?: boolean
+  /** 参考视角策略说明，如「逐帧自动配视角」「整套固定用第 2 格」 */
+  refView?: string
 }
 
 export type PoseCloneNode = {

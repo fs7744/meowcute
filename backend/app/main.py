@@ -2839,6 +2839,7 @@ async def _run_pose_clone(task_id: str, payload: PoseClonePayload) -> None:
                 "w": info["width"], "h": info["height"],
                 "iou": f.get("iou"), "dx": f.get("dx"), "dy": f.get("dy"),
                 "scaled": f.get("scaled"), "tries": f.get("tries"),
+                "view": f.get("view"), "idScore": f.get("idScore"),
                 "seconds": f.get("seconds"),
                 "diff": 0, "hash": "",
             }

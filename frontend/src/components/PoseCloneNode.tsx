@@ -323,17 +323,28 @@ export default function PoseCloneNode({
           <>
             <div className="fs-count" style={{ marginTop: 6 }}>
               复刻结果：
+              {/* 身份迁移得分比剪影重合度更能说明「角色有没有换成功」：
+                  用户实际碰到的是「动作保住了但角色还是原来那个」，
+                  这种帧的 iou 可以有 0.95，但 idScore 很低。 */}
               {frames.map((f: any) => (
-                f.iou != null && f.iou < 0.7 ? (
+                f.idScore != null && f.idScore < 0.5 ? (
                   <span key={f.file} className="fs-stat warn"
-                    title={`第 ${f.i + 1} 帧动作可能被改写（重合 ${(f.iou * 100).toFixed(0)}%）`}>
-                    第 {f.i + 1} 帧 {Math.round(f.iou * 100)}%
+                    title={`第 ${f.i + 1} 帧角色可能没换成功（与参考配色相似度 ${(f.idScore * 100).toFixed(0)}%）：还在画图1 里的旧角色。换「角色视角」或单帧重跑`}>
+                    第 {f.i + 1} 帧角色没换
                   </span>
                 ) : null
               ))}
-              {frames.every((f: any) => f.iou == null || f.iou >= 0.7) ? (
-                <span className="fs-stat">每帧动作都保住了</span>
+              {frames.every((f: any) => f.idScore == null || f.idScore >= 0.5) ? (
+                <span className="fs-stat">每帧角色都换过来了</span>
               ) : null}
+              {frames.map((f: any) => (
+                f.iou != null && f.iou < 0.7 && (f.idScore == null || f.idScore >= 0.5) ? (
+                  <span key={`i${f.file}`} className="fs-stat warn"
+                    title={`第 ${f.i + 1} 帧剪影重合只有 ${(f.iou * 100).toFixed(0)}%：姿势与源帧差异较大（角色体型不同也会压低这个值，仅供参考）`}>
+                    第 {f.i + 1} 帧姿势偏差
+                  </span>
+                ) : null
+              ))}
             </div>
             <div className="fs-wall">
               {frames.map((f) => (
