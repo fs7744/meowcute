@@ -884,6 +884,14 @@ export type ClipFrame = {
   sharp: number
   /** 16×16 灰度指纹（base64）：前端算相似度用 */
   hash: string
+  /** 动作复刻专用：与源帧的剪影重合度（0~1，越高说明动作保真越好）。
+   *  只有 poseclone 产出的帧有，拆帧/拆精灵图的帧是 undefined。 */
+  iou?: number | null
+  /** 复刻时整体平移了多少像素才对回源帧落脚点 */
+  dx?: number | null
+  dy?: number | null
+  /** 该帧推理耗时（秒） */
+  seconds?: number | null
 }
 
 export type ClipSource = {
@@ -966,6 +974,109 @@ export type FrameSplitNode = {
   meta?: FrameSplitMeta | null
   createdAt?: number
 }
+
+/** 精灵图拆解参数（对应后端 _clean_spritesplit）。 */
+export type SpriteSplitOptions = {
+  enabled: boolean
+  /** 列数 / 行数 / 单元格边长：0 = 自动识别网格 */
+  cols: number
+  rows: number
+  cell: number
+  /** 只取前 N 格（0 = 全部） */
+  count: number
+  /** 不透明底精灵图需要逐帧去底 */
+  matte: boolean
+  tolerance: number
+  /** 勾选了哪些帧（文件名），与 framesplit.picks 同语义 */
+  picks: string[]
+}
+
+export type SpriteSplitMeta = {
+  cols: number
+  rows: number
+  cellW: number
+  cellH: number
+  count: number
+  /** auto=网格探测 / manual=用户指定 / cell=按边长 / single=看起来只有一帧 / fallback */
+  gridMethod: string
+  sourceSize: [number, number]
+  matte: boolean
+  bgHolesPunched: number
+  diffMedian: number
+  diffMax: number
+  seconds: number
+  truncated?: number
+  warnings: string[]
+}
+
+export type SpriteSplitNode = {
+  id: string
+  type: 'spritesplit'
+  x: number
+  y: number
+  spritesplit: SpriteSplitOptions
+  frames?: ClipFrame[]
+  source?: { file: string; url: string; width: number; height: number } | null
+  result?: ResultImage | null
+  meta?: SpriteSplitMeta | null
+  createdAt?: number
+}
+
+/** 动作复刻参数（对应后端 _clean_poseclone）。 */
+export type PoseCloneOptions = {
+  enabled: boolean
+  /** per-frame=逐帧复刻（默认，可控）；whole-sheet=整张精灵图一次改（草稿预览） */
+  mode: 'per-frame' | 'whole-sheet'
+  /** 空 = 用程序里的默认指令；非空 = 用户在节点上编辑过的正文 */
+  instruction: string
+  negative: string
+  /** 0 = 默认 40 步 */
+  steps: number
+  /** 0 = 跟随源帧尺寸 */
+  size: number
+  background: 'transparent' | 'white' | 'gray' | 'black'
+  /** 对齐锚点：bottom=脚底（推荐）/ center=包围盒中心 */
+  anchor: 'bottom' | 'center'
+  /** auto=长条四视图板自动重排成方形（提升参考图有效像素） */
+  refMode: 'auto' | 'as-is'
+  seed: number | null
+  maxSeqLen: number | null
+}
+
+export type PoseCloneMeta = {
+  count: number
+  failed: number
+  steps: number
+  size: [number, number] | null
+  anchor: string
+  background: string
+  /** 与源帧的剪影重合度（越高说明动作保真越好） */
+  iouMean: number | null
+  iouMin: number | null
+  seconds: number
+  refCount: number
+  /** 参考图版面重排说明，如 "4x1→2x2" */
+  refPack?: string
+  instruction: string
+  negative: string
+  warnings: string[]
+  /** whole-sheet 模式：网格是否被模型改动 */
+  gridKept?: boolean
+  grid?: { cols: number; rows: number; cellW: number; cellH: number }
+}
+
+export type PoseCloneNode = {
+  id: string
+  type: 'poseclone'
+  x: number
+  y: number
+  poseclone: PoseCloneOptions
+  frames?: ClipFrame[]
+  result?: ResultImage | null
+  meta?: PoseCloneMeta | null
+  createdAt?: number
+}
+
 
 /** 精灵图参数（第三步，对应后端 _clean_spritegrid）。 */
 export type SpriteGridOptions = {
@@ -1410,6 +1521,7 @@ export type CanvasNode = GenNode | ResultNode | InputNode | RefineNode | MatteNo
   | WalkVideoNode | SequenceNode | SpriteSheetNode | PlayNode
   | PartsNode | RigWalkNode | TxtVideoNode
   | ClipSrcNode | FrameSplitNode | SpriteGridNode | AnimPreviewNode
+  | SpriteSplitNode | PoseCloneNode
   | Godot2DNode | InpaintNode | EraseNode | Layer25DNode
 export type Edge = { from: string; to: string }
 

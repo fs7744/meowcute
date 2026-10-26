@@ -67,6 +67,8 @@ from .pipelines import refine as refine_mod
 from .pipelines import sequence as sequence_mod
 from .pipelines import clipframes as clipframes_mod
 from .pipelines import spritegrid as spritegrid_mod
+from .pipelines import spritesplit as spritesplit_mod
+from .pipelines import poseclone as poseclone_mod
 from .pipelines import godot2d as godot2d_mod
 from .pipelines import inpaint as inpaint_mod
 from .pipelines import erase as erase_mod
@@ -2563,6 +2565,251 @@ async def sprite_grid(payload: SpriteGridPayload) -> Dict[str, Any]:
         "indexFile": idx_path.name,
         "meta": {**meta, "missing": missing},
     }
+
+
+# --------------------------------------------------------------------------- #
+# 精灵图动作复刻：上传精灵图 → 拆帧 → 换角色逐帧复刻 → 新精灵图
+# --------------------------------------------------------------------------- #
+SPLIT_FRAME_PREFIX = "spf"
+SPLIT_THUMB_PREFIX = "spfthumb"
+CLONE_FRAME_PREFIX = "cloned"
+CLONE_THUMB_PREFIX = "clonethumb"
+
+
+class SpriteSplitPayload(BaseModel):
+    projectId: str
+    # 精灵图位置：用户上传走 refs/，复用已有精灵图产物走 images/
+    file: str = ""
+    kind: str = "refs"
+    # 0 = 自动识别。三个都给 0 时跑网格探测（见 spritesplit.detect_grid）
+    cols: int = 0
+    rows: int = 0
+    cell: int = 0
+    count: int = 0              # 0 = 全部格
+    matte: bool = False         # 不透明底精灵图需要逐帧去底
+    tolerance: int = 40
+
+
+async def _run_sprite_split(task_id: str, payload: SpriteSplitPayload) -> None:
+    t0 = time.time()
+    try:
+        if projects_mod.load_project(payload.projectId) is None:
+            raise RuntimeError("项目不存在")
+        kind = payload.kind if payload.kind in ("refs", "images") else "refs"
+        if not payload.file:
+            raise RuntimeError("没有精灵图：先把「选择图片」节点连到本节点上游")
+        img = storage.load_image(payload.projectId, kind, payload.file)
+        if img is None:
+            raise RuntimeError(f"精灵图读不出来：{payload.file}")
+
+        progress_mod.report(task_id, 0, 1, "识别网格…")
+        picked, meta = await asyncio.to_thread(
+            spritesplit_mod.run_split, img,
+            cols=_clamp(payload.cols, 0, 64, 0),
+            rows=_clamp(payload.rows, 0, 64, 0),
+            cell=_clamp(payload.cell, 0, 1024, 0),
+            count=_clamp(payload.count, 0, 256, 0),
+            matte=bool(payload.matte),
+            tolerance=_clamp(payload.tolerance, 10, 120, 40),
+            task_id=task_id)
+
+        _purge_prefix(payload.projectId, SPLIT_FRAME_PREFIX)
+        _purge_prefix(payload.projectId, SPLIT_THUMB_PREFIX)
+
+        out_frames: List[Dict[str, Any]] = []
+        for f in picked:
+            info = storage.save_image(payload.projectId, f["image"], kind="images",
+                                      prefix=SPLIT_FRAME_PREFIX, seq=f["i"] + 1)
+            thumb = f["image"].copy()
+            thumb.thumbnail((96, 96), Image.LANCZOS)
+            tinfo = storage.save_image(payload.projectId, thumb, kind="images",
+                                       prefix=SPLIT_THUMB_PREFIX, seq=f["i"] + 1)
+            out_frames.append({
+                "i": f["i"], "row": f["row"], "col": f["col"],
+                "t": f["i"], "srcIndex": f["i"],
+                "file": info["file"], "url": info["url"],
+                "thumbFile": tinfo["file"], "thumbUrl": tinfo["url"],
+                "w": info["width"], "h": info["height"],
+                "bbox": f["bbox"], "alphaRatio": f["alphaRatio"],
+                "diff": f["diff"], "hash": f["hash"],
+            })
+
+        task_results[task_id] = {
+            "taskId": task_id,
+            "split": {
+                "source": {"file": payload.file,
+                           "url": f"/api/projects/{payload.projectId}/{kind}/{payload.file}",
+                           "width": img.width, "height": img.height},
+                "frames": out_frames,
+                "meta": {**meta, "seconds": round(time.time() - t0, 1)},
+            },
+        }
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/spritesplit")
+async def sprite_split(payload: SpriteSplitPayload) -> Dict[str, Any]:
+    if projects_mod.load_project(payload.projectId) is None:
+        raise HTTPException(404, "项目不存在")
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备中…")
+    asyncio.create_task(_run_sprite_split(task_id, payload))
+    return {"taskId": task_id}
+
+
+class PoseClonePayload(BaseModel):
+    projectId: str
+    # per-frame：files 是拆出来的动作帧；whole-sheet：sheetFile 是整张精灵图
+    mode: str = "per-frame"
+    files: List[str] = Field(default_factory=list)
+    sheetFile: str = ""
+    sheetKind: str = "refs"
+    # 角色参考：1 张四视图板最好（业界建议 1~3 张），多张也行
+    refs: List[str] = Field(default_factory=list)
+    instruction: str = ""
+    negative: str = ""
+    steps: int = 0              # 0 = 用默认 40
+    size: int = 0               # 0 = 跟随源帧
+    background: str = "transparent"
+    anchor: str = "bottom"
+    refMode: str = "auto"       # auto = 长条四视图板自动重排成方形
+    seed: Optional[int] = None
+    maxSeqLen: Optional[int] = None
+
+
+async def _run_pose_clone(task_id: str, payload: PoseClonePayload) -> None:
+    t0 = time.time()
+    try:
+        if projects_mod.load_project(payload.projectId) is None:
+            raise RuntimeError("项目不存在")
+
+        refs: List[Image.Image] = []
+        for fn in payload.refs[:4]:
+            im = storage.load_image(payload.projectId, "refs", fn)
+            if im is not None:
+                refs.append(im)
+        if not refs:
+            raise RuntimeError("没有角色参考图：把「选择图片」节点（四视图）连到角色端口")
+
+        provider_cfg = (load_settings().get("providers") or {}).get("diffusers") or {}
+        background = payload.background if payload.background in (
+            "transparent", "", "none", "white", "gray", "black") else "transparent"
+        anchor = payload.anchor if payload.anchor in ("bottom", "center") else "bottom"
+
+        if payload.mode == "whole-sheet":
+            kind = payload.sheetKind if payload.sheetKind in ("refs", "images") else "refs"
+            if not payload.sheetFile:
+                raise RuntimeError("整图复刻需要指定精灵图文件")
+            sheet = storage.load_image(payload.projectId, kind, payload.sheetFile)
+            if sheet is None:
+                raise RuntimeError(f"精灵图读不出来：{payload.sheetFile}")
+            grid = spritesplit_mod.detect_grid(sheet)
+            gen, meta = await poseclone_mod.clone_whole_sheet(
+                sheet, refs, grid,
+                instruction=payload.instruction, negative=payload.negative,
+                steps=payload.steps or None, max_seq_len=payload.maxSeqLen,
+                provider_cfg=provider_cfg, task_id=task_id)
+            _purge_prefix(payload.projectId, CLONE_FRAME_PREFIX)
+            _purge_prefix(payload.projectId, CLONE_THUMB_PREFIX)
+            info = storage.save_image(payload.projectId, gen, kind="images",
+                                      prefix=CLONE_FRAME_PREFIX, seq=1)
+            task_results[task_id] = {
+                "taskId": task_id,
+                "clone": {
+                    "mode": "whole-sheet",
+                    "frames": [{
+                        "i": 0, "t": 0, "srcIndex": 0,
+                        "file": info["file"], "url": info["url"],
+                        "thumbFile": info["file"], "thumbUrl": info["url"],
+                        "w": info["width"], "h": info["height"],
+                        "diff": 0, "hash": "",
+                    }],
+                    "sheet": info,
+                    "meta": {**meta, "seconds": round(time.time() - t0, 1)},
+                },
+            }
+            progress_mod.report(task_id, 1, 1, "完成")
+            progress_mod.finish(task_id)
+            return
+
+        if not payload.files:
+            raise RuntimeError("没有动作帧：先在「拆解精灵图」里拆帧并勾选")
+        frames: List[Dict[str, Any]] = []
+        missing = 0
+        for k, fn in enumerate(payload.files[:96]):
+            im = storage.load_image(payload.projectId, "images", fn)
+            if im is None:
+                missing += 1
+                continue
+            frames.append({"i": k, "image": im})
+        if not frames:
+            raise RuntimeError("勾选的动作帧都读不出来（可能已被清理）")
+
+        out, meta = await poseclone_mod.run_clone(
+            frames, refs,
+            instruction=payload.instruction, negative=payload.negative,
+            steps=payload.steps or None, size=payload.size,
+            background=background, anchor=anchor, ref_mode=payload.refMode,
+            seed=payload.seed, max_seq_len=payload.maxSeqLen,
+            provider_cfg=provider_cfg, task_id=task_id)
+
+        _purge_prefix(payload.projectId, CLONE_FRAME_PREFIX)
+        _purge_prefix(payload.projectId, CLONE_THUMB_PREFIX)
+
+        out_frames: List[Dict[str, Any]] = []
+        seq = 0
+        for f in out:
+            if f.get("image") is None:
+                continue
+            seq += 1
+            info = storage.save_image(payload.projectId, f["image"], kind="images",
+                                      prefix=CLONE_FRAME_PREFIX, seq=seq)
+            thumb = f["image"].copy()
+            thumb.thumbnail((96, 96), Image.LANCZOS)
+            tinfo = storage.save_image(payload.projectId, thumb, kind="images",
+                                       prefix=CLONE_THUMB_PREFIX, seq=seq)
+            out_frames.append({
+                "i": f["i"], "t": seq - 1, "srcIndex": f["i"],
+                "file": info["file"], "url": info["url"],
+                "thumbFile": tinfo["file"], "thumbUrl": tinfo["url"],
+                "w": info["width"], "h": info["height"],
+                "iou": f.get("iou"), "dx": f.get("dx"), "dy": f.get("dy"),
+                "seconds": f.get("seconds"),
+                "diff": 0, "hash": "",
+            })
+
+        task_results[task_id] = {
+            "taskId": task_id,
+            "clone": {
+                "mode": "per-frame",
+                "frames": out_frames,
+                "meta": {**meta, "missingSource": missing,
+                         "seconds": round(time.time() - t0, 1)},
+            },
+        }
+        progress_mod.report(task_id, 1, 1, "完成")
+        progress_mod.finish(task_id)
+    except progress_mod.CancelledError:
+        progress_mod.finish(task_id, "已取消")
+    except Exception as e:
+        progress_mod.finish(task_id, str(e)[:600])
+        task_results[task_id] = {"taskId": task_id, "error": str(e)[:600]}
+
+
+@app.post("/api/poseclone")
+async def pose_clone(payload: PoseClonePayload) -> Dict[str, Any]:
+    if projects_mod.load_project(payload.projectId) is None:
+        raise HTTPException(404, "项目不存在")
+    task_id = f"t-{uuid.uuid4().hex[:12]}"
+    progress_mod.create(task_id, 0, "准备中…")
+    asyncio.create_task(_run_pose_clone(task_id, payload))
+    return {"taskId": task_id}
 
 
 # --------------------------------------------------------------------------- #

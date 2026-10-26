@@ -403,6 +403,41 @@ pixelArt?: boolean
   }) =>
     fetch('/api/clipsplit', jsonInit(payload)).then(j<{ taskId: string }>),
 
+  /** 精灵图动作复刻第 1 步：精灵图 → 逐帧（任务制，去底较慢）。 */
+  spriteSplit: (payload: {
+    projectId: string
+    file: string
+    /** refs=用户上传的精灵图 / images=项目里已有的精灵图产物 */
+    kind?: 'refs' | 'images'
+    cols?: number
+    rows?: number
+    cell?: number
+    count?: number
+    matte?: boolean
+    tolerance?: number
+  }) =>
+    fetch('/api/spritesplit', jsonInit(payload)).then(j<{ taskId: string }>),
+
+  /** 精灵图动作复刻第 2 步：动作帧 + 角色四视图 → 换角色复刻（任务制，逐帧推理）。 */
+  poseClone: (payload: {
+    projectId: string
+    mode?: 'per-frame' | 'whole-sheet'
+    files?: string[]
+    sheetFile?: string
+    sheetKind?: 'refs' | 'images'
+    refs?: string[]
+    instruction?: string
+    negative?: string
+    steps?: number
+    size?: number
+    background?: string
+    anchor?: string
+    refMode?: string
+    seed?: number | null
+    maxSeqLen?: number | null
+  }) =>
+    fetch('/api/poseclone', jsonInit(payload)).then(j<{ taskId: string }>),
+
   /** 视频转素材 · 精灵图：选中帧 → 网格拼图 + 索引 JSON（同步）。 */
   spriteGrid: (payload: {
     projectId: string

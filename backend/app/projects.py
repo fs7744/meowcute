@@ -50,6 +50,7 @@ ALLOWED_TYPES = ("generate", "result", "input", "refine", "matte", "viewgen",
                  "parts", "rigwalk", "txtvideo",
                  "threeview", "walkvideo", "sequence", "spritesheet", "play",
                  "clipsrc", "framesplit", "spritegrid", "animpreview",
+                 "spritesplit", "poseclone",
                  "godot2d", "inpaint", "erase", "layer25d")
 
 # 扣背景节点的默认参数。enabled 默认 True：模板里放进去就是为了「生成结果先扣底」，
@@ -258,6 +259,35 @@ DEFAULT_FRAMESPLIT = {
     "step": 1,
     "simPct": 0,
     "picks": [],
+}
+
+# 精灵图拆解：cols/rows/cell 全 0 = 自动识别网格。不去底是默认——
+# 我们自己产出的精灵图已经是透明底，逐帧抠图白等几百毫秒/帧。
+DEFAULT_SPRITESPLIT = {
+    "enabled": True,
+    "cols": 0,
+    "rows": 0,
+    "cell": 0,
+    "count": 0,
+    "matte": False,
+    "tolerance": 40,
+    "picks": [],
+}
+
+# 动作复刻：instruction 留空 = 用程序里的默认指令（界面上会把它显示出来供编辑）。
+# 这条规矩来自踩过的坑：提示词写死在程序里、界面上看不到，用户改不动也查不到。
+DEFAULT_POSECLONE = {
+    "enabled": True,
+    "mode": "per-frame",
+    "instruction": "",
+    "negative": "",
+    "steps": 0,
+    "size": 0,
+    "background": "transparent",
+    "anchor": "bottom",
+    "refMode": "auto",
+    "seed": None,
+    "maxSeqLen": None,
 }
 
 DEFAULT_SPRITEGRID = {
@@ -507,6 +537,18 @@ def create_project(name: str, template_id: str, template_defaults: Dict[str, Any
                 n["framesplit"] = {**DEFAULT_FRAMESPLIT,
                                    **(n.get("framesplit") if isinstance(n.get("framesplit"), dict) else {})}
                 n["framesplit"]["picks"] = []
+            elif n["type"] == "spritesplit":
+                n["result"] = None
+                n["frames"] = []
+                n["source"] = None
+                n["spritesplit"] = {**DEFAULT_SPRITESPLIT,
+                                    **(n.get("spritesplit") if isinstance(n.get("spritesplit"), dict) else {})}
+                n["spritesplit"]["picks"] = []
+            elif n["type"] == "poseclone":
+                n["result"] = None
+                n["frames"] = []
+                n["poseclone"] = {**DEFAULT_POSECLONE,
+                                  **(n.get("poseclone") if isinstance(n.get("poseclone"), dict) else {})}
             elif n["type"] == "spritegrid":
                 n["result"] = None
                 n["images"] = []
@@ -741,6 +783,24 @@ def save_project(pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "frames": [c for c in (_clean_split_frame(x)
                                        for x in (n.get("frames") or [])[:600]) if c],
                 "source": (n.get("source") if isinstance(n.get("source"), dict) else None),
+                "result": n.get("result") if isinstance(n.get("result"), dict) else None,
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "spritesplit":
+            item.update({
+                "spritesplit": _clean_spritesplit(n.get("spritesplit")),
+                "frames": [c for c in (_clean_split_frame(x)
+                                       for x in (n.get("frames") or [])[:256]) if c],
+                "source": (n.get("source") if isinstance(n.get("source"), dict) else None),
+                "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
+                "createdAt": _num(n.get("createdAt"), _now()),
+            })
+        elif n["type"] == "poseclone":
+            item.update({
+                "poseclone": _clean_poseclone(n.get("poseclone")),
+                "frames": [c for c in (_clean_split_frame(x)
+                                       for x in (n.get("frames") or [])[:256]) if c],
                 "result": n.get("result") if isinstance(n.get("result"), dict) else None,
                 "meta": n.get("meta") if isinstance(n.get("meta"), dict) else None,
                 "createdAt": _num(n.get("createdAt"), _now()),
@@ -1257,6 +1317,57 @@ def _clean_split_frame(f: Any) -> Optional[Dict[str, Any]]:
         "diff": _cl(f.get("diff"), 0.0, 0.0, 100.0),
         "sharp": _cl(f.get("sharp"), 0.0, 0.0, 1000.0),
         "hash": str(f.get("hash") or "")[:400],
+        # 动作复刻的每帧指标。不进白名单 → 刷新页面后「动作重合 62%」那排
+        # 告警凭空消失，用户以为复刻结果变好了（实际只是指标没了）。
+        "iou": (None if f.get("iou") is None
+                else _cl(f.get("iou"), 0.0, 0.0, 1.0)),
+        "dx": (None if f.get("dx") is None else _ci(f.get("dx"), 0, -8192, 8192)),
+        "dy": (None if f.get("dy") is None else _ci(f.get("dy"), 0, -8192, 8192)),
+        "seconds": (None if f.get("seconds") is None
+                    else _cl(f.get("seconds"), 0.0, 0.0, 3600.0)),
+    }
+
+
+def _clean_spritesplit(f: Any) -> Dict[str, Any]:
+    """精灵图拆解参数。picks 与 framesplit 同语义（勾选了哪些帧）。"""
+    f = f if isinstance(f, dict) else {}
+    picks = [str(x)[:200] for x in (f.get("picks") or []) if isinstance(x, str)][:256]
+    return {
+        "enabled": bool(f.get("enabled", True)),
+        "cols": _ci(f.get("cols"), 0, 0, 64),
+        "rows": _ci(f.get("rows"), 0, 0, 64),
+        "cell": _ci(f.get("cell"), 0, 0, 1024),
+        "count": _ci(f.get("count"), 0, 0, 256),
+        "matte": bool(f.get("matte", False)),
+        "tolerance": _ci(f.get("tolerance"), 40, 10, 120),
+        "picks": picks,
+    }
+
+
+def _clean_poseclone(f: Any) -> Dict[str, Any]:
+    """动作复刻参数。instruction 允许 4000 字：它是一整段多图编辑指令，
+    默认值本身就有 300 多字，按 200 字截断会把「不要画出四个视角」这类
+    关键约束拦腰砍掉（而那正是最容易出错的一条）。"""
+    f = f if isinstance(f, dict) else {}
+    mode = str(f.get("mode") or "per-frame")
+    bg = str(f.get("background") or "transparent")
+    anchor = str(f.get("anchor") or "bottom")
+    ref_mode = str(f.get("refMode") or "auto")
+    return {
+        "enabled": bool(f.get("enabled", True)),
+        "mode": mode if mode in ("per-frame", "whole-sheet") else "per-frame",
+        "instruction": str(f.get("instruction") or "")[:4000],
+        "negative": str(f.get("negative") or "")[:1200],
+        "steps": _ci(f.get("steps"), 0, 0, 50),
+        "size": _ci(f.get("size"), 0, 0, 1536),
+        "background": bg if bg in ("transparent", "", "none", "white",
+                                   "gray", "black") else "transparent",
+        "anchor": anchor if anchor in ("bottom", "center") else "bottom",
+        "refMode": ref_mode if ref_mode in ("auto", "as-is") else "auto",
+        "seed": (None if f.get("seed") in (None, "")
+                 else _ci(f.get("seed"), 0, 0, 2**31 - 1)),
+        "maxSeqLen": (None if f.get("maxSeqLen") in (None, "", 0)
+                      else _ci(f.get("maxSeqLen"), 0, 256, 1920)),
     }
 
 

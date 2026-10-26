@@ -2080,6 +2080,95 @@ def _run_checks(client) -> int:
           _cf.plan_loop(_mono)["action"] in ("noPeriod", "cannotTrim", "noGain")
           and _cf.plan_loop(_mono)["countAfter"] == 30, str(_cf.plan_loop(_mono)["action"]))
 
+    # ================= 精灵图动作复刻（2026-10-26） =================
+    # 拆精灵图最怕「认错网格」：把 4×4 认成 8×8 就会把每个角色切成四块。
+    # 这里用「自己落格的产物」做环路验证：spritegrid 拼出来的图必须能被
+    # detect_grid 认回原来的行列数——这是唯一不依赖人工标注的自检办法。
+    from backend.app.pipelines import spritesplit as _ss
+    from backend.app.pipelines import poseclone as _pc
+    from backend.app.pipelines.spritegrid import run_grid as _run_grid2
+
+    def _stick_frames(n):
+        out = []
+        for _i in range(n):
+            _im = Image.new("RGBA", (120, 200), (0, 0, 0, 0))
+            _d = ImageDraw.Draw(_im)
+            _d.ellipse([32, 20, 88, 90], fill=(210, 90, 70, 255))
+            _d.rectangle([36, 88, 84, 170], fill=(90, 110, 150, 255))
+            _d.rectangle([46, 168, 58, 196], fill=(60, 60, 70, 255))
+            _d.rectangle([62, 168, 74, 196], fill=(60, 60, 70, 255))
+            out.append(_im)
+        return out
+
+    for _n, _cell in ((4, 128), (8, 128), (9, 256), (12, 256)):
+        _sheet, _, _gm = _run_grid2(_stick_frames(_n), cell=_cell)
+        _g = _ss.detect_grid(_sheet)
+        check(f"{_n} 帧精灵图的网格能被认回 {_gm['cols']}x{_gm['rows']}",
+              (_g["cols"], _g["rows"]) == (_gm["cols"], _gm["rows"]),
+              f'{_g["cols"]}x{_g["rows"]} vs {_gm["cols"]}x{_gm["rows"]}')
+
+    # 尾部空格（8 帧排 3×3，最后一格空）当初被判成 3×2 → 白丢一帧
+    _sheet8, _, _gm8 = _run_grid2(_stick_frames(8), cell=128)
+    _g8 = _ss.detect_grid(_sheet8)
+    check("最后一格是空的也不会少算一行",
+          (_g8["cols"], _g8["rows"]) == (_gm8["cols"], _gm8["rows"]), str(_g8))
+
+    # 拆帧必须可逆：裁的是**格子**而不是内容 bbox，重排回去应逐像素还原
+    _spf, _sm = _ss.run_split(_sheet8, matte=False)
+    _back = Image.new("RGBA", _sheet8.size, (0, 0, 0, 0))
+    for _f in _spf:
+        _back.paste(_f["image"], (_f["col"] * _sm["cellW"], _f["row"] * _sm["cellH"]))
+    _d1 = np.abs(np.asarray(_sheet8.convert("RGBA")).astype(int)
+                 - np.asarray(_back).astype(int))
+    check("拆帧保留格子原尺寸，重排能逐像素还原", int(_d1.max()) == 0, str(int(_d1.max())))
+
+    # 单张立绘（不是精灵图）要被认成 1 帧并说明，而不是报「没认出网格」
+    _lone = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+    ImageDraw.Draw(_lone).ellipse([60, 40, 200, 220], fill=(120, 160, 200, 255))
+    _gl = _ss.detect_grid(_lone)
+    check("单张图认成 1x1，并明确提示「只有一帧」",
+          _gl["cols"] == 1 and _gl["rows"] == 1 and bool(_gl["warnings"]), str(_gl))
+
+    # 复刻完的对齐：模型把角色画在别处时，应整体平移回源帧的落脚点
+    def _box(box):
+        _im = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+        ImageDraw.Draw(_im).rectangle(box, fill=(200, 80, 60, 255))
+        return _im
+
+    _src, _gen = _box((100, 80, 160, 200)), _box((20, 10, 80, 130))
+    _before = _pc.silhouette_iou(_gen, _src)
+    _aligned, _ai = _pc._align_to(_gen, _src)
+    check("对齐把剪影重合从 0 拉到 1",
+          _before < 0.05 and _pc.silhouette_iou(_aligned, _src) > 0.98,
+          f"{_before} -> {_ai}")
+
+    # 长条四视图板重排：同样 256×256 的参考图预算，每视角从 64px 变 128px
+    _board = Image.new("RGBA", (1600, 400), (0, 0, 0, 0))
+    for _k in range(4):
+        ImageDraw.Draw(_board).rectangle(
+            [_k * 400 + 100, 50, _k * 400 + 300, 350], fill=(90, 110, 150, 255))
+    _packed, _note = _pc.repack_board(_board)
+    check("4:1 四视图板被重排成 2x2（有效像素翻倍）",
+          _packed.size == (800, 800) and _note == "4x1→2x2",
+          f"{_packed.size} {_note}")
+    _same, _note2 = _pc.repack_board(Image.new("RGBA", (512, 512)))
+    check("本来就是方形的板不动它", _note2 == "as-is" and _same.size == (512, 512))
+
+    # 指令占位符：{帧号}/{总帧数}/{背景} 必须真的被替换，否则模型看到的是模板原文
+    _txt = _pc.build_instruction(_pc.DEFAULT_INSTRUCTION, index=3, total=12,
+                                 background="transparent")
+    check("指令占位符被替换成实际值",
+          "3/12" in _txt and "{帧号}" not in _txt and "透明" in _txt)
+
+    # 模板：graph 必须是「两路输入汇到动作复刻」这条链
+    from backend.app.templates import get_template as _get_tpl
+    _tpl = _get_tpl("sprite_pose_clone")
+    _types = [n["type"] for n in (_tpl or {}).get("graph", {}).get("nodes", [])]
+    _ins = [e for e in (_tpl or {}).get("graph", {}).get("edges", [])
+            if e.get("to") == "pc1"]
+    check("动作复刻模板存在，且动作复刻节点收两路输入",
+          bool(_tpl) and _types.count("input") == 2 and len(_ins) == 2, str(_types))
+
     # 落格方式（2026-10-26）：精灵图「左右抖动」的真凶是逐帧按自己的 bbox 居中——
     # 衣摆/袖子摆一下，bbox 中心就移，整幅（连纹丝不动的头）被反向挪回去。
     # 实测真实素材头只晃 3.8px，逐帧居中把它放大成 16~96px。

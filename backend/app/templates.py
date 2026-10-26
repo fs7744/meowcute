@@ -778,6 +778,126 @@ TEMPLATES: List[Dict[str, Any]] = [
         },
     },
     {
+        "id": "sprite_pose_clone",
+        "name": "精灵图动作复刻 · 换成自己的角色",
+        "tagline": "别人的精灵图 + 你的四视图 → 一模一样的动作，你的角色",
+        "status": "available",
+        "accent": "#E8A33D",
+        "icon": "sprite",
+        "description": (
+            "你看到一张非常好用的动作精灵图（商店素材、别人的 demo、AI 出的），"
+            "但角色不是你要的。这条链把它整套动作搬到你的角色身上："
+            "「选择图片」传那张精灵图 →「拆解精灵图」自动认出网格、拆成一摞帧，"
+            "你勾掉不要的帧 → 另一个「选择图片」传你的角色四视图 →「动作复刻」"
+            "逐帧用 Qwen-Image 的多图编辑把动作原样复刻到你的角色上 →"
+            "「精灵图」拼回一张新的 →「动画预览」看循环顺不顺。\n\n"
+            "为什么逐帧而不是整张一次改：模型对「十几个姿势 + 严格等距网格」的"
+            "保持力很弱，整张丢进去常见结果是格子被重排、帧数变少——而引擎切图"
+            "完全依赖等距网格，一旦错位整张就废了。逐帧复刻每帧一次推理，"
+            "动作由源帧锚定（复刻完还会整体平移回源帧的落脚点），可单帧重跑。"
+            "「整图一次改」留在节点里当草稿：20 秒先看角色像不像，再决定要不要"
+            "花几分钟走逐帧。"
+        ),
+        "highlights": [
+            "网格自动识别：不填行列数也能拆（最后一格是空的也能认对）",
+            "拆错了随时改：手动填列数 / 行数 / 单元格边长，重拆一次即可",
+            "逐帧勾选：只复刻你要的那几帧，帧数越少越快",
+            "四视图当参考：正面/侧面/背面/右侧一起喂，转身帧才长得对",
+            "长条四视图板自动重排成 2×2，同等尺寸下参考图有效像素翻几倍",
+            "每帧给「动作重合度」：哪一帧姿势被模型改写了一目了然",
+            "复刻完自动对齐：生成帧整体平移回源帧的落脚点，重新落格不抖",
+            "指令可编辑：界面上能直接改复刻指令，也能一键恢复默认",
+        ],
+        "inputs": [
+            {"key": "image", "label": "动作来源精灵图", "required": True,
+             "hint": "上传一张序列帧精灵图（横向或方阵都行，透明底最好）"},
+            {"key": "spritesplit", "label": "拆解精灵图", "required": False,
+             "hint": "列数 / 行数 / 单元格边长（0=自动）/ 去底"},
+            {"key": "image2", "label": "角色四视图", "required": True,
+             "hint": "上传正面 / 侧面 / 背面 / 右侧拼成的一张板"},
+            {"key": "poseclone", "label": "动作复刻", "required": False,
+             "hint": "复刻方式 / 指令 / 步数 / 输出尺寸 / 对齐锚点 / 背景"},
+            {"key": "spritegrid", "label": "精灵图", "required": False,
+             "hint": "单元格边长 / 每行列数 / 锚点 / 统一落格"},
+            {"key": "animpreview", "label": "动画预览", "required": False,
+             "hint": "播放帧率 / 显示倍率 / 循环 / 底色"},
+        ],
+        "steps": [
+            {"n": 1, "title": "传动作精灵图", "detail": "上传要复刻的那张序列帧精灵图"},
+            {"n": 2, "title": "拆解精灵图", "detail": "自动识别网格 → 拆成逐帧 → 勾选要复刻的帧"},
+            {"n": 3, "title": "传角色四视图", "detail": "上传你角色的四视图板（正面/侧面/背面/右侧）"},
+            {"n": 4, "title": "动作复刻", "detail": "逐帧多图编辑：动作照源帧，角色照四视图"},
+            {"n": 5, "title": "拼回精灵图", "detail": "复刻帧按网格拼成新精灵图 + 索引 JSON"},
+            {"n": 6, "title": "动画预览", "detail": "循环播放，检查接缝与角色一致性"},
+        ],
+        "outputs": [
+            {"label": "新精灵图 PNG", "detail": "你的角色 + 别人的动作，透明底、网格对齐"},
+            {"label": "逐帧 PNG", "detail": "复刻后的每一帧单独成文件"},
+            {"label": "索引 JSON", "detail": "帧坐标 + pivot，Phaser / Unity / Godot 都能吃"},
+            {"label": "动作重合度", "detail": "每帧与源帧的剪影重合率，用来判断哪帧要重跑"},
+        ],
+        "defaults": {
+            "styleId": "pixel_16bit",
+            "width": 512,
+            "height": 512,
+            "n": 1,
+            "background": "gray",
+            "maxSeqLen": None,
+        },
+        "notes": [
+            "画布是一条分叉后合流的链：精灵图 → 拆解精灵图 ┐",
+            "                                  角色四视图 ┴→ 动作复刻 → 精灵图 → 动画预览",
+            "「动作复刻」要收两路输入：左边接「拆解精灵图」（动作帧），"
+            "另一条线接「选择图片」（角色四视图）。两条缺一不可。",
+            "四视图建议直接用「角色四视图」模板产出；单张立绘也能跑，但侧面/背面朝向容易跑偏。",
+            "动作重合度低于 70% 的帧会在节点上标红：那说明模型改了姿势，"
+            "把这一帧重跑一次（或直接不选它）比将就更好。",
+            "整图一次改（草稿模式）只适合「先看角色像不像」：它会重排网格，"
+            "出图网格一旦和原图不一致，节点会直接标「网格已变」，别拿它出最终素材。",
+            "拆出来的帧保留格子原尺寸（不裁到角色包围盒）：这样帧与帧的相对位置不会丢，"
+            "下游统一落格时角色才不会左右乱跳。",
+            "8 帧大约 2 分钟，16 帧大约 4 分钟（RTX 4090、40 步、256px 格）。"
+            "先把帧数压到真正需要的数量，比事后重跑省事得多。",
+        ],
+        # 内置节点图。两个「选择图片」分别在左上和左下，就是提示这两路输入
+        # 都要接：精灵图给动作，四视图给角色。
+        "graph": {
+            "nodes": [
+                {"id": "in1", "type": "input", "x": 80, "y": 100, "refs": [],
+                 "label": "动作来源精灵图"},
+                {"id": "in2", "type": "input", "x": 80, "y": 560, "refs": [],
+                 "label": "角色四视图"},
+                {"id": "sp1", "type": "spritesplit", "x": 520, "y": 100,
+                 "spritesplit": {"enabled": True, "cols": 0, "rows": 0, "cell": 0,
+                                 "count": 0, "matte": False, "tolerance": 40,
+                                 "picks": []},
+                 "frames": [], "result": None, "source": None, "meta": None},
+                {"id": "pc1", "type": "poseclone", "x": 1060, "y": 320,
+                 "poseclone": {"enabled": True, "mode": "per-frame",
+                               "instruction": "", "negative": "",
+                               "steps": 0, "size": 0, "background": "transparent",
+                               "anchor": "bottom", "refMode": "auto",
+                               "seed": None, "maxSeqLen": None},
+                 "frames": [], "result": None, "meta": None},
+                {"id": "sg1", "type": "spritegrid", "x": 1600, "y": 320,
+                 "spritegrid": {"enabled": True, "cell": 128, "cols": 0,
+                                "padding": 0, "margin": 0, "anchor": "bottom",
+                                "sharedScale": True, "pivot": "shared", "fps": 12},
+                 "result": None, "images": [], "meta": None},
+                {"id": "ap1", "type": "animpreview", "x": 2120, "y": 320,
+                 "animpreview": {"enabled": True, "fps": 12, "zoom": 4,
+                                 "loop": True, "bg": "checker"}},
+            ],
+            "edges": [
+                {"from": "in1", "to": "sp1"},
+                {"from": "sp1", "to": "pc1"},
+                {"from": "in2", "to": "pc1"},
+                {"from": "pc1", "to": "sg1"},
+                {"from": "sg1", "to": "ap1"},
+            ],
+        },
+    },
+    {
         "id": "scene_layers",
         "name": "场景语义分层",
         "tagline": "一张场景图 → 多层视差素材",

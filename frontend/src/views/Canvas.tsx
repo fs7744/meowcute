@@ -2,11 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, loadPromptLimits, subscribeTask } from '../api'
 import { promptLimitFor } from '../lib/promptLimit'
 import { HY15_DEFAULT_WINDOW } from '../lib/hy15Defaults'
+import { POSECLONE_DEFAULT_INSTRUCTION } from '../lib/posecloneDefaults'
 import { setViewMode, useViewMode } from '../lib/viewMode'
 import AnimPreviewNode from '../components/AnimPreviewNode'
 import ClipSrcNode from '../components/ClipSrcNode'
 import FramesplitNode from '../components/FramesplitNode'
 import SpriteGridNode from '../components/SpriteGridNode'
+import SpriteSplitNode from '../components/SpriteSplitNode'
+import PoseCloneNode from '../components/PoseCloneNode'
 import GodotExportNode from '../components/GodotExportNode'
 import InpaintNode from '../components/InpaintNode'
 import EraseNode from '../components/EraseNode'
@@ -44,6 +47,8 @@ import type {
   ResultMeta, ResultNode as ResultNodeType, SequenceNode as SequenceNodeType,
   PartsNode as PartsNodeType, RigWalkNode as RigWalkNodeType,
   SpriteGridNode as SpriteGridNodeType, SpriteGridMeta,
+  SpriteSplitNode as SpriteSplitNodeType, SpriteSplitMeta,
+  PoseCloneNode as PoseCloneNodeType, PoseCloneMeta,
   SpriteSheetNode as SpriteSheetNodeType, Style, TaskProgress, Template,
   ThreeViewNode as ThreeViewNodeType,
   TxtVideoNode as TxtVideoNodeType, TxtVideoMeta,
@@ -74,6 +79,8 @@ const TXTVIDEO_W = 420
 const CLIPSRC_W = 360
 const FRAMESPLIT_W = 460
 const SPRITEGRID_W = 420
+const SPRITESPLIT_W = 460
+const POSECLONE_W = 470
 const ANIMPREVIEW_W = 340
 const GODOT_W = 380
 const INPAINT_W = 400
@@ -85,6 +92,7 @@ const NODE_W: Record<string, number> = {
   sequence: SEQUENCE_W, spritesheet: SPRITESHEET_W, play: PLAY_W,
   txtvideo: TXTVIDEO_W,
   clipsrc: CLIPSRC_W, framesplit: FRAMESPLIT_W, spritegrid: SPRITEGRID_W,
+  spritesplit: SPRITESPLIT_W, poseclone: POSECLONE_W,
   animpreview: ANIMPREVIEW_W, godot2d: GODOT_W, inpaint: INPAINT_W,
   erase: ERASE_W, layer25d: LAYER25D_W,
 }
@@ -115,9 +123,15 @@ const UPSTREAM_RULES: Record<string, string[]> = {
   erase: ['input', 'generate', 'matte', 'refine', 'result'],
   // 2.5D 分层要一张干净的立绘：上传的、生成的、精修/抠过的、结果卡的都行
   layer25d: ['input', 'generate', 'matte', 'refine', 'result'],
+  // 拆解精灵图：任何一张图都能试（认不出网格会明确让人手动填行列数）
+  spritesplit: ['input', 'generate', 'refine', 'matte', 'result', 'spritegrid'],
+  // 动作复刻要两路输入：动作帧（拆解精灵图）+ 角色四视图（选择图片）。
+  // 所以它**不能**进 SINGLE_INPUT：新连线若替换旧入边，两路输入就永远凑不齐。
+  poseclone: ['spritesplit', 'poseclone', 'input'],
   result: ['generate', 'refine', 'matte', 'viewgen', 'threeview',
            'walkvideo', 'sequence', 'spritesheet', 'play', 'txtvideo',
-           'parts', 'rigwalk', 'inpaint', 'erase', 'layer25d'],
+           'parts', 'rigwalk', 'inpaint', 'erase', 'layer25d',
+           'spritesplit', 'poseclone'],
 }
 
 const UPSTREAM_HINT: Record<string, string> = {
@@ -135,6 +149,8 @@ const UPSTREAM_HINT: Record<string, string> = {
   inpaint: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
   erase: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
   layer25d: '选择图片 / 生成图 / 像素精修 / 扣除背景 / 图片结果',
+  spritesplit: '选择图片（序列帧精灵图）/ 已生成的精灵图',
+  poseclone: '拆解精灵图（动作帧）+ 选择图片（角色四视图）',
   result: '生成图 / 像素精修 / 扣除背景 / 视角图 / 四视图拼板 / 行走链 / 局部重绘 / 去除局部 / 2.5D 分层',
 }
 
@@ -148,7 +164,8 @@ function canConnect(from: CanvasNode | undefined, to: CanvasNode | undefined): b
  *  四视图拼板不在列：它要收正/侧/背/右四路。 */
 const SINGLE_INPUT = new Set(['refine', 'matte', 'result', 'viewgen',
                               'walkvideo', 'sequence', 'spritesheet', 'play',
-                              'godot2d', 'inpaint', 'erase', 'layer25d'])
+                              'godot2d', 'inpaint', 'erase', 'layer25d',
+                              'spritesplit'])
 
 /** 右键「添加节点」的目录：分类 → 具体节点。
  *  节点类型只会越来越多，平铺成一条长列表很快就用不了了。 */
@@ -230,6 +247,15 @@ const NODE_CATALOG: {
         hint: '按设定帧率循环播放，可逐帧步进检查接缝' },
       { type: 'godot2d', label: 'Godot 导出', dot: 'd-godot',
         hint: 'SpriteFrames(.tres) + AnimatedSprite2D 场景(.tscn)，解压即用' },
+    ],
+  },
+  {
+    id: 'clone', label: '精灵图动作复刻', hint: '别人的动作素材 → 换成自己的角色',
+    items: [
+      { type: 'spritesplit', label: '拆解精灵图', dot: 'd-sheet',
+        hint: '一张序列帧精灵图 → 自动识别网格 → 勾选要复刻的帧' },
+      { type: 'poseclone', label: '动作复刻', dot: 'd-sequence',
+        hint: '动作帧 + 角色四视图 → 用你的角色一比一复刻同样的动作' },
     ],
   },
   {
@@ -719,6 +745,8 @@ export default function Canvas({ projectId, onBack }: Props) {
     else if (type === 'clipsrc') addClipSrcNode(at)
     else if (type === 'framesplit') addFrameSplitNode(at)
     else if (type === 'spritegrid') addSpriteGridNode(at)
+    else if (type === 'spritesplit') addSpriteSplitNode(at)
+    else if (type === 'poseclone') addPoseCloneNode(at)
     else if (type === 'animpreview') addAnimPreviewNode(at)
     else if (type === 'godot2d') addGodotNode(at)
     else if (type === 'inpaint') addInpaintNode(at)
@@ -885,6 +913,43 @@ export default function Canvas({ projectId, onBack }: Props) {
         step: 1, simPct: 0, picks: [],
       },
       frames: [], source: null, result: null, meta: null,
+      createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addSpriteSplitNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(SPRITESPLIT_W, 520)
+    const node: SpriteSplitNodeType = {
+      id: newId('sp'), type: 'spritesplit', x: spot.x, y: spot.y,
+      spritesplit: {
+        enabled: true, cols: 0, rows: 0, cell: 0, count: 0,
+        matte: false, tolerance: 40, picks: [],
+      },
+      frames: [], source: null, result: null, meta: null,
+      createdAt: Date.now() / 1000,
+    }
+    setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
+    setSelected(node.id)
+  }
+
+  const addPoseCloneNode = (at?: { x: number; y: number }) => {
+    if (!project) return
+    const spot = at
+      ? { x: Math.round(at.x), y: Math.round(at.y) }
+      : canvasSpot(POSECLONE_W, 560)
+    const node: PoseCloneNodeType = {
+      id: newId('pc'), type: 'poseclone', x: spot.x, y: spot.y,
+      poseclone: {
+        enabled: true, mode: 'per-frame', instruction: '', negative: '',
+        steps: 0, size: 0, background: 'transparent', anchor: 'bottom',
+        refMode: 'auto', seed: null, maxSeqLen: null,
+      },
+      frames: [], result: null, meta: null,
       createdAt: Date.now() / 1000,
     }
     setProject((p) => p ? { ...p, nodes: [...p.nodes, node] } : p)
@@ -1908,19 +1973,219 @@ export default function Canvas({ projectId, onBack }: Props) {
     }
   }
 
-  /** 上游拆帧节点里「已选」的帧文件，按帧序排列。 */
-  const upstreamPicks = (nodeId: string): { files: string[]; fps: number } | null => {
+  /** 沿入边找「产出一摞帧」的上游节点。
+   *  原来是只认 framesplit 的单入边查找；动作复刻链让「产帧」变成了三类节点
+   *  （拆视频 / 拆精灵图 / 复刻结果），而且 poseclone 本身要收两路输入，
+   *  所以必须遍历全部入边按类型挑，不能只取第一条。 */
+  const upstreamFrameNode = (nodeId: string):
+    FrameSplitNodeType | SpriteSplitNodeType | PoseCloneNodeType | null => {
     const p = projectRef.current
-    const e = p?.edges.find((x) => x.to === nodeId)
-    const s = e ? p?.nodes.find((n) => n.id === e.from) : null
-    if (!s || s.type !== 'framesplit') return null
-    const fs = s as FrameSplitNodeType
-    const frames = fs.frames || []
-    const picks = new Set(fs.framesplit?.picks || [])
+    if (!p) return null
+    for (const e of p.edges.filter((x) => x.to === nodeId)) {
+      const s = p.nodes.find((n) => n.id === e.from)
+      if (s && (s.type === 'framesplit' || s.type === 'spritesplit'
+        || s.type === 'poseclone')) {
+        return s as FrameSplitNodeType | SpriteSplitNodeType | PoseCloneNodeType
+      }
+    }
+    return null
+  }
+
+  /** 上游「已选」的帧文件，按帧序排列。 */
+  const upstreamPicks = (nodeId: string): { files: string[]; fps: number } | null => {
+    const s = upstreamFrameNode(nodeId)
+    if (!s) return null
+    const frames = (s as any).frames || []
+    if (s.type === 'poseclone') {
+      // 复刻结果是唯一产出，没有「勾选」这个概念：全部下发
+      return { files: frames.map((f: any) => f.file), fps: 12 }
+    }
+    const opts = s.type === 'framesplit'
+      ? (s as FrameSplitNodeType).framesplit
+      : (s as SpriteSplitNodeType).spritesplit
+    const picks = new Set(opts?.picks || [])
     // 只保留「既有勾选、又真的还在」的帧：用户换素材后旧的 picks 会指向
     // 已删除的文件，直接下发会让后端整批读不出来
-    const files = frames.filter((f) => picks.has(f.file)).map((f) => f.file)
-    return { files, fps: fs.meta?.effFps || 12 }
+    const files = frames.filter((f: any) => picks.has(f.file)).map((f: any) => f.file)
+    const fps = s.type === 'framesplit' ? ((s as any).meta?.effFps || 12) : 12
+    return { files, fps }
+  }
+
+  /** 上游「选择图片」传进来的参考图文件名（角色四视图 / 精灵图源）。
+   *  取**所有** input 类型的入边：poseclone 的角色参考就是从这里来的。 */
+  const upstreamRefFiles = (nodeId: string): string[] => {
+    const p = projectRef.current
+    if (!p) return []
+    const out: string[] = []
+    for (const e of p.edges.filter((x) => x.to === nodeId)) {
+      const s = p.nodes.find((n) => n.id === e.from)
+      if (s?.type === 'input') {
+        for (const r of (s as InputNodeType).refs || []) {
+          if (r?.file) out.push(r.file)
+        }
+      }
+    }
+    return out
+  }
+
+  /** 拆解精灵图的上游图：优先 input 的第一张，其次是已生成的精灵图产物。 */
+  const upstreamSpriteFile = (nodeId: string): { file: string; kind: 'refs' | 'images' } | null => {
+    const refs = upstreamRefFiles(nodeId)
+    if (refs.length) return { file: refs[0], kind: 'refs' }
+    const p = projectRef.current
+    if (!p) return null
+    for (const e of p.edges.filter((x) => x.to === nodeId)) {
+      const s = p.nodes.find((n) => n.id === e.from)
+      if (s?.type === 'spritegrid') {
+        const f = (s as SpriteGridNodeType).result?.url?.split('/').pop()
+        if (f) return { file: f, kind: 'images' }
+      }
+    }
+    return null
+  }
+
+  // ---- 动作复刻链第 1 步：精灵图 → 逐帧（任务制，去底较慢） ----
+  const executeSpriteSplit = async (
+    node: SpriteSplitNodeType,
+  ): Promise<{ frames: any[]; source: any; meta: SpriteSplitMeta }> => {
+    if (!project) throw new Error('项目未加载')
+    const up = upstreamSpriteFile(node.id)
+    const file = up?.file || node.source?.file || ''
+    if (!file) {
+      throw new Error('没有精灵图：先把「选择图片」（上传序列帧精灵图）连到这个节点的左侧端口')
+    }
+    const v = node.spritesplit
+    const { taskId } = await api.spriteSplit({
+      projectId: project.id,
+      file,
+      kind: up?.kind || 'refs',
+      cols: v?.cols ?? 0,
+      rows: v?.rows ?? 0,
+      cell: v?.cell ?? 0,
+      count: v?.count ?? 0,
+      matte: v?.matte ?? false,
+      tolerance: v?.tolerance ?? 40,
+    })
+    activeTaskRef.current = taskId
+    setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+    const r: any = await awaitTask<any>(taskId, node.id)
+    if (activeTaskRef.current === taskId) activeTaskRef.current = null
+    const sp: any = r.split || {}
+    return {
+      frames: sp.frames || [],
+      source: sp.source ?? null,
+      meta: (sp.meta || {}) as SpriteSplitMeta,
+    }
+  }
+
+  const runSpriteSplit = async (node: SpriteSplitNodeType) => {
+    if (!node.spritesplit?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const { frames, source, meta } = await executeSpriteSplit(node)
+      setProject((p) => p ? {
+        ...p,
+        nodes: p.nodes.map((n) => n.id === node.id ? ({
+          ...n, frames, source, meta,
+          // 重拆后文件名全变（旧产物已清理），旧 picks 必然失效 → 全选
+          spritesplit: { ...node.spritesplit, picks: frames.map((f: any) => f.file) },
+        } as CanvasNode) : n),
+      } : p)
+    } catch (e: any) {
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
+  }
+
+  // ---- 动作复刻链第 2 步：动作帧 + 角色四视图 → 换角色复刻（逐帧推理，慢） ----
+  const executePoseClone = async (
+    node: PoseCloneNodeType,
+  ): Promise<{ frames: any[]; meta: PoseCloneMeta }> => {
+    if (!project) throw new Error('项目未加载')
+    const v = node.poseclone
+    const mode = v?.mode ?? 'per-frame'
+    // 角色参考：所有 input 入边的 refs。整图模式下精灵图另走 sheetFile，
+    // 所以两路输入不会打架。
+    const refs = upstreamRefFiles(node.id)
+    if (!refs.length) {
+      throw new Error('没有角色参考图：把「选择图片」（上传正面/侧面/背面/右侧四视图）连到这个节点')
+    }
+
+    let files: string[] = []
+    let sheetFile = ''
+    let sheetKind: 'refs' | 'images' = 'refs'
+    if (mode === 'whole-sheet') {
+      // 整图复刻用的是「拆解精灵图」节点记下的原图（它知道文件在哪）
+      const up = upstreamFrameNode(node.id)
+      const splitNode = up && up.type === 'spritesplit'
+        ? (up as SpriteSplitNodeType) : null
+      sheetFile = splitNode?.source?.file || upstreamSpriteFile(node.id)?.file || ''
+      if (!sheetFile) {
+        throw new Error('整图复刻需要先把「拆解精灵图」接上：它提供原始精灵图')
+      }
+      sheetKind = 'refs'
+    } else {
+      const up = upstreamPicks(node.id)
+      if (!up || !up.files.length) {
+        throw new Error('上游还没有勾选任何动作帧：在「拆解精灵图」里勾几张')
+      }
+      files = up.files
+    }
+
+    const { taskId } = await api.poseClone({
+      projectId: project.id,
+      mode,
+      files,
+      sheetFile,
+      sheetKind,
+      refs,
+      // 没改过就用界面上的默认指令（后端收到非空文本就原样使用，
+      // 这样「界面上看到的」和「实际发出去的」永远是同一份）
+      instruction: (v?.instruction || '').trim() || POSECLONE_DEFAULT_INSTRUCTION,
+      negative: (v?.negative || '').trim(),
+      steps: v?.steps ?? 0,
+      size: v?.size ?? 0,
+      background: v?.background ?? 'transparent',
+      anchor: v?.anchor ?? 'bottom',
+      refMode: v?.refMode ?? 'auto',
+      seed: v?.seed ?? null,
+      maxSeqLen: v?.maxSeqLen ?? null,
+    })
+    activeTaskRef.current = taskId
+    setTasks((t) => ({ ...t, [node.id]: { taskId, progress: null, error: null } }))
+    const r: any = await awaitTask<any>(taskId, node.id)
+    if (activeTaskRef.current === taskId) activeTaskRef.current = null
+    const cl: any = r.clone || {}
+    return { frames: cl.frames || [], meta: (cl.meta || {}) as PoseCloneMeta }
+  }
+
+  const runPoseClone = async (node: PoseCloneNodeType) => {
+    if (!node.poseclone?.enabled) return
+    if (isRunning(node.id)) return
+    markBusy(node.id, true)
+    setTasks((t) => ({ ...t, [node.id]: { taskId: '', progress: null, error: null } }))
+    try {
+      const { frames, meta } = await executePoseClone(node)
+      setProject((p) => p ? {
+        ...p,
+        nodes: p.nodes.map((n) => n.id === node.id ? ({
+          ...n, frames, meta,
+        } as CanvasNode) : n),
+      } : p)
+    } catch (e: any) {
+      setTasks((t) => ({
+        ...t,
+        [node.id]: { ...(t[node.id] || { taskId: '' }), error: String(e.message || e) },
+      }))
+    } finally {
+      markBusy(node.id, false)
+    }
   }
 
   const executeSpriteGrid = async (
@@ -3326,6 +3591,14 @@ export default function Canvas({ projectId, onBack }: Props) {
     () => (project?.nodes || []).filter((n): n is SpriteGridNodeType => n.type === 'spritegrid'),
     [project?.nodes],
   )
+  const spriteSplitNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is SpriteSplitNodeType => n.type === 'spritesplit'),
+    [project?.nodes],
+  )
+  const poseCloneNodes = useMemo(
+    () => (project?.nodes || []).filter((n): n is PoseCloneNodeType => n.type === 'poseclone'),
+    [project?.nodes],
+  )
   const animPreviewNodes = useMemo(
     () => (project?.nodes || []).filter((n): n is AnimPreviewNodeType => n.type === 'animpreview'),
     [project?.nodes],
@@ -3730,6 +4003,45 @@ export default function Canvas({ projectId, onBack }: Props) {
               onDelete={() => deleteNode(n.id)}
               onDragStart={startDragNode(n.id)}
               onRun={() => runFrameSplit(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {spriteSplitNodes.map((n, i) => (
+            <SpriteSplitNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={isRunning(n.id)}
+              progress={tasks[n.id]?.progress?.label}
+              error={tasks[n.id]?.error ?? null}
+              upstreamFile={upstreamSpriteFile(n.id)?.file ?? null}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runSpriteSplit(n)}
+              onStartLink={startLink}
+              onFinishLink={finishLink}
+              onPreview={(url, title) => setPreview({ src: url, title })}
+            />
+          ))}
+
+          {poseCloneNodes.map((n, i) => (
+            <PoseCloneNode
+              key={n.id}
+              node={n}
+              index={i}
+              running={isRunning(n.id)}
+              progress={tasks[n.id]?.progress?.label}
+              error={tasks[n.id]?.error ?? null}
+              upstreamPicked={upstreamPicks(n.id)?.files.length ?? null}
+              charRefCount={upstreamRefFiles(n.id).length}
+              onChange={(patch) => patchNode(n.id, patch)}
+              onDelete={() => deleteNode(n.id)}
+              onDragStart={startDragNode(n.id)}
+              onRun={() => runPoseClone(n)}
               onStartLink={startLink}
               onFinishLink={finishLink}
               onPreview={(url, title) => setPreview({ src: url, title })}
