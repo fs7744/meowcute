@@ -286,6 +286,7 @@ DEFAULT_POSECLONE = {
     "background": "transparent",
     "anchor": "bottom",
     "refMode": "auto",
+    "refView": "auto",
     "seed": None,
     "maxSeqLen": None,
 }
@@ -1364,6 +1365,11 @@ def _clean_poseclone(f: Any) -> Dict[str, Any]:
                                    "gray", "black") else "transparent",
         "anchor": anchor if anchor in ("bottom", "center") else "bottom",
         "refMode": ref_mode if ref_mode in ("auto", "as-is") else "auto",
+        # 角色参考视角：auto=用第一帧试 4 格选最像的；board=整板一起喂（老行为）
+        "refView": (str(f.get("refView") or "auto")
+                    if str(f.get("refView") or "auto") in (
+                        "auto", "front", "side", "back", "side2", "board")
+                    else "auto"),
         "seed": (None if f.get("seed") in (None, "")
                  else _ci(f.get("seed"), 0, 0, 2**31 - 1)),
         "maxSeqLen": (None if f.get("maxSeqLen") in (None, "", 0)

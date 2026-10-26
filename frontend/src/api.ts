@@ -433,6 +433,8 @@ pixelArt?: boolean
     background?: string
     anchor?: string
     refMode?: string
+    /** 角色参考视角：auto / front / side / back / side2 / board */
+    refView?: string
     seed?: number | null
     maxSeqLen?: number | null
     /** 只跑这几帧（源帧下标）。空 = 全量 */

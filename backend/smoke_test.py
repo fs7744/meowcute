@@ -2219,6 +2219,37 @@ def _run_checks(client) -> int:
           and _pc.repack_board(_sq)[1] == "as-is",
           f"{_pc.repack_board(_long)} / {_pc.repack_board(_sq)}")
 
+    # ---- 身份迁移（2026-10-27 用户真实素材实测出的核心问题）----
+    # 场景：动作源是「光头肉色像素小人」，四视图是「青蓝古风剑客」，
+    # 要求用四视图的角色做源帧的动作。整板喂给模型时它根本不用四视图：
+    #   A 整板 + 老指令 → 复制光头小人（肤色占比 0.56）
+    #   C 整板 + 强指令 → 画了个灰剪影（听懂"图1 不是对象"，但没用四视图）
+    #   E 单视角 + 强指令 → 青蓝 0.83 / 肤色 0.01，正确画出剑客
+    check("指令明确说了图1 的角色不是要画的对象（否则模型会照抄它）",
+          "不是要画的对象" in _pc.DEFAULT_INSTRUCTION
+          and "唯一来源" in _pc.DEFAULT_INSTRUCTION,
+          _pc.DEFAULT_INSTRUCTION[:40])
+
+    _cellboard = Image.new("RGBA", (512, 508), (0, 0, 0, 0))
+    _dd = ImageDraw.Draw(_cellboard)
+    for _r in range(2):
+        for _c in range(2):
+            _dd.rectangle([_c * 256 + 80, _r * 254 + 40,
+                           _c * 256 + 180, _r * 254 + 220], fill=(120, 160, 200, 255))
+    _cells = _pc.split_board_cells(_cellboard)
+    check("四视图板被切成 4 个单视角（同预算下有效像素翻 4 倍）",
+          len(_cells) == 4 and _cells[0].size == (256, 254), str(len(_cells)))
+    check("不是四视图板就不切（空白板/奇数宽/单张立绘）",
+          len(_pc.split_board_cells(Image.new("RGBA", (512, 508), (0, 0, 0, 0)))) == 1
+          and len(_pc.split_board_cells(Image.new("RGBA", (255, 300)))) == 1)
+
+    _h_same = _pc._color_hist(Image.new("RGBA", (64, 64), (120, 160, 200, 255)))
+    _h_diff = _pc._color_hist(Image.new("RGBA", (64, 64), (20, 20, 20, 255)))
+    check("配色直方图能区分「像参考」和「不像」（挑视角靠它）",
+          _pc._hist_dist(_h_same, _h_same) < 0.01
+          and _pc._hist_dist(_h_same, _h_diff) > 0.8,
+          f'{_pc._hist_dist(_h_same, _h_diff):.2f}')
+
     # ---- 边跑边落盘（2026-10-26）：批量任务不该把整批像素攒在内存里 ----
     # 拆 600 帧 × 384² 是 338MB、八方向行走 648MB（重试时近 1.3GB），
     # 而且攒着的话中途失败/取消就一帧都拿不到。

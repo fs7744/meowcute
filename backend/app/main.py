@@ -2715,6 +2715,9 @@ class PoseClonePayload(BaseModel):
     background: str = "transparent"
     anchor: str = "bottom"
     refMode: str = "auto"       # auto = 长条四视图板自动重排成方形
+    # 角色参考用哪个视角：auto=用第一帧试 4 格、选配色最像的那个；
+    # front/side/back/side2=指定；board=整板一起喂（老行为，实测模型基本不读它）
+    refView: str = "auto"
     seed: Optional[int] = None
     maxSeqLen: Optional[int] = None
     # 只跑 files 里的这几帧（按**源帧下标**，空 = 全部重跑）。
@@ -2849,6 +2852,8 @@ async def _run_pose_clone(task_id: str, payload: PoseClonePayload) -> None:
             instruction=payload.instruction, negative=payload.negative,
             steps=payload.steps or None, size=payload.size,
             background=background, anchor=anchor, ref_mode=payload.refMode,
+            ref_view=(payload.refView if payload.refView in (
+                "auto", "front", "side", "back", "side2", "board") else "auto"),
             seed=payload.seed, max_seq_len=payload.maxSeqLen,
             provider_cfg=provider_cfg, task_id=task_id, on_frame=_persist)
 

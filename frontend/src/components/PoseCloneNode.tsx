@@ -50,7 +50,7 @@ export default function PoseCloneNode({
   const DEFAULTS: PoseCloneNodeType['poseclone'] = {
     enabled: true, mode: 'per-frame', instruction: '', negative: '',
     steps: 0, size: 0, background: 'transparent', anchor: 'bottom',
-    refMode: 'auto', seed: null, maxSeqLen: null,
+    refMode: 'auto', refView: 'auto', seed: null, maxSeqLen: null,
   }
   const v = { ...DEFAULTS, ...node.poseclone }
   const patch = (p: Partial<typeof v>) => onChange({ poseclone: { ...v, ...p } })
@@ -134,6 +134,21 @@ export default function PoseCloneNode({
               onChange={(e) => patch({ refMode: e.target.value as typeof v.refMode })}>
               <option value="auto">自动重排（推荐）</option>
               <option value="as-is">原样使用</option>
+            </select>
+          </label>
+          <label className="gen-field">
+            <span className="gen-field-label"
+              title="角色参考用哪个视角的立绘。四视图板塞进 256×256 后每格只剩 128px，模型读不出角色，所以会切成单格。auto = 先用第 1 帧试 4 个视角，选「出图配色最像参考」的那个（实测比整板喂强很多：肤色占比 0.56→0，参考角色配色占比 0→0.83）。角色形象没迁过来就换个视角再试。">
+              角色视角
+            </span>
+            <select className="input" value={v.refView}
+              onChange={(e) => patch({ refView: e.target.value as typeof v.refView })}>
+              <option value="auto">自动挑（推荐）</option>
+              <option value="front">第 1 格（正面）</option>
+              <option value="side">第 2 格（侧面）</option>
+              <option value="back">第 3 格（背面）</option>
+              <option value="side2">第 4 格（另一侧）</option>
+              <option value="board">整板一起喂（已不推荐）</option>
             </select>
           </label>
         </div>

@@ -33,12 +33,22 @@ from .. import progress as progress_mod
 # 占位符用 {帧号} {总帧数} {背景} 这种中文花括号，避免和用户正文里的 {} 打架，
 # 替换走 str.replace 而不是 format。
 DEFAULT_INSTRUCTION = (
-    "图1 是游戏角色动作素材的第 {帧号}/{总帧数} 帧。图2 是目标角色的设定板"
-    "（正面 / 侧面 / 背面 / 右侧面，都是同一个角色）。\n"
-    "请用图2 中的角色形象，一比一复刻图1 这一帧：\n"
-    "· 角色：脸型、发型、发色、瞳色、服装款式与配色、配饰、武器、纹样，"
-    "全部以图2 为准，不要改动；\n"
-    "· 动作：身体姿态、四肢角度、躯干倾斜、重心、朝向、视线方向，"
+    # 开头这两句是整条链最关键的地方（2026-10-27 用用户真实素材实测出来的）。
+    # 老指令只说「用图2 的角色一比一复刻图1」，从没说过**图1 里的角色不是要画的
+    # 对象**。用户的动作源是「光头肉色像素小人」、四视图是「青蓝古风剑客」，
+    # 结果模型每次都把那个光头小人原样抄一遍（肤色占比 0.56、青蓝 0.00）。
+    # 明确写「图1 只给姿势、它的外观一个都不要保留」之后，肤色降到 0.00。
+    "图1 是**动作参考**，它只提供姿势、朝向、以及在画面中的位置和大小。\n"
+    "特别注意：图1 里出现的那个角色（可能是灰色剪影、光头、肤色人台、"
+    "或者任何别的角色）**不是要画的对象**——它的发型、肤色、服装、体型、"
+    "配色，一个都不要保留。\n"
+    "图2 是目标角色的立绘（同一个角色的一个视角），"
+    "它是角色外观的**唯一来源**。\n"
+    "请画出这样的画面：**用图2 里的角色，摆出图1 的姿势**"
+    "（第 {帧号}/{总帧数} 帧）。\n"
+    "· 外观：脸型、发型、发色、瞳色、服装款式与配色、配饰、武器、纹样，"
+    "全部以图2 为准，不要改动、不要简化；\n"
+    "· 姿势：身体姿态、四肢角度、躯干倾斜、重心、朝向、视线方向，"
     "与图1 完全一致，不要美化、不要加戏；\n"
     "· 构图：角色在画面中的位置、大小比例、朝向，与图1 一致；\n"
     "· 画风：与图2 一致。\n"
@@ -52,7 +62,7 @@ DEFAULT_INSTRUCTION = (
     "图1 里空着的手保持空着，不要凭空添加武器或道具；\n"
     "· 配饰跟随身体：披风、裙摆、发丝、飘带的朝向与穿戴位置跟随图1 的姿态，"
     "不要改到另一侧；\n"
-    "图2 只是设定参考，**不要把它的四个视角一起画出来**，只画一个角色、一个姿势。\n"
+    "图2 只是参考，**不要把它的多个视角一起画出来**，只画一个角色、一个姿势。\n"
     "画面里只有这一个角色，{背景}，没有地面、没有投影、没有边框、没有文字、"
     "没有其他人物。"
 )
@@ -316,6 +326,49 @@ def repack_board(img: Image.Image, *, views: int = 4) -> Tuple[Image.Image, str]
     return canvas, f"{cols}x{rows}→{out_cols}x{out_rows}"
 
 
+def split_board_cells(board: Image.Image) -> List[Image.Image]:
+    """把 2×2 的四视图板切成 4 个单视角立绘；不像板就原样返回 1 张。
+
+    为什么必须切（2026-10-27 实测，用户真实素材）：动作源帧是「光头肉色像素
+    小人」，四视图是「青蓝古风长袍剑客」，要求用四视图的角色做源帧的动作。
+    给整张板时模型**根本不用它**——
+        A 整板 + 老指令 → 直接复制光头小人（肤色占比 0.56）
+        C 整板 + 强指令 → 画了个灰剪影（听懂"图1 不是对象"，但没用四视图）
+        E 单视角 + 强指令 → **青蓝占比 0.83、肤色 0.01**，正确画出剑客
+    原因是分辨率：板 512×508 塞进 256×256 的输出预算，每格只剩 128×127，
+    模型读不出发型服装；单格 256×254 几乎占满，有效像素翻 4 倍，注意力也
+    只落在一个角色上，不会被"四格该跟哪个"分散。
+    """
+    w, h = board.size
+    if w % 2 or h % 2:
+        return [board]
+    cw, ch = w // 2, h // 2
+    cells: List[Image.Image] = []
+    for r in range(2):
+        for c in range(2):
+            cells.append(board.crop((c * cw, r * ch, (c + 1) * cw, (r + 1) * ch)))
+    # 四格都得有内容，否则说明这不是四视图板（比如只是一张方形立绘）
+    for cell in cells:
+        if float(_fg_mask(cell).mean()) < 0.01:
+            return [board]
+    return cells
+
+
+def _color_hist(img: Image.Image) -> np.ndarray:
+    """不透明区的颜色直方图（4×4×4），用来判断「这张出图的配色像不像参考立绘」。"""
+    a = np.asarray(img.convert("RGBA")).astype(np.float32)
+    m = a[..., 3] > 128
+    if not m.any():
+        return np.zeros(64)
+    h, _ = np.histogramdd(a[m][:, :3], bins=(4, 4, 4), range=((0, 256),) * 3)
+    return (h / max(1.0, h.sum())).ravel()
+
+
+def _hist_dist(a: np.ndarray, b: np.ndarray) -> float:
+    """两个直方图的 L1 距离（0 = 完全一样，1 = 毫无重叠）。"""
+    return float(np.abs(a - b).sum()) / 2.0
+
+
 async def run_clone(
     frames: Sequence[Dict[str, Any]],
     char_refs: Sequence[Image.Image],
@@ -328,6 +381,7 @@ async def run_clone(
     max_seq_len: Optional[int] = None,
     anchor: str = "bottom",
     ref_mode: str = "auto",
+    ref_view: str = "auto",
     seed: Optional[int] = None,
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
@@ -371,6 +425,28 @@ async def run_clone(
         if notes:
             pack_note = "；".join(notes)
 
+    # ---- 四视图板 → 单视角立绘 ----
+    # 给整张板时模型几乎不读它（见 split_board_cells 的实测）。切成单格之后
+    # 参考图在同样的输出预算里有效像素翻 4 倍，身份才迁得过来。
+    # ref_view: auto = 先用第一帧试 4 个视角，选配色最像参考立绘的那个；
+    #           指定 front/side/back/side2 就直接用；board = 完全不动（老行为）。
+    view_note = ""
+    cells: List[Image.Image] = []
+    if ref_view != "board" and refs:
+        cells = split_board_cells(refs[0])
+        if len(cells) == 4:
+            if ref_view in ("front", "side", "back", "side2"):
+                idx = {"front": 0, "side": 1, "back": 2, "side2": 3}[ref_view]
+                refs = [cells[idx]]
+                view_note = f"用第 {idx + 1} 格视角"
+            else:
+                # auto：留到 provider 就绪后 probe（下面做）
+                refs = [cells[0]]
+                view_note = "待挑视角"
+        else:
+            cells = []
+            view_note = "单张立绘（未切格）"
+
     provider = DiffusersProvider(provider_cfg or {})
     total = len(frames)
     use_steps = 40 if not steps else max(20, min(int(steps), 50))
@@ -382,6 +458,45 @@ async def run_clone(
     # 都不生效——实测第 1 帧直接把参考板原样画了出来（4 个视角并排）。
     # 这个坑在 threeview 那边已经踩过一次（negative 只进了 meta 没进模型）。
     neg = (negative or "").strip() or DEFAULT_NEGATIVE
+
+    # ---- auto 挑视角：拿第一帧试 4 个视角，选「配色最像参考立绘」的那个 ----
+    # 为什么不能靠"剪影最像"来选：源帧是正面光头小人时，正面立绘与它剪影最像，
+    # 而实测正是正面立绘会让模型直接照抄源帧（肤色 0.57）。真正该看的是
+    # 「出图颜色像不像参考立绘」——像，才说明角色被迁过来了。
+    if cells and ref_view == "auto" and len(cells) == 4:
+        probe_src = frames[0]["image"]
+        pw, ph = _fit_size(probe_src.width, probe_src.height, size)
+        probe_steps = max(12, use_steps // 2)
+        best: Optional[Tuple[float, int]] = None
+        ref_hists = [_color_hist(c) for c in cells]
+        for ci, cell in enumerate(cells):
+            progress_mod.report(task_id, 0, grand,
+                                f"挑角色视角 {ci + 1}/4（用第 1 帧试画）…")
+            try:
+                r = await provider.generate(
+                    prompt=build_instruction(custom or DEFAULT_INSTRUCTION,
+                                             index=1, total=1,
+                                             background=background),
+                    width=pw, height=ph, steps=probe_steps, seed=seed, n=1,
+                    refs=[probe_src, cell], negative=neg,
+                    ref_bg=(None if background in ("transparent", "", "none")
+                            else _bg_rgb(background)),
+                    task_id=task_id,
+                    max_seq_len=_fit_seq_len(
+                        build_instruction(custom or DEFAULT_INSTRUCTION, index=1,
+                                          total=1, background=background),
+                        max_seq_len))
+                got = r.images[0].convert("RGBA")
+                d = _hist_dist(_color_hist(got), ref_hists[ci])
+            except progress_mod.CancelledError:
+                raise
+            except Exception:
+                continue
+            if best is None or d < best[0]:
+                best = (d, ci)
+        if best is not None:
+            refs = [cells[best[1]]]
+            view_note = (f"自动选中第 {best[1] + 1} 格（配色最接近参考）")
 
     out: List[Dict[str, Any]] = []
     warnings: List[str] = []
@@ -581,6 +696,7 @@ async def run_clone(
         "seconds": round(time.time() - t_start, 1),
         "refCount": len(refs) + 1,
         "refPack": pack_note,
+        "refView": view_note or "board（整板）",
         # 后处理统计：这两项说明「看起来不对」的帧有多少是被自动修过的
         "retried": retried,
         "autoMatted": auto_matted,

@@ -947,7 +947,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       poseclone: {
         enabled: true, mode: 'per-frame', instruction: '', negative: '',
         steps: 0, size: 0, background: 'transparent', anchor: 'bottom',
-        refMode: 'auto', seed: null, maxSeqLen: null,
+        refMode: 'auto', refView: 'auto', seed: null, maxSeqLen: null,
       },
       frames: [], result: null, meta: null,
       createdAt: Date.now() / 1000,
@@ -2182,6 +2182,7 @@ export default function Canvas({ projectId, onBack }: Props) {
       background: v?.background ?? 'transparent',
       anchor: v?.anchor ?? 'bottom',
       refMode: v?.refMode ?? 'auto',
+      refView: v?.refView ?? 'auto',
       seed: v?.seed ?? null,
       maxSeqLen: v?.maxSeqLen ?? null,
       // 补跑缺失：上游勾了、但这里还没有产出的帧。按**源文件名**比对而不是

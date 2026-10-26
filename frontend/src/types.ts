@@ -1039,6 +1039,8 @@ export type PoseCloneOptions = {
   anchor: 'bottom' | 'center'
   /** auto=长条四视图板自动重排成方形（提升参考图有效像素） */
   refMode: 'auto' | 'as-is'
+  /** 角色参考用哪个视角：auto=试 4 格选配色最像的；board=整板一起喂（老行为） */
+  refView: 'auto' | 'front' | 'side' | 'back' | 'side2' | 'board'
   seed: number | null
   maxSeqLen: number | null
 }
