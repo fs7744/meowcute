@@ -25,32 +25,43 @@ def head_size(url: str) -> int:
         return int(r.headers["Content-Length"])
 
 
-def fetch_range(url: str, start: int, end: int, fh, state, lock, idx):
-    """把 [start, end] 写进 fh（已 seek 定位），段内 16MB 子块逐一重试。"""
-    pos = start
+def fetch_range(url: str, start: int, end: int, file_path: str, state, lock, idx):
+    """把 [start, end] 写进 file_path，段内 16MB 子块逐一重试。
+
+    **每个线程各自 open 一个句柄**：多线程共享同一个 file object 时
+    `fh.seek(pos)+fh.write()` 不是原子的，两个线程会抢同一个文件指针，
+    结果是文件开头一片 0、长度比预期大几十 MB（2026-10-27 复现，
+    3.3GB 的 ControlNet 权重被写成全 0）。os.pwrite 在 Windows 上不存在，
+    所以走「每线程独立句柄 + buffering=0」。
+    """
     sess = requests.Session()
-    while pos <= end:
-        sub_end = min(pos + SUB - 1, end)
-        for attempt in range(8):
-            try:
-                with sess.get(url, headers={"Range": f"bytes={pos}-{sub_end}"},
-                              stream=True, timeout=(15, 60),
-                              proxies={"http": None, "https": None}) as r:
-                    r.raise_for_status()
-                    fh.seek(pos)
-                    got = 0
-                    for chunk in r.iter_content(2**20):
-                        fh.write(chunk)
-                        got += len(chunk)
-                if got == sub_end - pos + 1:
-                    pos = sub_end + 1
-                    with lock:
-                        state["done"] += got
-                    break
-            except Exception as e:
-                if attempt == 7:
-                    raise
-                time.sleep(2 * (attempt + 1))
+    fh = open(file_path, "r+b", buffering=0)
+    try:
+        pos = start
+        while pos <= end:
+            sub_end = min(pos + SUB - 1, end)
+            for attempt in range(8):
+                try:
+                    with sess.get(url, headers={"Range": f"bytes={pos}-{sub_end}"},
+                                  stream=True, timeout=(15, 60),
+                                  proxies={"http": None, "https": None}) as r:
+                        r.raise_for_status()
+                        fh.seek(pos)
+                        got = 0
+                        for chunk in r.iter_content(2**20):
+                            fh.write(chunk)
+                            got += len(chunk)
+                    if got == sub_end - pos + 1:
+                        pos = sub_end + 1
+                        with lock:
+                            state["done"] += got
+                        break
+                except Exception:
+                    if attempt == 7:
+                        raise
+                    time.sleep(2 * (attempt + 1))
+    finally:
+        fh.close()
     with lock:
         state["segs_ok"] += 1
 
@@ -63,32 +74,32 @@ def main():
     state = {"done": 0, "segs_ok": 0}
     lock = threading.Lock()
     t0 = time.time()
-    with open(out, "r+b" if Path(out).exists() and Path(out).stat().st_size == total else "wb") as fh:
-        if fh.mode == "wb" or fh.seek(0, 2) == 0:
+    resume = Path(out).exists() and Path(out).stat().st_size == total
+    if not resume:
+        with open(out, "wb") as fh:
             fh.truncate(total)
-        bounds = []
-        step = (total + n_threads - 1) // n_threads
-        for i in range(n_threads):
-            s, e = i * step, min((i + 1) * step - 1, total - 1)
-            if s <= e:
-                bounds.append((s, e))
-        last = [0]
-        def report():
-            while state["segs_ok"] < len(bounds):
-                time.sleep(10)
-                with lock:
-                    d = state["done"]
-                dt = time.time() - t0
-                print(f"  {d/2**30:.2f}GB {d/max(dt,1e-9)/2**20:.1f}MB/s", flush=True)
-        rt = threading.Thread(target=report, daemon=True)
-        rt.start()
-        threads = [threading.Thread(target=fetch_range,
-                                    args=(url, s, e, fh, state, lock, i))
-                   for i, (s, e) in enumerate(bounds)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+    bounds = []
+    step = (total + n_threads - 1) // n_threads
+    for i in range(n_threads):
+        s, e = i * step, min((i + 1) * step - 1, total - 1)
+        if s <= e:
+            bounds.append((s, e))
+    def report():
+        while state["segs_ok"] < len(bounds):
+            time.sleep(10)
+            with lock:
+                d = state["done"]
+            dt = time.time() - t0
+            print(f"  {d/2**30:.2f}GB {d/max(dt,1e-9)/2**20:.1f}MB/s", flush=True)
+    rt = threading.Thread(target=report, daemon=True)
+    rt.start()
+    threads = [threading.Thread(target=fetch_range,
+                                args=(url, s, e, out, state, lock, i))
+               for i, (s, e) in enumerate(bounds)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     dt = time.time() - t0
     real = os.path.getsize(out)
     ok = real == total
