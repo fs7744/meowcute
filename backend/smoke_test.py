@@ -2275,6 +2275,22 @@ def _run_checks(client) -> int:
           _pc._gray_ratio(_gray_img) > 0.45 and _pc._gray_ratio(_cyan_img) <= 0.45,
           f'{_pc._gray_ratio(_gray_img):.2f} / {_pc._gray_ratio(_cyan_img):.2f}')
 
+    # 白底源帧自动抠（2026-10-27 真 bug）：用户的精灵图是白底不透明的，拆解时
+    # matte=False，于是每帧 alpha 全 255。下游所有基于 alpha 的缩放/对齐/剪影
+    # 评分/逐帧视角判断全部失效——IoU 0.5~0.7 这个数字当时毫无意义。
+    _white_bg = Image.new("RGBA", (120, 120), (255, 255, 255, 255))
+    _wd = ImageDraw.Draw(_white_bg)
+    _wd.ellipse([40, 20, 80, 60], fill=(210, 170, 140, 255))
+    _wd.rectangle([50, 58, 70, 100], fill=(90, 110, 150, 255))
+    _fixed_src, _did = _pc._ensure_fg(_white_bg)
+    check("白底源帧会被自动抠出角色（否则整条指标链都是瞎的）",
+          _did and _pc._has_transparency(_fixed_src)
+          and float(_pc._fg_mask(_fixed_src).mean()) < 0.6,
+          f"did={_did} fg={float(_pc._fg_mask(_fixed_src).mean()):.2f}")
+    _alpha_src = Image.new("RGBA", (120, 120), (0, 0, 0, 0))
+    ImageDraw.Draw(_alpha_src).rectangle([50, 20, 70, 100], fill=(90, 110, 150, 255))
+    check("已经是透明底的源帧不动它", _pc._ensure_fg(_alpha_src)[1] is False)
+
     check("配色直方图能区分「像参考」和「不像」（挑视角靠它）",
           _pc._hist_dist(_h_same, _h_same) < 0.01
           and _pc._hist_dist(_h_same, _h_diff) > 0.8,

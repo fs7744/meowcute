@@ -2639,15 +2639,27 @@ async def _run_sprite_split(task_id: str, payload: SpriteSplitPayload) -> None:
             raise RuntimeError(f"精灵图读不出来：{payload.file}")
 
         progress_mod.report(task_id, 0, 1, "识别网格…")
+        # 源图不透明（白底/纯色底精灵图）就自动抠：否则拆出来的每帧 alpha 全是
+        # 255，下游「动作复刻」里所有基于 alpha 的缩放/对齐/剪影评分全部失效
+        # （2026-10-27 实测：12 帧白底精灵图导致动作保真度指标整个是瞎的）。
+        _auto_matte = bool(payload.matte)
+        if not _auto_matte:
+            _a = img.convert("RGBA")
+            _alpha = _a.getchannel("A")
+            if _alpha.getextrema()[0] >= 250:      # 整张图没有透明像素
+                _auto_matte = True
+                progress_mod.report(task_id, 0, 1, "源图不透明，自动抠图…")
         picked, meta = await asyncio.to_thread(
             spritesplit_mod.run_split, img,
             cols=_clamp(payload.cols, 0, 64, 0),
             rows=_clamp(payload.rows, 0, 64, 0),
             cell=_clamp(payload.cell, 0, 1024, 0),
             count=_clamp(payload.count, 0, 256, 0),
-            matte=bool(payload.matte),
+            matte=_auto_matte,
             tolerance=_clamp(payload.tolerance, 10, 120, 40),
             task_id=task_id)
+        if _auto_matte and not payload.matte:
+            meta["matteAuto"] = True
 
         _purge_prefix(payload.projectId, SPLIT_FRAME_PREFIX)
         _purge_prefix(payload.projectId, SPLIT_THUMB_PREFIX)

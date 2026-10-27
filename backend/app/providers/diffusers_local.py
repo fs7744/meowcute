@@ -646,13 +646,19 @@ class DiffusersProvider(BaseProvider):
                     refs: Optional[Any] = None, task_id: Optional[str] = None,
                     max_seq_len: Optional[int] = None,
                     ref_bg: Optional[Any] = None,
-                    progress: Optional[Dict[str, Any]] = None):
+                    progress: Optional[Dict[str, Any]] = None,
+                    cond_res: Optional[int] = None):
         """Qwen-Image-2.1 统一推理：带参考图 = 指令改图，不带 = 文生图。
 
         - true_cfg_scale=4.0 必须配 negative_prompt：管线是
           `do_true_cfg = true_cfg_scale > 1 and has_neg_prompt`，不传负向
           时 CFG **静默失效**（2026-10-22 实测 cfg1/cfg4 输出逐字节相同）；
-        - 输出尺寸显式传 width/height（output_resolution 只在缺省时兜底）；
+        - 输出尺寸显式传 width/height；output_resolution **不控制输出尺寸**，
+          它决定「条件图被 resize 到多大面积再编码成 latent token」
+          （管线里 `calculate_dimensions(output_resolution², aspect)`）。
+          以前传 max(w,h)=256，等于把动作帧压到 256² 再进 VAE，四肢轮廓
+          这种结构信息被压掉了；调大它能在**输出尺寸不变**的前提下让条件图
+          分辨率翻几倍（2026-10-27 用于治「动作保真度不达标」）；
         - 改图路径把参考图统一缩放到目标尺寸（管线对多图原生支持）；
         - 提示词要透明底时（含 RGBA 描述）直接出 alpha，可省掉后续抠图。
         """
@@ -678,7 +684,7 @@ class DiffusersProvider(BaseProvider):
                 prompt=prompt,
                 negative_prompt=negative if negative is not None else "",
                 height=h, width=w,
-                output_resolution=max(w, h),
+                output_resolution=int(cond_res or max(w, h)),
                 num_inference_steps=use_steps,
                 true_cfg_scale=4.0,
                 generator=generator,
@@ -1221,7 +1227,8 @@ class DiffusersProvider(BaseProvider):
              task_id: Optional[str] = None,
              max_seq_len: Optional[int] = None,
              ref_bg: Optional[Any] = None,
-             progress: Optional[Dict[str, Any]] = None):
+             progress: Optional[Dict[str, Any]] = None,
+             cond_res: Optional[int] = None):
         torch = _require_torch()
 
         # 先看显存够不够，再决定要不要让用户干等：桌面程序占着显存时，模型会被
@@ -1251,7 +1258,8 @@ class DiffusersProvider(BaseProvider):
                                             task_id=task_id,
                                             max_seq_len=max_seq_len,
                                             ref_bg=ref_bg,
-                                            progress=progress)
+                                            progress=progress,
+                                            cond_res=cond_res)
         else:
             raise RuntimeError(f"暂不支持的模型族：{family}（{model_id}）")
         if vram_note:
@@ -1273,6 +1281,7 @@ class DiffusersProvider(BaseProvider):
         negative: Optional[str] = None,
         ref_bg: Optional[Any] = None,
         progress: Optional[Dict[str, Any]] = None,
+        cond_res: Optional[int] = None,
     ) -> ProviderResult:
         # 入口先卡一次：缺 torch 时直接把安装指引抛给前端，
         # 而不是等 _run 里 import 出一句光秃秃的 "No module named 'torch'"
@@ -1310,7 +1319,7 @@ class DiffusersProvider(BaseProvider):
                 images, meta = await asyncio.to_thread(
                     self._run, model_id, prompt, neg,
                     width, height, steps, seed, n, ref, all_refs or None,
-                    task_id, max_seq_len, ref_bg, progress,
+                    task_id, max_seq_len, ref_bg, progress, cond_res,
                 )
             finally:
                 _stop_beat.set()

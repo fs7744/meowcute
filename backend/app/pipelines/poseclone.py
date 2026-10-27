@@ -404,6 +404,33 @@ def _gray_ratio(img: Image.Image) -> float:
     return float(gray.mean())
 
 
+def _ensure_fg(img: Image.Image) -> Tuple[Image.Image, bool]:
+    """动作帧若是白底/不透明，先抠出真实角色。返回 (图, 是否抠过)。
+
+    为什么必须兜底（2026-10-27 找到的真 bug，用户报"动作很多都不达标"）：
+    用户的精灵图是**白底不透明**的，拆解时 matte=False（当时以为"我们自己的
+    精灵图都是透明底"），于是每帧 alpha 全是 255。下游一连串确定性逻辑全部
+    建立在「alpha>阈值 = 角色」上，全废：
+      · `_fg_mask` 把整张画布当角色 → `_bbox_of` = 整个画布
+      · `_match_scale` 的 ratio/cap 全错 → 缩放等于没做
+      · `_align_to` 按整张画布对齐 → 等于没对齐
+      · `silhouette_iou` 变成「生成剪影面积 ÷ 整张画布面积」→ 0.5~0.7 这个
+        数字**毫无意义**，之前一直用它判断"动作保真度"其实是瞎的
+      · 条件图是白底 → 模型顺手把白底也画进结果
+    """
+    if _has_transparency(img):
+        return img, False
+    try:
+        from . import matte as matte_pipe
+        out, _ = matte_pipe.remove_background(
+            img, tolerance=40, feather=0, hard=True, method="auto", despill=True)
+        if _has_transparency(out) and float(_fg_mask(out).mean()) > 0.01:
+            return out, True
+    except Exception:
+        pass
+    return img, False
+
+
 async def run_clone(
     frames: Sequence[Dict[str, Any]],
     char_refs: Sequence[Image.Image],
@@ -417,6 +444,7 @@ async def run_clone(
     anchor: str = "bottom",
     ref_mode: str = "auto",
     ref_view: str = "auto",
+    cond_res: int = 0,
     seed: Optional[int] = None,
     provider_cfg: Optional[Dict[str, Any]] = None,
     task_id: Optional[str] = None,
@@ -506,6 +534,7 @@ async def run_clone(
     warnings: List[str] = []
     retried = 0
     auto_matted = 0
+    matted_src = 0
     clipped = 0
     dirty_corners = 0
     clip_notes: List[str] = []
@@ -516,11 +545,17 @@ async def run_clone(
     for k, fr in enumerate(frames):
         progress_mod.check_cancel(task_id)
         src: Image.Image = fr["image"]
+        # 白底/不透明的动作帧先抠出真实角色，否则后面所有基于 alpha 的
+        # 缩放 / 对齐 / 剪影评分 / 逐帧视角判断全部失效（见 _ensure_fg）
+        src, _did_matte = _ensure_fg(src)
+        if _did_matte:
+            matted_src += 1
         w, h = _fit_size(src.width, src.height, size)
         text = build_instruction(custom or DEFAULT_INSTRUCTION, index=k + 1,
                                  total=total, background=background)
         label = f"复刻第 {k + 1}/{total} 帧"
         t0 = time.time()
+        err_text = ""
 
         # 逐帧配视角：这一帧是正面还是侧面，就用四视图里对应的那一格。
         # 整套动作跨朝向时（行走循环：正面→侧面→背面），这一步是必须的——
@@ -546,6 +581,7 @@ async def run_clone(
                 # 参考图铺底色：动作帧是透明底，`convert("RGB")` 会把它压成
                 # 黑底，模型把黑当背景画进结果（暗部/地面），和「透明背景」打架
                 ref_bg=(None if want_transparent else _bg_rgb(background)),
+                cond_res=(cond_res or None),
                 progress={"label": _label, "base": use_steps * _k, "grand": grand},
                 task_id=task_id,
                 max_seq_len=_fit_seq_len(_text, max_seq_len),
@@ -563,7 +599,8 @@ async def run_clone(
         best: Optional[Tuple[float, Image.Image, Dict[str, Any]]] = None
         fallback: Optional[Tuple[Image.Image, Dict[str, Any]]] = None
         gray_hits = 0
-        max_tries = 3
+        max_tries = 4
+        ref_hist = _color_hist(frame_refs[0]) if frame_refs else None
         while tries < max_tries:
             tries += 1
             progress_mod.report(task_id, use_steps * k, grand,
@@ -577,6 +614,7 @@ async def run_clone(
                     # 单帧失败不毁整批：记下来、跳过，其余帧照跑。精灵图少一帧
                     # 还能用，整批作废则要用户从头再来一次。
                     gen = None
+                    err_text = _friendly_error(e)
                     warnings.append(f"第 {k + 1} 帧复刻失败：{str(e)[:120]}")
                     break
                 continue
@@ -599,13 +637,22 @@ async def run_clone(
             # 灰剪影要当失败处理：它的剪影重合度可以很高（形态对、只是没上色），
             # 实测就有一帧 iou 0.936 但灰色占比 0.6+，光看 IoU 会把它当成好帧。
             cur_gray = _gray_ratio(cur)
+            # 身份迁移得分：出图配色像不像这一帧用的参考立绘。
+            # **必须和剪影重合度一起判**：实测有帧 iou 0.94 但 idScore 0.13 ——
+            # 那是"姿势抄对了、角色根本没换"（还在画图1 的旧角色），
+            # 只看 IoU 反而会优先选它。
+            cur_id = (1.0 - _hist_dist(_color_hist(cur), ref_hist)
+                      if ref_hist is not None else 0.0)
+            ok = cur_gray <= 0.45 and cur_iou >= 0.55 and cur_id >= 0.5
             if cur_gray > 0.45:
                 gray_hits += 1
                 if fallback is None:
                     fallback = (cur, ainfo)
-            elif best is None or cur_iou > best[0]:
-                best = (cur_iou, cur, ainfo)
-            if cur_gray <= 0.45 and cur_iou >= 0.6:
+            else:
+                score = 0.5 * cur_iou + 0.5 * cur_id
+                if best is None or score > best[0]:
+                    best = (score, cur, ainfo, cur_iou, cur_id)
+            if ok:
                 break
             if tries < max_tries:
                 retried += 1
@@ -619,14 +666,16 @@ async def run_clone(
             gen, ainfo = fallback
             iou = silhouette_iou(gen, src)
             warnings.append(
-                f"第 {k + 1} 帧三次都画成了灰色剪影（模型没上色）："
+                f"第 {k + 1} 帧连试 {max_tries} 次都画成了灰色剪影（模型没上色）："
                 "单独重跑这一帧，或换「角色视角」再试")
         elif best is not None:
-            iou, gen, ainfo = best
+            _score, gen, ainfo, iou, _id = best
 
         if gen is None:
+            # 注意：except 里的 e 离开作用域就被 Python 删了，所以文案要在
+            # except 里就转好存到 err_text（踩过一次 NameError）
             out.append({"i": fr["i"], "image": None,
-                        "error": _friendly_error(e),
+                        "error": err_text or "生成失败",
                         "seconds": round(time.time() - t0, 1)})
             continue
 
@@ -704,6 +753,10 @@ async def run_clone(
             f"{MIN_INFER_SIZE} 上推理再缩回原尺寸，动作能对齐但**不会变清晰**。"
             "想要更清楚，把上游「拆解精灵图」的单元格调大（或换一张格子更大的精灵图）")
 
+    if matted_src:
+        warnings.append(
+            f"有 {matted_src} 帧源素材是白底/不透明（拆解精灵图时没抠图）："
+            "已自动抠出角色再复刻。上游「拆解精灵图」里打开「抠图」可以省掉这一步")
     if retried:
         warnings.append(
             f"有 {retried} 帧第一次跑飞了（剪影重合 <60%），已换 seed 自动重跑")
@@ -739,6 +792,7 @@ async def run_clone(
         # 后处理统计：这两项说明「看起来不对」的帧有多少是被自动修过的
         "retried": retried,
         "autoMatted": auto_matted,
+        "matteSrc": matted_src,
         # 结构校验（毫秒级，不看剪影重合也能发现的问题）
         "baselineRows": sorted(set(baselines)),
         "baselineStable": len(set(baselines)) <= 1,
